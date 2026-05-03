@@ -2,11 +2,19 @@
 *.pyc
 
 # 忽略整个目录
-code_output/
-context/
-log/
 .memdir/
 __pycache__/
 venv/
 .idea/
+
+# 忽略这些目录下的所有内容
+code_output/*
+context/*
+log/*
+
+# 但是保留这些目录本身（通过.gitkeep）
+!code_output/.gitkeep
+!context/.gitkeep
+!log/.gitkeep
+
 
