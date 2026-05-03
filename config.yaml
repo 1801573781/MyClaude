@@ -1,0 +1,36 @@
+# MyClaude 全局配置文件
+# 修改后重启生效
+
+model:
+  # LLM API 连接参数
+  api_key: "sk-cp-FOSKhEE_8e1CWtTmM9QVG6t8YehQz0USYhK7HGp6OxSkiu0Iec2PS3iWEDv4w4Cg8H1WKkTnPZE3fX5pFiNK2h-ebtihPscCQl993GUvaTPqHVssqgWO2Ro"
+  base_url: "https://api.minimaxi.com/v1"
+  model_name: "MiniMax-M2.7"
+  max_tokens: 9000          # 单次请求 token 上限
+  temperature: 0.3          # 创造性程度
+
+model_chat:
+  initial_max_tokens: 9000  # 单次请求 token 上限，初始化值（如果与 LLM 交互失败，重试的时候，还会增加这个值）
+  max_retries: 3            # 与 LLM 交互，如果失败，重试次数
+  max_tokens_limit: 64000   # 单次请求 token 上限，最终值（不会比这个更高的）
+
+memory:
+  # 记忆系统存储配置
+  root_dir: ".memdir"     # 记忆文件存放目录（以.开头，默认隐藏）
+  max_inject_tokens: 2000 # 注入上下文的记忆最大 token 数
+  compact_threshold: 0.9  # 压缩触发阈值
+
+code_project:
+  # 项目目录结构
+  project_root: "."       # 项目根目录
+  code_output_root: "D:/AI/MyClaude/code_output/" # AI 生成代码的默认输出目录
+  logs_root: "D:/AI/MyClaude/log/" # log默认输出目录
+  backups_root: "backups"
+
+cli:
+  # 命令行界面配置
+  theme: "monokai"        # rich 主题风格
+  typewriter_delay: 0.005 # 打字机效果延迟（秒），0 为关闭
+  max_turns: 10           # 工具调用最大轮次
+  show_thinking: False    # 是否显示 <thinking> 内容
+
