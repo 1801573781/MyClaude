@@ -3,6 +3,7 @@
 
 model:
   # LLM API 连接参数
+  # api_key 是真实的 key，可以直接使用，请悠着点使用
   api_key: "sk-cp-FOSKhEE_8e1CWtTmM9QVG6t8YehQz0USYhK7HGp6OxSkiu0Iec2PS3iWEDv4w4Cg8H1WKkTnPZE3fX5pFiNK2h-ebtihPscCQl993GUvaTPqHVssqgWO2Ro"
   base_url: "https://api.minimaxi.com/v1"
   model_name: "MiniMax-M2.7"
