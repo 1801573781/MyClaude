@@ -1,0 +1,14 @@
+# MyClaude 依赖清单
+# 安装方式: pip install -r requirements.txt
+
+# LLM API 客户端（MiniMax 通过 OpenAI 兼容接口调用）
+openai>=1.0.0
+
+# 终端 UI、Markdown 渲染、语法高亮、进度动画
+rich>=13.0.0
+
+# YAML 配置文件解析
+pyyaml>=6.0
+
+# 向量计算（MemorySystem 的 Mock Encoder 需要；如不使用记忆系统可移除）
+numpy>=1.24.0
