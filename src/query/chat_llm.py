@@ -4,106 +4,25 @@ from openai import AsyncOpenAI
 from utility.config_loader import global_cfg
 
 
+model_provider = global_cfg.model.provider
+api_key = ""
+base_url = ""
+model_name = ""
+
+if "DeepSeek" == model_provider:
+    api_key = global_cfg.DeepSeek.api_key
+    base_url = global_cfg.DeepSeek.base_url
+    model_name = global_cfg.DeepSeek.model_name
+else:
+    api_key = global_cfg.MiniMax.api_key
+    base_url = global_cfg.MiniMax.base_url
+    model_name = global_cfg.MiniMax.model_name
+
+
 client = OpenAI(
-    api_key=global_cfg.model.api_key,  # minimax_api_key,
-    base_url=global_cfg.model.base_url  # minimax_base_url
+    api_key=api_key,
+    base_url=base_url
 )
-
-
-# 同步，非流式
-def block_chat(msg, max_tokens=9000):
-    response = client.chat.completions.create(
-        model=global_cfg.model.model_name,  # "MiniMax-M2.7",
-        messages=msg,
-        max_tokens=max_tokens,
-        temperature=global_cfg.model.temperature,  # 0.7,
-        stream=False
-    )
-
-    return response.choices[0].message.content
-
-
-# 同步，流式
-def stream_chat(msg, max_tokens=9000):
-    is_truncated = False
-
-    try:
-        stream = client.chat.completions.create(
-            model=global_cfg.model.model_name,  # "MiniMax-M2.7",
-            messages=msg,
-            max_tokens=max_tokens,
-            temperature=global_cfg.model.temperature,  # 0.7,
-            stream=True
-        )
-    except APIError as e:
-        # 内容安全拦截、账号异常等异常
-        error_body = getattr(e, 'body', str(e))
-        return f"[API_ERROR: {error_body}]", is_truncated
-    except (APIConnectionError, RateLimitError) as e:
-        return f"[API_ERROR: 网络/限流问题，{e}]", is_truncated
-
-    full_content = ""
-
-    for chunk in stream:
-        choice = chunk.choices[0]
-
-        # 处理 finish_reason（流结束标记）
-        if choice.finish_reason == "length":
-            # 明确标记因为长度被截断
-            full_content += "\n[ERROR: 输出被截断，max_tokens 不足]"
-            is_truncated = True
-            break
-
-        if choice.finish_reason is not None:
-            # "stop" 就是 LLM 自己说"我说完了"，最健康的结束信号。但是，这个信息就不要打印出来了。
-            if "stop" == choice.finish_reason:
-                full_content += ""
-            else:
-                full_content += f"\n\n[流结束原因: {choice.finish_reason}]"
-
-            break
-
-        # 提取并打印内容增量
-        if choice.delta.content:
-            text = choice.delta.content
-            full_content += text
-
-    return full_content, is_truncated
-
-
-async_client = AsyncOpenAI(
-    api_key=global_cfg.model.api_key,  # minimax_api_key,
-    base_url=global_cfg.model.base_url  # minimax_base_url
-)
-
-
-async def async_stream_chat(msg, max_tokens=9000):
-    stream = await async_client.chat.completions.create(
-        model=global_cfg.model.model_name,  # "MiniMax-M2.7",
-        messages=msg,
-        max_tokens=max_tokens,
-        temperature=global_cfg.model.temperature,  # 0.7,
-        stream=True
-    )
-
-    async for chunk in stream:
-        choice = chunk.choices[0]
-
-        # 处理 finish_reason（流结束标记）
-
-        if choice.finish_reason == "length":
-            # 明确标记因为长度被截断
-            yield f"\n[ERROR: 输出被截断，max_tokens 不足]"
-            break
-
-        if choice.finish_reason is not None:
-            # print(f"\n\n[流结束原因: {choice.finish_reason}]")
-            break
-
-        # 提取并打印内容增量
-        if choice.delta.content:
-            text = choice.delta.content
-            yield text
 
 
 def chat_with_retry(api_messages):
@@ -131,4 +50,107 @@ def chat_with_retry(api_messages):
             return ai_response
 
         max_tokens = next_tokens
+
+
+# 同步，流式
+def stream_chat(msg, max_tokens=global_cfg.model_chat.initial_max_tokens):
+    """
+    流式调用聊天接口，返回完整内容和是否因长度截断。
+    """
+    is_truncated = False
+    full_content = ""
+
+    try:
+        stream = client.chat.completions.create(
+            model=model_name,
+            messages=msg,
+            max_tokens=max_tokens,
+            temperature=global_cfg.model_chat.temperature,
+            stream=True
+        )
+
+        # 整个流式循环也放在异常保护中
+        for chunk in stream:
+            choice = chunk.choices[0]
+
+            # ① 优先收集内容（防止最后一个块同时带有内容和 finish_reason）
+            if choice.delta.content:
+                full_content += choice.delta.content
+
+            # ② 再处理结束原因
+            if choice.finish_reason is not None:
+                if choice.finish_reason == "length":
+                    # 长度截断，添加明确标记
+                    full_content += "\n[ERROR: 输出被截断，max_tokens 不足]"
+                    is_truncated = True
+                elif choice.finish_reason != "stop":
+                    # 非正常结束，给出原因提示（stop 是最健康的信号，不添加额外文字）
+                    full_content += f"\n\n[流结束原因: {choice.finish_reason}]"
+                # 无论哪种结束原因，都要跳出循环
+                break
+
+    except APIError as e:
+        # 内容安全拦截、账号异常等
+        error_body = getattr(e, 'body', str(e))
+        return f"[API_ERROR: {error_body}]", is_truncated
+    except (APIConnectionError, RateLimitError) as e:
+        return f"[API_ERROR: 网络/限流问题，{e}]", is_truncated
+    except Exception as e:
+        # 兜底异常（例如流读取过程中意外中断）
+        return f"[API_ERROR: 流式读取异常，{e}]", is_truncated
+
+    return full_content, is_truncated
+
+
+"""
+# 同步，非流式
+def block_chat(msg, max_tokens=9000):
+    response = client.chat.completions.create(
+        model=model_name,  # "MiniMax-M2.7",
+        messages=msg,
+        max_tokens=max_tokens,
+        temperature=global_cfg.model_chat.temperature,  
+        stream=False
+    )
+
+    return response.choices[0].message.content
+"""
+
+
+"""
+async_client = AsyncOpenAI(
+    api_key=api_key,  # minimax_api_key,
+    base_url=base_url  # minimax_base_url
+)
+
+
+# 异步，流式
+async def async_stream_chat(msg, max_tokens=9000):
+    stream = await async_client.chat.completions.create(
+        model=model_name,  # "MiniMax-M2.7",
+        messages=msg,
+        max_tokens=max_tokens,
+        temperature=global_cfg.model_chat.temperature,  
+        stream=True
+    )
+
+    async for chunk in stream:
+        choice = chunk.choices[0]
+
+        # 处理 finish_reason（流结束标记）
+
+        if choice.finish_reason == "length":
+            # 明确标记因为长度被截断
+            yield f"\n[ERROR: 输出被截断，max_tokens 不足]"
+            break
+
+        if choice.finish_reason is not None:
+            # print(f"\n\n[流结束原因: {choice.finish_reason}]")
+            break
+
+        # 提取并打印内容增量
+        if choice.delta.content:
+            text = choice.delta.content
+            yield text
+"""
 

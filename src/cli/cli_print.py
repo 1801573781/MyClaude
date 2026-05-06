@@ -275,14 +275,14 @@ def print_tool_result(content: str):
         console.print("    [yellow]⚠ 无输出[/yellow]")
         return
 
-    # 短内容直接完整打印
+        # 短内容直接完整打印
     if len(content) < 300:
-        console.print(f"    [green]✓[/green] {content}")
+        console.print(f"    [green]✓[/green] {content}", markup=False)
     else:
-        # 长内容：先提示长度，再打印完整（Rich 会自动滚动，不会崩）
+        # 长内容：先提示长度，再打印完整
         lines = content.count("\n") + 1
         console.print(f"    [green]✓[/green] [dim]({lines} 行，共 {len(content)} 字符)[/dim]")
-        console.print(content)  # 完整输出
+        console.print(content, markup=False)  # ← 关闭 markup 解析，避免方括号崩终端
 
 
 @contextmanager

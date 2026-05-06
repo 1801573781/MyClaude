@@ -2,29 +2,11 @@ from pathlib import Path
 from utility.config_loader import global_cfg
 
 
-'''
-def add_root_path(path: str) -> str:
-    """
-        解析 LLM 传来的路径：
-        - 绝对路径 → 直接使用
-        - 相对路径 → 拼接到 code_output 下
-    """
-    p = Path(path)
-
-    # 如果是绝对路径，直接返回
-    if p.is_absolute():
-        return path
-
-    # 否则，加上code_output_root
-    return str(Path(global_cfg.code_project.code_output_root) / p)
-'''
-
-
 def add_root_path(root: str, path: str) -> str:
     """
         解析 LLM 传来的路径：
         - 绝对路径 → 直接使用
-        - 相对路径 → 拼接到 code_output 下
+        - 相对路径 → 拼接到 root 下
     """
     p = Path(path)
 
@@ -51,7 +33,7 @@ def file_view(root: str, path: str) -> str:
         return "\n".join(items) if items else "（空目录）"
     try:
         return p.read_text(encoding="utf-8")
-    except Exception as e:
+    except OSError as e:
         return f"读取错误：{e}"
 
 
@@ -60,21 +42,23 @@ def file_create(root: str, path: str, content: str) -> str:
     try:
         p = Path(full_path)
 
-        # 新增：如果文件已存在且内容非空，拒绝覆盖，提示用 str_replace
+        # 如果文件已存在且内容非空，拒绝覆盖，强制要求改用 str_replace
         if p.exists() and p.stat().st_size > 0:
-            existing_len = len(p.read_text(encoding="utf-8"))  # 这样可能有点慢，不过不纠结，先这样吧
+            existing_len = len(p.read_text(encoding="utf-8"))
             return (
-                f"警告：文件{path}已存在，当前内容 {existing_len} 字符。"
-                f"如需修改请使用 <str_replace>，如需查看请使用 <view>。"
-                f"严禁重复 <create> 同一文件。"
+                f"[BLOCKED] 文件已存在：{path}（{existing_len} 字符）。\n"
+                f"下一步：\n"
+                f"1. 调用 <file_view path=\"{full_path}\"/> 查看现有内容\n"
+                f"2. 复制原文作为 <old>，用 <str_replace> 修改\n"
+                f"严禁再次 <create>，严禁直接 <done>。"
             )
 
         """创建新文件"""
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8")
         return f"已创建 {full_path} ({len(content)} 字符)"
-    except Exception as e:
-        return f"创建失败：{e}"
+    except OSError as e:
+        return f"[ERROR] 创建失败：{e}"
 
 
 def file_append(root: str, path: str, content: str):
@@ -97,12 +81,12 @@ def file_str_replace(root: str, path: str, old: str, new: str) -> str:
     try:
         p = Path(full_path)
         if not p.exists():
-            return f"错误：文件不存在 {full_path}"
+            return f"[BLOCKED] 错误：文件不存在 {full_path}。请先用 <create> 创建文件。"
         text = p.read_text(encoding="utf-8")
         if old not in text:
-            return f"错误：未找到精确匹配片段，请重新查看文件内容。\n---待匹配片段---\n{old}\n---"
+            return f"[BLOCKED] 错误：未找到精确匹配片段，请重新查看文件内容。\n---待匹配片段---\n{old}\n---"
         text = text.replace(old, new, 1)
         p.write_text(text, encoding="utf-8")
         return f"已修改 {full_path}"
-    except Exception as e:
-        return f"修改失败：{e}"
+    except OSError as e:
+        return f"[ERROR] 修改失败：{e}"

@@ -9,9 +9,11 @@ def parse_tools(response: str):
     """
     按顺序解析 AI 响应中的 XML 工具调用。
     返回: (剩余普通文本, 工具列表)
+    ("code_view", re.compile(r'<code_view\s+path="([^"]*)"\s*/>')),
+    ("spec_view", re.compile(r'<spec_view\s+path="([^"]*)"\s*/>')),
     """
     patterns = [
-        ("view", re.compile(r'<view\s+path="([^"]*)"\s*/>')),
+        ("file_view", re.compile(r'<file_view\s+path="([^"]*)"\s*/>')),
         ("create", re.compile(r'<create\s+path="([^"]*)">(.*?)</create>', re.DOTALL)),
         ("bash", re.compile(r'<bash>(.*?)</bash>', re.DOTALL)),
         ("str_replace", re.compile(
@@ -37,8 +39,14 @@ def parse_tools(response: str):
         if start > last_end:
             remaining_parts.append(response[last_end:start])
 
-        if tool_name == "view":
-            tools.append({"llm_tool": "view", "params": {"path": m.group(1)}})
+        '''
+        if tool_name == "code_view":
+            tools.append({"llm_tool": "code_view", "params": {"path": m.group(1)}})
+        elif tool_name == "spec_view":
+            tools.append({"llm_tool": "spec_view", "params": {"path": m.group(1)}})
+        '''
+        if tool_name == "file_view":
+            tools.append({"llm_tool": "file_view", "params": {"path": m.group(1)}})
         elif tool_name == "create":
             content = m.group(2)
             if content.startswith('\n'):
@@ -68,19 +76,25 @@ def parse_tools(response: str):
 
 
 code_output_root = global_cfg.code_project.code_output_root
+spec_root = global_cfg.spec.spec_root
 
 
 def execute_code_tool(tool):
     """
     执行工具列表，返回 API 消息格式（供下一轮对话使用）。
     每个结果包装为 {"role": "user", "content": "[llm_tool] 结果..."}
+    在系统提示词里，强制要求 LLM 输出绝对路径，所以 file_view(code_output_root, p["path"]) 中的 code_output_root，已经没有意义了
     """
 
     name = tool["llm_tool"]
     p = tool["params"]
 
-    if name == "view":
-        result = file_view(code_output_root, p["path"])
+    '''
+    这里的根目录已经没意义了，因为已经要求 LLM 的回复，肯定是绝对路径
+    如果 LLM 没有遵守指令，回复的是相对路径，出现错误，那就错吧
+    '''
+    if name == "file_view":
+        result = file_view(spec_root, p["path"])
     elif name == "create":
         result = file_create(code_output_root, p["path"], p["content"])
     elif name == "str_replace":

@@ -1,19 +1,27 @@
 # MyClaude 全局配置文件
 # 修改后重启生效
 
-model:
+DeepSeek:
   # LLM API 连接参数
-  # api_key 是真实的 key，可以直接使用，请悠着点使用
-  api_key: "sk-cp-FOSKhEE_8e1CWtTmM9QVG6t8YehQz0USYhK7HGp6OxSkiu0Iec2PS3iWEDv4w4Cg8H1WKkTnPZE3fX5pFiNK2h-ebtihPscCQl993GUvaTPqHVssqgWO2Ro"
+  api_key: "***"
+  base_url: "https://api.deepseek.com"
+  model_name: "deepseek-v4-pro"
+
+MiniMax:
+  # LLM API 连接参数
+  api_key: "***"
   base_url: "https://api.minimaxi.com/v1"
   model_name: "MiniMax-M2.7"
-  max_tokens: 9000          # 单次请求 token 上限
-  temperature: 0.3          # 创造性程度
+
+model:
+  # 模型供应商
+  provider: "DeepSeek"
 
 model_chat:
-  initial_max_tokens: 9000  # 单次请求 token 上限，初始化值（如果与 LLM 交互失败，重试的时候，还会增加这个值）
-  max_retries: 3            # 与 LLM 交互，如果失败，重试次数
-  max_tokens_limit: 64000   # 单次请求 token 上限，最终值（不会比这个更高的）
+  initial_max_tokens: 90000  # 单次请求 token 上限，初始化值（如果与 LLM 交互失败，重试的时候，还会增加这个值）
+  max_retries: 3             # 与 LLM 交互，如果失败，重试次数
+  max_tokens_limit: 640000   # 单次请求 token 上限，最终值（不会比这个更高的）
+  temperature: 0.3           # 创造性程度
 
 memory:
   # 记忆系统存储配置
@@ -23,10 +31,14 @@ memory:
 
 code_project:
   # 项目目录结构
-  project_root: "."       # 项目根目录
-  code_output_root: "D:/AI/MyClaude/code_output/" # AI 生成代码的默认输出目录
+  project_root: "D:/AI/MyClaude/"       # 项目根目录
+  code_output_root: "D:/AI/MyClaude/src/" # AI 生成代码的默认输出目录
   logs_root: "D:/AI/MyClaude/log/" # log默认输出目录
   backups_root: "backups"
+
+spec:
+  # 需求规格目录结构
+  spec_root: "D:/AI/MyClaude/spec/"
 
 cli:
   # 命令行界面配置

@@ -6,15 +6,20 @@
 __pycache__/
 venv/
 .idea/
+logo/
+src/crawler/
+src/spider/
 
 # 忽略这些目录下的所有内容
 code_output/*
 context/*
 log/*
+spec/*
 
 # 但是保留这些目录本身（通过.gitkeep）
 !code_output/.gitkeep
 !context/.gitkeep
 !log/.gitkeep
+!spec/.gitkeep
 
 

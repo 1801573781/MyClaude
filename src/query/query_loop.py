@@ -214,4 +214,5 @@ class QueryLoop:
 
             return ChatOrNot.QuitByDone
 
+        # self._print_info("no tools")
         return ChatOrNot.Continue

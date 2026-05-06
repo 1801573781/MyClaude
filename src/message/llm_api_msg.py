@@ -1,21 +1,47 @@
-import sys
 from pathlib import Path
-
-# ===== 兼容 PyCharm / cmd 各种运行方式 =====
-# 把当前文件所在目录（src/message/）加入 sys.path，确保能找到同目录的 sys_prompt
-_current_dir = Path(__file__).parent.resolve()
-if str(_current_dir) not in sys.path:
-    sys.path.insert(0, str(_current_dir))
-# ============================================
-
-import sys_prompt
 
 
 # 通过API与LLM交互时，Message的构建
 class LLMAPIMessage:
 
     def __init__(self):
-        self.api_messages = sys_prompt.system_prompt.copy()  # 复制系统提示词列表
+        # 从同目录加载 sys_prompt.md 作为系统提示词
+        self.api_messages = self._load_system_prompt()
+
+        # 注入项目上下文（放在系统提示词之后、用户输入之前）
+        project_context = self._load_project_context()
+        if project_context:
+            context_msg = {
+                "role": "user",
+                "content": f"[项目上下文]\n{project_context}"
+            }
+            self._append_info(context_msg)
+
+
+    @staticmethod
+    def _load_system_prompt() -> list[dict]:
+        """从同目录加载 sys_prompt.md，包装为 API 消息格式"""
+        md_path = Path(__file__).with_name("sys_prompt.md")
+        if md_path.exists():
+            content = md_path.read_text(encoding="utf-8")
+            return [{"role": "system", "content": content}]
+        return [{"role": "system", "content": ""}]
+
+
+    @staticmethod
+    def _load_project_context() -> str:
+        """从项目根目录加载 MyClaude.md 作为上下文注入"""
+        try:
+            # 从 src/message/ 向上两级到达项目根目录（MyClaude/）
+            project_root = Path(__file__).resolve().parent.parent.parent
+            md_path = project_root / "MyClaude.md"
+            if md_path.exists():
+                return md_path.read_text(encoding="utf-8")
+            return ""
+        except (OSError, UnicodeDecodeError) as e:
+            # 可选：打印警告，但不阻断主流程
+            print(f"[warn] 加载 MyClaude.md 失败: {e}")
+            return ""
 
 
     def get_msg(self):
