@@ -2,6 +2,7 @@ import os
 import time
 from contextlib import contextmanager
 
+from rich.markup import escape
 from rich.console import Console
 from rich.live import Live
 from rich.markdown import Markdown
@@ -267,22 +268,30 @@ def print_tool_call(tool_name: str, params: dict):
     else:
         detail = params.get("path", "")
 
-    console.print(f"  [dim]→ {tool_name} {detail}[/dim]")
+    # 箭头用亮青色（与工具名一致），工具名亮青加粗，参数亮白
+    console.print(f"  [bold cyan]→[/bold cyan] [bold cyan]{tool_name}[/bold cyan] [white]{detail}[/white]")
 
 
-def print_tool_result(content: str):
+def print_tool_result(tool_name: str, content: str):
     if not content:
         console.print("    [yellow]⚠ 无输出[/yellow]")
         return
 
-        # 短内容直接完整打印
+    # 对于 file_view 和 use_skill，不打印详细内容，只输出简洁提示
+    if tool_name in ("file_view", "use_skill"):
+        # 注意：不要转义颜色标记部分，只转义可能出现在固定文本中的方括号（但这里固定文本没有方括号，所以无需转义）
+        console.print(f"    [green]✓[/green] [{tool_name}]工具执行结果：详细内容略", markup=True)
+        return
+
+    # 其他工具正常打印
     if len(content) < 300:
-        console.print(f"    [green]✓[/green] {content}", markup=False)
+        safe_content = escape(content)  # 只转义用户内容
+        console.print(f"    [green]✓[/green] {safe_content}", markup=True)
     else:
-        # 长内容：先提示长度，再打印完整
         lines = content.count("\n") + 1
-        console.print(f"    [green]✓[/green] [dim]({lines} 行，共 {len(content)} 字符)[/dim]")
-        console.print(content, markup=False)  # ← 关闭 markup 解析，避免方括号崩终端
+        console.print(f"    [green]✓[/green] [dim]({lines} 行，共 {len(content)} 字符)[/dim]", markup=True)
+        safe_content = escape(content)
+        console.print(safe_content, markup=True)
 
 
 @contextmanager

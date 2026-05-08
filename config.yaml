@@ -1,49 +1,52 @@
 # MyClaude 全局配置文件
 # 修改后重启生效
 
+# DeepSeek API 连接参数
 DeepSeek:
-  # LLM API 连接参数
-  api_key: "***"
+  api_key: "sk-adccae9657e8452e96c3934578fcdb80"
   base_url: "https://api.deepseek.com"
   model_name: "deepseek-v4-pro"
 
+# MiniMax API 连接参数
 MiniMax:
-  # LLM API 连接参数
-  api_key: "***"
+  api_key: "sk-cp-FOSKhEE_8e1CWtTmM9QVG6t8YehQz0USYhK7HGp6OxSkiu0Iec2PS3iWEDv4w4Cg8H1WKkTnPZE3fX5pFiNK2h-ebtihPscCQl993GUvaTPqHVssqgWO2Ro"
   base_url: "https://api.minimaxi.com/v1"
   model_name: "MiniMax-M2.7"
 
+# 模型基本参数
 model:
   # 模型供应商
   provider: "DeepSeek"
 
+# 模型交互基本参数
 model_chat:
   initial_max_tokens: 90000  # 单次请求 token 上限，初始化值（如果与 LLM 交互失败，重试的时候，还会增加这个值）
   max_retries: 3             # 与 LLM 交互，如果失败，重试次数
   max_tokens_limit: 640000   # 单次请求 token 上限，最终值（不会比这个更高的）
   temperature: 0.3           # 创造性程度
 
+# 记忆系统存储配置
 memory:
-  # 记忆系统存储配置
   root_dir: ".memdir"     # 记忆文件存放目录（以.开头，默认隐藏）
   max_inject_tokens: 2000 # 注入上下文的记忆最大 token 数
   compact_threshold: 0.9  # 压缩触发阈值
 
-code_project:
-  # 项目目录结构
-  project_root: "D:/AI/MyClaude/"       # 项目根目录
-  code_output_root: "D:/AI/MyClaude/src/" # AI 生成代码的默认输出目录
-  logs_root: "D:/AI/MyClaude/log/" # log默认输出目录
-  backups_root: "backups"
+# 项目基本目录结构
+base_path:
+  project_root: "D:/AI/MyClaude/"           # 项目根目录
+  code_output_root: "D:/AI/MyClaude/src/"   # AI 生成代码的默认输出目录
+  logs_root: "D:/AI/MyClaude/log/"          # log默认输出目录
+  backups_root: "D:/AI/MyClaude/backups/"   # 备份根目录
+  spec_root: "D:/AI/MyClaude/spec/"         # 需求规格根目录
+  skill_root: "D:/AI/MyClaude/skill/"       # skill根目录
 
-spec:
-  # 需求规格目录结构
-  spec_root: "D:/AI/MyClaude/spec/"
-
+# 命令行界面配置
 cli:
-  # 命令行界面配置
   theme: "monokai"        # rich 主题风格
   typewriter_delay: 0.005 # 打字机效果延迟（秒），0 为关闭
-  max_turns: 10           # 工具调用最大轮次
+  max_turns: 100           # 工具调用最大轮次
   show_thinking: False    # 是否显示 <thinking> 内容
 
+# log配置
+log:
+  format: "html"   # 可选 "md" 或 "html"

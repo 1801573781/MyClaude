@@ -20,6 +20,7 @@ def parse_tools(response: str):
             r'<str_replace\s+path="([^"]*)">(.*?)<old>(.*?)</old>(.*?)<new>(.*?)</new>(.*?)</str_replace>',
             re.DOTALL
         )),
+        ("use_skill", re.compile(r'<use_skill\s+name="([^"]*)"\s*/>')),
         # 关键修复：兼容有闭合 </done> 和无闭合（到字符串结尾）两种情况
         ("done", re.compile(r'<done>(.*?)(?:</done>|$)', re.DOTALL)),
     ]
@@ -39,12 +40,6 @@ def parse_tools(response: str):
         if start > last_end:
             remaining_parts.append(response[last_end:start])
 
-        '''
-        if tool_name == "code_view":
-            tools.append({"llm_tool": "code_view", "params": {"path": m.group(1)}})
-        elif tool_name == "spec_view":
-            tools.append({"llm_tool": "spec_view", "params": {"path": m.group(1)}})
-        '''
         if tool_name == "file_view":
             tools.append({"llm_tool": "file_view", "params": {"path": m.group(1)}})
         elif tool_name == "create":
@@ -61,6 +56,8 @@ def parse_tools(response: str):
                 "llm_tool": "str_replace",
                 "params": {"path": m.group(1), "old": m.group(3), "new": m.group(5)}
             })
+        elif tool_name == "use_skill":
+            tools.append({"llm_tool": "use_skill", "params": {"name": m.group(1)}})
         elif tool_name == "done":
             tools.append({"llm_tool": "done", "params": {"message": m.group(1).strip()}})
 
@@ -75,8 +72,8 @@ def parse_tools(response: str):
     return remaining, tools
 
 
-code_output_root = global_cfg.code_project.code_output_root
-spec_root = global_cfg.spec.spec_root
+code_output_root = global_cfg.base_path.code_output_root
+spec_root = global_cfg.base_path.spec_root
 
 
 def execute_code_tool(tool):
@@ -101,14 +98,38 @@ def execute_code_tool(tool):
         result = file_str_replace(code_output_root, p["path"], p["old"], p["new"])
     elif name == "bash":
         result = tool_bash(p["command"])
+    elif name == "use_skill":
+        skill_name = p["name"]
+        # 动态导入避免循环依赖
+        from utility.skill_loader import get_skill_loader
+        loader = get_skill_loader()
+        full_content = loader.load_full_skill(skill_name)
+        if full_content is not None:
+            result = f"已激活技能 '{skill_name}'，完整指令如下：\n\n{full_content}"
+        else:
+            # 获取可用技能名称列表
+            available = [s["name"] for s in loader.get_metadata()]
+            result = (
+                f"[CRITICAL ERROR] 技能 '{skill_name}' 不存在或无法加载。\n"
+                f"可用的技能列表：{available}\n"
+                f"你必须立即输出 <done> 并报告错误，禁止继续执行任何其他工具。"
+            )
     else:
         result = "unknown llm_tool"
 
     # 返回 dict，不是 list
-    return {
-        "role": "user",
-        "content": f"[{name}] 工具执行结果：{result}"
-    }
+    if name == "bash":
+        tool_result = {
+            "role": "user",
+            "content": f"[{name}] 工具执行结果：\n{result}"
+        }
+    else:
+        tool_result = {
+            "role": "user",
+            "content": f"[{name}] 工具执行结果：{result}"
+        }
+
+    return tool_result
 
 
 def execute_tools(tools: list) -> list[dict]:

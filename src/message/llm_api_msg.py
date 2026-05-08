@@ -1,4 +1,5 @@
 from pathlib import Path
+from utility.skill_loader import get_skill_loader
 
 
 # 通过API与LLM交互时，Message的构建
@@ -20,12 +21,19 @@ class LLMAPIMessage:
 
     @staticmethod
     def _load_system_prompt() -> list[dict]:
-        """从同目录加载 sys_prompt.md，包装为 API 消息格式"""
+        """从同目录加载 sys_prompt.md，包装为 API 消息格式，并追加技能清单（L1 Metadata）。"""
         md_path = Path(__file__).with_name("sys_prompt.md")
+        base_prompt = ""
         if md_path.exists():
-            content = md_path.read_text(encoding="utf-8")
-            return [{"role": "system", "content": content}]
-        return [{"role": "system", "content": ""}]
+            base_prompt = md_path.read_text(encoding="utf-8")
+
+        # 追加 L1 技能清单（如果有）
+        skill_loader = get_skill_loader()
+        skills_section = skill_loader.format_skills_prompt()
+        if skills_section:
+            base_prompt = base_prompt + "\n\n" + skills_section
+
+        return [{"role": "system", "content": base_prompt}]
 
 
     @staticmethod

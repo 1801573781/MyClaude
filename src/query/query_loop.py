@@ -200,7 +200,7 @@ class QueryLoop:
 
                 result_msg = tool_executor.execute_code_tool(t)  # 工具执行
 
-                self._print_tool_result(result_msg.get("content", ""))  # 打印：工具执行结果
+                self._print_tool_result(t["llm_tool"], result_msg.get("content", ""))  # 打印：工具执行结果
                 self.session.log_tool_result(t["llm_tool"], result_msg)
 
                 # 将 tool 的执行结果，append 到 api_messages
