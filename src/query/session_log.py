@@ -124,20 +124,23 @@ class SessionLog:
 
         entry_id = f"entry-{datetime.now().strftime('%H%M%S%f')}"
 
-        # 对 Markdown 代码块进行语法高亮处理
+        # 对 Markdown 代码块及散落的多行 Python 代码进行语法高亮
         processed_content = self._process_code_blocks(new_content)
 
-        entry_html = f'''<div class="entry">
-<div class="entry-header" onclick="toggleEntry('{entry_id}')">
-<span class="toggle-icon" id="icon-{entry_id}">&#9662;</span>
-<span>{header_time}</span>
-</div>
-<div class="entry-content" id="content-{entry_id}">
-<div class="log-body">
-{processed_content}
-</div>
-</div>
-</div>'''
+        # 使用字符串拼接避免 f-string 与代码中的 {} 冲突
+        entry_html = (
+            f'<div class="entry">\n'
+            f'<div class="entry-header" onclick="toggleEntry(\'{entry_id}\')">\n'
+            f'<span class="toggle-icon" id="icon-{entry_id}">&#9662;</span>\n'
+            f'<span>{header_time}</span>\n'
+            f'</div>\n'
+            f'<div class="entry-content" id="content-{entry_id}">\n'
+            f'<pre>\n'
+            + processed_content +
+            f'\n</pre>\n'
+            f'</div>\n'
+            f'</div>'
+        )
 
         full_path = Path(self.log_root) / self.session_file_name
 
@@ -160,125 +163,128 @@ class SessionLog:
 
     @staticmethod
     def _html_template(body_content: str) -> str:
-        return f'''<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>MyClaude Session Log</title>
-<style>
-body {{ 
-    background: #ffffff; 
-    color: #333333; 
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; 
-    padding: 20px; 
-    line-height: 1.6; 
-    font-size: 18px;
-}}
-pre {{ 
-    margin: 0; 
-    padding: 12px; 
-    background: #f8f9fa; 
-    border: 1px solid #e0e0e0; 
-    border-radius: 6px; 
-    overflow-x: auto; 
-    white-space: pre-wrap; 
-    word-wrap: break-word; 
-    color: #333333; 
-    font-family: "SF Mono", "Menlo", "Cascadia Code", "Roboto Mono", Consolas, "Courier New", monospace;
-    font-size: 17px;
-    line-height: 1.5;
-}}
-hr {{ border: none; border-top: 1px solid #e0e0e0; margin: 20px 0; }}
-.entry {{ 
-    margin-bottom: 16px; 
-    border: 1px solid #e0e0e0; 
-    border-radius: 8px; 
-    overflow: hidden; 
-    background: #ffffff;
-}}
-.entry-header {{ 
-    background: #f5f5f5; 
-    padding: 10px 14px; 
-    cursor: pointer; 
-    user-select: none;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-weight: 500;
-    color: #555;
-    transition: background 0.2s;
-    font-size: 17px;
-}}
-.entry-header:hover {{ background: #eeeeee; }}
-.entry-content {{ 
-    padding: 12px; 
-    background: #ffffff;
-    transition: max-height 0.3s ease-out, opacity 0.3s ease-out, padding 0.3s ease-out;
-    max-height: 100000px;
-    opacity: 1;
-    overflow: hidden;
-}}
-.entry-content.collapsed {{ 
-    max-height: 0; 
-    padding-top: 0;
-    padding-bottom: 0;
-    opacity: 0;
-}}
-.toggle-icon {{ 
-    display: inline-block;
-    width: 14px;
-    text-align: center;
-    transition: transform 0.2s;
-    color: #666;
-    font-size: 10px;
-}}
-.toggle-icon.collapsed {{ transform: rotate(-90deg); }}
-h1, h2, h3 {{ color: #7c3aed; }}
-strong {{ color: #10b981; }}
-.log-body {{
-    white-space: pre-wrap;
-    word-wrap: break-word;
-    margin: 0;
-    padding: 12px;
-    background: #f8f9fa;
-    border-radius: 6px;
-    color: #333333;
-    font-family: "SF Mono", "Menlo", "Cascadia Code", "Roboto Mono", Consolas, "Courier New", monospace;
-    font-size: 17px;
-    line-height: 1.5;
-}}
-.code-block {{
-    background: #ffffff;
-    padding: 10px 12px;
-    border: 1px solid #e0e0e0;
-    border-radius: 4px;
-    margin: 8px 0;
-    overflow-x: auto;
-    font-family: "SF Mono", "Menlo", "Cascadia Code", "Roboto Mono", Consolas, "Courier New", monospace;
-    font-size: 15px;
-    line-height: 1.5;
-}}
-</style>
-<script>
-function toggleEntry(id) {{
-    var content = document.getElementById('content-' + id);
-    var icon = document.getElementById('icon-' + id);
-    if (content.classList.contains('collapsed')) {{
-        content.classList.remove('collapsed');
-        icon.classList.remove('collapsed');
-        icon.innerHTML = '&#9662;';
-    }} else {{
-        content.classList.add('collapsed');
-        icon.classList.add('collapsed');
-        icon.innerHTML = '&#9656;';
-    }}
-}}
-</script>
-</head>
-<body>
-{body_content}
-</body>
-</html>'''
+        # 使用普通字符串拼接，避免 CSS 中的 {} 与 f-string 冲突
+        return (
+            '<!DOCTYPE html>\n'
+            '<html>\n'
+            '<head>\n'
+            '<meta charset="utf-8">\n'
+            '<title>MyClaude Session Log</title>\n'
+            '<style>\n'
+            'body { \n'
+            '    background: #ffffff; \n'
+            '    color: #333333; \n'
+            '    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; \n'
+            '    padding: 20px; \n'
+            '    line-height: 1.6; \n'
+            '    font-size: 18px;\n'
+            '}\n'
+            'pre { \n'
+            '    margin: 0; \n'
+            '    padding: 12px; \n'
+            '    background: #f8f9fa; \n'
+            '    border: 1px solid #e0e0e0; \n'
+            '    border-radius: 6px; \n'
+            '    overflow-x: auto; \n'
+            '    white-space: pre-wrap; \n'
+            '    word-wrap: break-word; \n'
+            '    color: #333333; \n'
+            '    font-family: "SF Mono", "Menlo", "Cascadia Code", "Roboto Mono", Consolas, "Courier New", monospace;\n'
+            '    font-size: 17px;\n'
+            '    line-height: 1.5;\n'
+            '}\n'
+            'hr { border: none; border-top: 1px solid #e0e0e0; margin: 20px 0; }\n'
+            '.entry { \n'
+            '    margin-bottom: 16px; \n'
+            '    border: 1px solid #e0e0e0; \n'
+            '    border-radius: 8px; \n'
+            '    overflow: hidden; \n'
+            '    background: #ffffff;\n'
+            '}\n'
+            '.entry-header { \n'
+            '    background: #f5f5f5; \n'
+            '    padding: 10px 14px; \n'
+            '    cursor: pointer; \n'
+            '    user-select: none;\n'
+            '    display: flex;\n'
+            '    align-items: center;\n'
+            '    gap: 8px;\n'
+            '    font-weight: 500;\n'
+            '    color: #555;\n'
+            '    transition: background 0.2s;\n'
+            '    font-size: 17px;\n'
+            '}\n'
+            '.entry-header:hover { background: #eeeeee; }\n'
+            '.entry-content { \n'
+            '    padding: 12px; \n'
+            '    background: #ffffff;\n'
+            '    transition: max-height 0.3s ease-out, opacity 0.3s ease-out, padding 0.3s ease-out;\n'
+            '    max-height: 100000px;\n'
+            '    opacity: 1;\n'
+            '    overflow: hidden;\n'
+            '}\n'
+            '.entry-content.collapsed { \n'
+            '    max-height: 0; \n'
+            '    padding-top: 0;\n'
+            '    padding-bottom: 0;\n'
+            '    opacity: 0;\n'
+            '}\n'
+            '.toggle-icon { \n'
+            '    display: inline-block;\n'
+            '    width: 14px;\n'
+            '    text-align: center;\n'
+            '    transition: transform 0.2s;\n'
+            '    color: #666;\n'
+            '    font-size: 10px;\n'
+            '}\n'
+            '.toggle-icon.collapsed { transform: rotate(-90deg); }\n'
+            'h1, h2, h3 { color: #7c3aed; }\n'
+            'strong { color: #10b981; }\n'
+            '.log-body {\n'
+            '    white-space: pre-wrap;\n'
+            '    word-wrap: break-word;\n'
+            '    margin: 0;\n'
+            '    padding: 12px;\n'
+            '    background: #f8f9fa;\n'
+            '    border-radius: 6px;\n'
+            '    color: #333333;\n'
+            '    font-family: "SF Mono", "Menlo", "Cascadia Code", "Roboto Mono", Consolas, "Courier New", monospace;\n'
+            '    font-size: 17px;\n'
+            '    line-height: 1.5;\n'
+            '}\n'
+            '.code-block {\n'
+            '    background: #ffffff;\n'
+            '    padding: 10px 12px;\n'
+            '    border: 1px solid #e0e0e0;\n'
+            '    border-radius: 4px;\n'
+            '    margin: 8px 0;\n'
+            '    overflow-x: auto;\n'
+            '    font-family: "SF Mono", "Menlo", "Cascadia Code", "Roboto Mono", Consolas, "Courier New", monospace;\n'
+            '    font-size: 15px;\n'
+            '    line-height: 1.5;\n'
+            '}\n'
+            '</style>\n'
+            '<script>\n'
+            'function toggleEntry(id) {\n'
+            '    var content = document.getElementById("content-" + id);\n'
+            '    var icon = document.getElementById("icon-" + id);\n'
+            '    if (content.classList.contains("collapsed")) {\n'
+            '        content.classList.remove("collapsed");\n'
+            '        icon.classList.remove("collapsed");\n'
+            '        icon.innerHTML = "&#9662;";\n'
+            '    } else {\n'
+            '        content.classList.add("collapsed");\n'
+            '        icon.classList.add("collapsed");\n'
+            '        icon.innerHTML = "&#9656;";\n'
+            '    }\n'
+            '}\n'
+            '</script>\n'
+            '</head>\n'
+            '<body>\n'
+            + body_content +
+            '\n</body>\n'
+            '</html>'
+        )
 
 
     """把单个日志项（dict 或 list）格式化为 Markdown 字符串"""
@@ -349,40 +355,55 @@ function toggleEntry(id) {{
 
 
     def _process_code_blocks(self, text: str) -> str:
-        """识别 Markdown 代码块，对 Python 代码进行语法高亮，非 Python 代码块仅做 HTML 转义。"""
-        pattern = re.compile(r'(?s)```([a-zA-Z0-9_+-]*)\n(.*?)\n```')
+        """识别 Markdown 代码块，对 Python 代码进行语法高亮。
+        同时，对文本中未被 Markdown 代码块包裹的多行 Python 代码也进行高亮。"""
+        md_pattern = re.compile(r'(?s)```([a-zA-Z0-9_+-]*)\n(.*?)\n```')
         result = []
         last_end = 0
 
-        for match in pattern.finditer(text):
+        for match in md_pattern.finditer(text):
             start, end = match.span()
             if start > last_end:
-                result.append(text[last_end:start])
+                before = text[last_end:start]
+                result.append(self._highlight_inline_python(before))
 
             lang = match.group(1).strip().lower()
             code = match.group(2)
 
-            # 空语言或 python/py 都按 Python 高亮（MyClaude 语境下绝大多数代码都是 Python）
             if not lang or lang in ('python', 'py'):
                 highlighted = self._highlight_python(code)
             else:
                 highlighted = code.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 
-            result.append(
-                f'<pre class="code-block">{highlighted}</pre>'
-            )
+            # 使用字符串拼接避免 f-string 与 highlighted 中的 {} 冲突
+            result.append('<pre class="code-block">' + highlighted + '</pre>')
             last_end = end
 
         if last_end < len(text):
-            result.append(text[last_end:])
+            result.append(self._highlight_inline_python(text[last_end:]))
 
         return ''.join(result)
+
+
+    def _highlight_inline_python(self, text: str) -> str:
+        """对文本中未被 Markdown 代码块包裹的多行 Python 代码进行高亮。
+        通过检测是否包含 def/class/import/from 等关键字且为多行来判断。"""
+        if '\n' not in text:
+            return text
+
+        # 快速启发式检测：包含多行且至少有一行以 Python 关键字开头
+        if not re.search(r'(?:^|\n)[ \t]*(?:def|class|import|from)\b', text):
+            return text
+
+        # 如果看起来像 Python 代码，进行高亮（XML 标签会被保护）
+        return self._highlight_python(text)
 
 
     def _highlight_python(self, code: str) -> str:
         """
         轻量级 Python 语法高亮，生成带 <span style="color:..."> 的 HTML。
         配色近似 PyCharm Light 默认主题。
+        同时保护 XML 工具标签（如 <create>, <str_replace> 等），避免破坏 HTML 结构。
         """
         placeholders = []
         counter = [0]
@@ -395,17 +416,25 @@ function toggleEntry(id) {{
 
         text = code
 
-        # 1. 保护三引号字符串（优先，避免内部 # 被当作注释）
+        # 1. 保护 XML/HTML 工具标签（如 <create path="...">, </create>, <old>, <new> 等）
+        text = re.sub(
+            r'(<[a-zA-Z_][a-zA-Z0-9_-]*(?:\s[^>]*)?>|</[a-zA-Z_][a-zA-Z0-9_-]*>)',
+            lambda m: protect(m, 'tag'), text
+        )
+
+        # 2. 保护三引号字符串（优先，避免内部 # 被当作注释）
         text = re.sub(r'("""[\s\S]*?"""|\'\'\'[\s\S]*?\')', lambda m: protect(m, 'string'), text)
-        # 2. 保护单引号字符串
+
+        # 3. 保护单引号字符串
         text = re.sub(r'("(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\')', lambda m: protect(m, 'string'), text)
-        # 3. 保护行注释
+
+        # 4. 保护行注释
         text = re.sub(r'#[^\n]*', lambda m: protect(m, 'comment'), text)
 
-        # 4. 对剩余文本进行 HTML 转义（防止 < > & 破坏 HTML 结构）
+        # 5. 对剩余文本进行 HTML 转义（防止 < > & 破坏 HTML 结构）
         text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 
-        # 5. 应用高亮（优先级：装饰器 > 关键字 > 数字 > 内置函数）
+        # 6. 应用高亮（优先级：装饰器 > 关键字 > 数字 > 内置函数）
         text = re.sub(r'(@[\w_]+(?:\.[\w_]+)*)', r'<span style="color:#BBB529">\1</span>', text)
         text = re.sub(
             r'\b(?:and|as|assert|async|await|break|class|continue|def|del|elif|else|except|finally|for|from|global|if|import|in|is|lambda|nonlocal|not|or|pass|raise|return|try|while|with|yield|True|False|None)\b',
@@ -423,7 +452,7 @@ function toggleEntry(id) {{
             text
         )
 
-        # 6. 恢复被保护的字符串和注释，并上色 + HTML 转义
+        # 7. 恢复被保护的内容，并上色 + HTML 转义
         def restore(match):
             idx = int(match.group(1))
             for stored_idx, ptype, original in placeholders:
@@ -433,6 +462,8 @@ function toggleEntry(id) {{
                         return f'<span style="color:#008000">{safe}</span>'
                     elif ptype == 'comment':
                         return f'<span style="color:#808080">{safe}</span>'
+                    elif ptype == 'tag':
+                        return original  # XML 标签保持原样，不转义
                     return safe
             return match.group(0)
 
