@@ -2,6 +2,7 @@ from openai import OpenAI, APIConnectionError, RateLimitError, APIError
 from openai import AsyncOpenAI
 
 from utility.config_loader import global_cfg
+import httpx
 
 
 model_provider = global_cfg.model.provider
@@ -21,7 +22,8 @@ else:
 
 client = OpenAI(
     api_key=api_key,
-    base_url=base_url
+    base_url=base_url,
+    http_client=httpx.Client(verify=False),
 )
 
 
