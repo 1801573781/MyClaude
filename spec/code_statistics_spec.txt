@@ -1,0 +1,11 @@
+# 代码统计需求文档的需求文档
+
+写一篇需求规格文档（markdown格式）：
+1、存放于D:/AI/MyClaude/spec/目录下，文件名是code_statistics_spec.md
+2、阅读D:/AI/MyClaude/count_lines.py，做一份总结，作为需求的第一份来源
+3、在此基础上，再增加需求：详细统计
+3.1 分别统计各个目录下各个文件的代码行数
+3.2 最后将这些详细统计，通过表格展示
+4、需求中明确，根据此需求文档所生成的代码，是python代码，存放于D:/AI/MyClaude/目录下，文件名是code_statistics.py
+5、需求中明确：使用add_tests skill完成测试，测试OK后，生成代码的任务才算完成
+6、特别说明：代码统计，也包含自己
