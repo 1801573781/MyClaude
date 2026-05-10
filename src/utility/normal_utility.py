@@ -14,7 +14,7 @@ def strip_thinking(text: str) -> str:
 
     # 不去除首尾空行，直接return
     return text
-    # return text.strip()
+
 
 
 

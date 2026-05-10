@@ -9,15 +9,13 @@ def parse_tools(response: str):
     """
     按顺序解析 AI 响应中的 XML 工具调用。
     返回: (剩余普通文本, 工具列表)
-    ("code_view", re.compile(r'<code_view\s+path="([^"]*)"\s*/>')),
-    ("spec_view", re.compile(r'<spec_view\s+path="([^"]*)"\s*/>')),
     """
     patterns = [
         ("file_view", re.compile(r'<file_view\s+path="([^"]*)"\s*/>')),
-        ("create", re.compile(r'<create\s+path="([^"]*)">(.*?)</create>', re.DOTALL)),
+        ("create", re.compile(r'<create\s+path="([^"]*)"(?:\s+summary="([^"]*)")?\s*>(.*?)</create>', re.DOTALL)),
         ("bash", re.compile(r'<bash>(.*?)</bash>', re.DOTALL)),
         ("str_replace", re.compile(
-            r'<str_replace\s+path="([^"]*)">(.*?)<old>(.*?)</old>(.*?)<new>(.*?)</new>(.*?)</str_replace>',
+            r'<str_replace\s+path="([^"]*)"(?:\s+summary="([^"]*)")?\s*>(.*?)<old>(.*?)</old>(.*?)<new>(.*?)</new>(.*?)</str_replace>',
             re.DOTALL
         )),
         ("use_skill", re.compile(r'<use_skill\s+name="([^"]*)"\s*/>')),
@@ -42,22 +40,34 @@ def parse_tools(response: str):
 
         if tool_name == "file_view":
             tools.append({"llm_tool": "file_view", "params": {"path": m.group(1)}})
+
         elif tool_name == "create":
-            content = m.group(2)
+            summary = m.group(2) or ""
+            content = m.group(3)
             if content.startswith('\n'):
                 content = content[1:]
             if content.endswith('\n'):
                 content = content[:-1]
-            tools.append({"llm_tool": "create", "params": {"path": m.group(1), "content": content}})
+            tools.append({"llm_tool": "create", "params": {"path": m.group(1), "content": content, "summary": summary}})
+
         elif tool_name == "bash":
             tools.append({"llm_tool": "bash", "params": {"command": m.group(1).strip()}})
+
         elif tool_name == "str_replace":
+            summary = m.group(2) or ""
             tools.append({
                 "llm_tool": "str_replace",
-                "params": {"path": m.group(1), "old": m.group(3), "new": m.group(5)}
+                "params": {
+                    "path": m.group(1),
+                    "summary": summary,
+                    "old": m.group(4),
+                    "new": m.group(6)
+                }
             })
+
         elif tool_name == "use_skill":
             tools.append({"llm_tool": "use_skill", "params": {"name": m.group(1)}})
+
         elif tool_name == "done":
             tools.append({"llm_tool": "done", "params": {"message": m.group(1).strip()}})
 
@@ -92,12 +102,41 @@ def execute_code_tool(tool):
     '''
     if name == "file_view":
         result = file_view(spec_root, p["path"])
+
     elif name == "create":
-        result = file_create(code_output_root, p["path"], p["content"])
+        # 写入文件
+        result_detail = file_create(code_output_root, p["path"], p["content"])
+
+        # 提取summary
+        summary = p.get("summary", "")
+        if summary and summary.strip():
+            if len(summary) > 50:
+                summary = summary[:47] + "..."
+            result = f"文件已创建：{p['path']}，摘要：{summary}"
+        else:
+            import re
+            match = re.search(r'\((\d+) 字符\)', result_detail)
+            size = match.group(1) if match else str(len(p["content"]))
+            result = f"已创建 {p['path']}（{size} 字符）"
+
     elif name == "str_replace":
-        result = file_str_replace(code_output_root, p["path"], p["old"], p["new"])
+        result_detail = file_str_replace(code_output_root, p["path"], p["old"], p["new"])
+        summary = p.get("summary", "")
+        if summary and summary.strip():
+            if len(summary) > 50:
+                summary = summary[:47] + "..."
+            result = f"文件已修改：{p['path']}，摘要：{summary}"
+        else:
+            if result_detail.startswith("已修改"):
+                old_len = len(p["old"])
+                new_len = len(p["new"])
+                result = f"文件已修改：{p['path']}，替换了 1 处（{old_len} → {new_len} 字符）"
+            else:
+                result = result_detail
+
     elif name == "bash":
         result = tool_bash(p["command"])
+
     elif name == "use_skill":
         skill_name = p["name"]
         # 动态导入避免循环依赖
@@ -114,6 +153,7 @@ def execute_code_tool(tool):
                 f"可用的技能列表：{available}\n"
                 f"你必须立即输出 <done> 并报告错误，禁止继续执行任何其他工具。"
             )
+
     else:
         result = "unknown llm_tool"
 

@@ -139,16 +139,24 @@ class QueryLoop:
         # LLM回答结束的时间戳
         thinking_end = datetime.now().strftime("%Y-%m-%d %H : %M : %S")
 
-        # 记录LLM回应的rsp
+        # 记录LLM回应的原始内容（日志保留完整内容）
         self.session.log_llm_rsp(ai_response)
 
-        """解构 LLM response"""
-
-        # 去除thinking部分
+        # 去除thinking部分（针对 Claude 风格，DeepSeek 无此部分）
         ai_response_clean = strip_thinking(ai_response)
 
-        # 如果还需要跟LLM再一轮交互的话，需附加上LLM的response（去除thinking部分）
+        # ---------- 新增：压缩 assistant 消息 ----------
+        compressed_response = self._compress_assistant_message(ai_response_clean)
+        # -----------------------------------------
+
+        # 将压缩后的响应追加到历史消息中（用于下一轮对话）
+        self.api_messages.append_llm_response(compressed_response)
+
+        '''
+        # 或者是直接附上原始的LLM的response（去除thinking部分）
+        # 到底是哪种方法好，待测试
         self.api_messages.append_llm_response(ai_response_clean)
+        '''
 
         # 是否给用户显示LLM的think过程
         if not self.show_thinking:
@@ -158,16 +166,12 @@ class QueryLoop:
 
         remaining_text, tools = tool_executor.parse_tools(ai_response_show)
 
-        """打印部分 LLM response（有些内容不打印，显示一分神秘感）"""
-
-        # 打印轮次，开始时间
+        # 打印部分 LLM response（有些内容不打印，显示一分神秘感）
         self._print_info(f"Thinking-{turn}, 开始时间：{thinking_begin}")
 
-        # 然后打印 LLM response
         if remaining_text:
             self._print_llm_rsp(remaining_text)
 
-        # 打印轮次，结束时间
         self._print_info(f"Thinking-{turn}, 结束时间：{thinking_end}")
 
         return tools
@@ -216,3 +220,47 @@ class QueryLoop:
 
         # self._print_info("no tools")
         return ChatOrNot.Continue
+
+
+    @staticmethod
+    def _compress_assistant_message(raw: str) -> str:
+        """
+        将 assistant 消息中的工具调用压缩为简短形式。
+        - <create>...</create>  -> <create path="..." summary="..."/>
+        - <str_replace>...</str_replace> -> <str_replace path="..." summary="..."/>
+        其他标签原样保留（已足够短）。
+        """
+        import re
+
+        # 压缩 <create> 标签
+        def replace_create(match):
+            path = match.group(1)
+            summary = match.group(2) or ""
+            # 可选：截断摘要（但 LLM 已被要求 ≤50 字符，这里暂不处理）
+            return f'<create path="{path}" summary="{summary}"/>'
+
+        create_pattern = re.compile(
+            r'<create\s+path="([^"]*)"(?:\s+summary="([^"]*)")?\s*>(.*?)</create>',
+            re.DOTALL
+        )
+        compressed = create_pattern.sub(replace_create, raw)
+
+        # 压缩 <str_replace> 标签
+        def replace_str_replace(match):
+            path = match.group(1)
+            summary = match.group(2) or ""
+            return f'<str_replace path="{path}" summary="{summary}"/>'
+
+        str_replace_pattern = re.compile(
+            r'<str_replace\s+path="([^"]*)"(?:\s+summary="([^"]*)")?\s*>.*?</str_replace>',
+            re.DOTALL
+        )
+        compressed = str_replace_pattern.sub(replace_str_replace, compressed)
+
+        # file_view, bash，原样已足够短，无需改动
+        '''
+        bash_pattern = re.compile(r'<bash>(.*?)</bash>', re.DOTALL)
+        compressed = bash_pattern.sub(r'<bash command="\1"/>', compressed)
+        '''
+
+        return compressed
