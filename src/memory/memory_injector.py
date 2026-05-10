@@ -1,167 +1,181 @@
-"""
-MemoryInjector - 上下文格式化与注入
-
-在每次 LLM 请求前，从长期和工作记忆中选择最相关的条目，生成注入的上下文文本。
-"""
-
 import logging
-from typing import Dict, List
+import re
+from typing import List, Dict
 
-from src.memory.memory_compressor import MemoryCompressor
 
 logger = logging.getLogger(__name__)
 
 
 class MemoryInjector:
     """
-    记忆上下文注入器。
-
-    特性:
-        - 格式化工作记忆和长期记忆为 Markdown 上下文字符串
-        - 控制 token 总数不超过 max_tokens
-        - 工作记忆优先，长期记忆按 importance * score 排序
+    将工作记忆和检索到的长期记忆格式化为可注入的上下文文本。
     """
 
-    def __init__(self, max_tokens: int = 2000):
+    # 注入内容的最大总 token 数（默认）
+    DEFAULT_MAX_TOKENS = 2000
+
+    def __init__(self, max_tokens: int = DEFAULT_MAX_TOKENS):
         """
         参数:
             max_tokens: 注入上下文的最大 token 数。
         """
         self._max_tokens = max_tokens
 
-    # ========== 公共接口 ==========
+    # ========== 公开接口 ==========
 
-    def format_context(
-        self,
-        working_memories: List[Dict],
-        long_term_results: List[Dict],
-    ) -> str:
+    def format_context(self,
+                       working_memories: List[Dict],
+                       long_memories: List[Dict],
+                       max_tokens: int = 0) -> str:
         """
-        格式化注入上下文文本。
+        将工作记忆和长期记忆格式化为注入文本。
 
         参数:
-            working_memories:   工作记忆列表。
-            long_term_results:  长期记忆检索结果列表（已包含 "score" 字段）。
+            working_memories: 当前工作记忆列表。
+            long_memories:    检索到的长期记忆列表（已含 _score 字段）。
+            max_tokens:       最大 token 数，0 表示使用默认值。
 
         返回:
             格式化的 Markdown 上下文字符串。
-            若工作记忆为空且无相关长期记忆，返回空字符串 ""。
+            若无任何记忆，返回空字符串 ""。
         """
-        if not working_memories and not long_term_results:
+        if max_tokens <= 0:
+            max_tokens = self._max_tokens
+
+        if not working_memories and not long_memories:
             return ""
 
-        lines = ["[记忆上下文 - 由 Memory 模块自动生成]", ""]
+        parts = []
 
-        # 1. 工作记忆段
+        # 工作记忆段
         if working_memories:
-            lines.append("[当前任务上下文]")
-            for mem in working_memories:
-                lines.append(f"- {mem['content']}")
-            lines.append("")
+            wm_section = self._format_working_section(working_memories)
+            parts.append(wm_section)
 
-        # 2. 长期记忆段
-        if long_term_results:
-            # 按 importance * score 降序排列
-            sorted_long = sorted(
-                long_term_results,
-                key=lambda m: m.get("importance", 0.5) * m.get("score", 0),
-                reverse=True,
-            )
-            lines.append("[相关历史记忆]")
-            for mem in sorted_long:
-                score = mem.get("score", 0.0)
-                lines.append(f"- {mem['content']} (相关性: {score:.2f})")
+        # 长期记忆段
+        if long_memories:
+            lm_section = self._format_long_section(long_memories)
+            parts.append(lm_section)
 
-        context_text = "\n".join(lines)
+        if not parts:
+            return ""
 
-        # 3. Token 截断
-        context_text = self._truncate_by_tokens(
-            context_text,
-            working_memories,
-            long_term_results,
-        )
+        header = "[记忆上下文 - 由 Memory 模块自动生成]\n\n"
+        raw = header + "\n\n".join(parts)
 
-        return context_text
+        # Token 截断
+        raw = self._truncate_by_tokens(raw, max_tokens)
+
+        return raw
+
+    # ========== 格式化 ==========
+
+    @staticmethod
+    def _format_working_section(working_memories: List[Dict]) -> str:
+        """格式化工作记忆段。"""
+        lines = ["[当前任务上下文]"]
+        for mem in working_memories:
+            content = mem.get("content", "")
+            lines.append(f"- {content}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_long_section(long_memories: List[Dict]) -> str:
+        """格式化长期记忆段。"""
+        lines = ["[相关历史记忆]"]
+        for mem in long_memories:
+            content = mem.get("content", "")
+            score = mem.get("_score", 0.0)
+            lines.append(f"- {content} (相关性: {score:.2f})")
+        return "\n".join(lines)
 
     # ========== Token 截断 ==========
 
-    def _truncate_by_tokens(
-        self,
-        full_text: str,
-        working_memories: List[Dict],
-        long_term_results: List[Dict],
-    ) -> str:
+    def _truncate_by_tokens(self, text: str, max_tokens: int) -> str:
         """
-        按 token 预算截断上下文。
+        按 token 数截断文本。
 
-        规则:
-            1. 先计算工作记忆段的 token 数。
-            2. 若工作记忆段已超过 max_tokens * 0.6，截断工作记忆（丢弃末尾条目）。
-            3. 长期记忆按 importance * score 降序依次加入，直到总 token 数超过 max_tokens。
+        策略：
+            1. 工作记忆段最多占 max_tokens * 0.6，超出则截断末尾条目。
+            2. 长期记忆段随后追加，直到总 token 超过 max_tokens。
+            3. 被截断的条目记录 logging.debug。
         """
-        total_estimated = self._estimate_tokens(full_text)
+        if self._estimate_tokens(text) <= max_tokens:
+            return text
 
-        if total_estimated <= self._max_tokens:
-            return full_text
+        # 分割为段落
+        sections = text.split("\n\n")
+        if len(sections) < 2:
+            # 仅有 header，按字符截断
+            return self._truncate_text(text, max_tokens)
 
-        working_budget = int(self._max_tokens * 0.6)
+        header = sections[0]  # [记忆上下文...]
+        body_sections = sections[1:]
 
-        working_lines = []
-        if working_memories:
-            working_lines.append("[当前任务上下文]")
-            working_used = self._estimate_tokens("[当前任务上下文]")
-            for mem in working_memories:
-                line = f"- {mem['content']}"
-                line_tokens = self._estimate_tokens(line)
-                if working_used + line_tokens > working_budget:
-                    logger.debug("工作记忆截断：超出 token 预算")
-                    break
-                working_lines.append(line)
-                working_used += line_tokens
+        current = header
+        working_limit = int(max_tokens * 0.6)
 
-        # 剩余给长期记忆
-        remaining_budget = self._max_tokens - working_used if working_lines else self._max_tokens
-        # 预留分隔和头部
-        header_text = "[记忆上下文 - 由 Memory 模块自动生成]\n\n"
-        header_tokens = self._estimate_tokens(header_text)
-        remaining_budget -= header_tokens
+        for i, section in enumerate(body_sections):
+            candidate = current + ("\n\n" + section if current else section)
+            effective_limit = working_limit if i == 0 else max_tokens
 
-        long_lines = []
-        if long_term_results and remaining_budget > 0:
-            long_lines.append("[相关历史记忆]")
-            long_used = self._estimate_tokens("[相关历史记忆]")
-            # 按 importance * score 降序
-            sorted_long = sorted(
-                long_term_results,
-                key=lambda m: m.get("importance", 0.5) * m.get("score", 0),
-                reverse=True,
-            )
-            for mem in sorted_long:
-                score = mem.get("score", 0.0)
-                line = f"- {mem['content']} (相关性: {score:.2f})"
-                line_tokens = self._estimate_tokens(line)
-                if long_used + line_tokens > remaining_budget:
-                    logger.debug("长期记忆截断：超出剩余 token 预算")
-                    break
-                long_lines.append(line)
-                long_used += line_tokens
+            if self._estimate_tokens(candidate) <= effective_limit:
+                current = candidate
+            else:
+                # 需要截断当前 section
+                if i == 0:
+                    # 截断工作记忆
+                    truncated = self._truncate_section_lines(
+                        section, effective_limit - self._estimate_tokens(current)
+                    )
+                    if truncated:
+                        current = current + "\n\n" + truncated if current else truncated
+                    logger.debug("工作记忆段因 token 限制被截断")
+                # 长期记忆段不再追加
+                break
 
-        # 构建最终文本
-        result = [header_text.strip()]
-        if working_lines:
-            result.extend(working_lines)
-        if long_lines:
-            if working_lines:
-                result.append("")  # 空行分隔
-            result.extend(long_lines)
+        return current
+
+    @staticmethod
+    def _truncate_section_lines(section: str, max_tokens: int) -> str:
+        """逐行截断一个段落到指定 token 数。"""
+        lines = section.split("\n")
+        if not lines:
+            return ""
+
+        result = []
+        current_text = ""
+
+        for line in lines:
+            test = (current_text + "\n" + line).strip() if current_text else line
+            if MemoryInjector._estimate_tokens(test) > max_tokens:
+                break
+            result.append(line)
+            current_text = test
 
         return "\n".join(result)
 
-    # ========== Token 估算 ==========
+    @staticmethod
+    def _truncate_text(text: str, max_tokens: int) -> str:
+        """按字符粗略截断文本。"""
+        # 粗略折算：1 token ≈ 4 字符
+        max_chars = max_tokens * 4
+        if len(text) <= max_chars:
+            return text
+        return text[:max_chars - 3] + "..."
 
     @staticmethod
     def _estimate_tokens(text: str) -> int:
         """
-        委托 MemoryCompressor.estimate_tokens。
+        估算文本的 token 数。
+
+        优先使用 tiktoken，否则使用粗略公式。
         """
-        return MemoryCompressor.estimate_tokens(text)
+        try:
+            import tiktoken
+            enc = tiktoken.get_encoding("cl100k_base")
+            return len(enc.encode(text))
+        except (ImportError, Exception):
+            chinese_chars = len(re.findall(r'[\u4e00-\u9fff]', text))
+            other_chars = len(text) - chinese_chars
+            return other_chars // 4 + chinese_chars // 2

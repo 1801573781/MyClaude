@@ -150,13 +150,11 @@ class QueryLoop:
         # -----------------------------------------
 
         # 将压缩后的响应追加到历史消息中（用于下一轮对话）
-        self.api_messages.append_llm_response(compressed_response)
+        # self.api_messages.append_llm_response(compressed_response)
 
-        '''
         # 或者是直接附上原始的LLM的response（去除thinking部分）
         # 到底是哪种方法好，待测试
         self.api_messages.append_llm_response(ai_response_clean)
-        '''
 
         # 是否给用户显示LLM的think过程
         if not self.show_thinking:
