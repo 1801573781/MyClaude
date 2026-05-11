@@ -848,3 +848,18 @@ D:/AI/MyClaude/src/memory/
 | 记忆搜索 CLI | `src/myclaude.py` | 新增 `/memory search <query>` 命令，直接调用 `get_memories()` 并打印结果。 |
 | 向量数据库后端 | `src/memory/memory_retrieval.py` | 将 TF‑IDF 替换为 ChromaDB / FAISS 等向量数据库，用于 >10000 条记忆的高性能检索。保留 `MemoryRetrieval` 的抽象接口以支持后端切换。 |
 
+## 12. 实现要求（对 AI 的指令）
+你必须按以下顺序分步创建所有文件，每轮只创建一个文件，不要一次性输出多个 `<create>`：
+1. memory_store.py
+2. memory_retrieval.py
+3. memory_compressor.py
+4. memory_injector.py
+5. memory_manager.py
+6. __init__.py
+在所有文件创建完成后，最后一轮输出 `<done>`。
+
+## 13. 自动化闭环要求（强制）
+完成所有代码文件创建后，必须自动执行以下闭环：
+1. 使用 `add_tests` 技能为 memory 模块生成单元测试文件 `test_memory.py`，覆盖第 9 节列出的所有场景。
+2. 运行 `pytest` 执行测试。若有失败，修改模块代码直至全部通过。
+3. 最后输出 `<done>`。

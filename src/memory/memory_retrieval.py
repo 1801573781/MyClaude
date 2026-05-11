@@ -1,350 +1,336 @@
-"""
-MemoryRetrieval - 基于 TF-IDF + 余弦相似度的轻量检索
-
-不依赖 sklearn，纯 Python 实现。
-支持工作记忆的 Jaccard 相似度匹配。
-"""
-
-import logging
-import math
 import re
+import math
+import logging
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import List, Dict, Optional
+
 
 logger = logging.getLogger(__name__)
 
 
-# 英文停用词
-_EN_STOP_WORDS = {
+# ========== 停用词 ==========
+
+_EN_STOPWORDS = {
     "the", "a", "an", "is", "are", "was", "were", "of", "in", "on",
-    "to", "for", "and", "or", "it", "this", "that", "with", "as", "at",
-    "by", "from"
+    "to", "for", "and", "or", "it", "this", "that", "with", "as",
+    "at", "by", "from"
 }
 
-# 中文停用词
-_ZH_STOP_WORDS = {
+_ZH_STOPWORDS = {
     "的", "了", "和", "是", "在", "不", "我", "有", "也", "就",
     "都", "要", "会", "可以", "这个"
 }
 
+ALL_STOPWORDS = _EN_STOPWORDS | _ZH_STOPWORDS
+
 
 class MemoryRetrieval:
     """
-    TF-IDF + 余弦相似度检索器。
-
-    特性:
-        - 纯 Python 实现 TF-IDF 向量化
-        - 支持中英文分词与停用词过滤
-        - 记忆数量 > 500 时限制词表大小
-        - 最终得分结合 importance 与 access_count 加成
-        - 工作记忆使用 Jaccard 相似度单独处理
+    基于 TF‑IDF + 余弦相似度的轻量检索器。
+    纯 Python 实现，不依赖 sklearn。
     """
 
     def __init__(self, similarity_threshold: float = 0.15):
         """
         参数:
-            similarity_threshold: 检索相似度最低阈值（默认 0.15）。
+            similarity_threshold: 相似度最低阈值（默认 0.15）。
         """
         self._similarity_threshold = similarity_threshold
-        self._vocabulary: Dict[str, int] = {}  # word → index
-        self._idf: List[float] = []  # IDF 值列表
-        self._vectors: Dict[str, List[float]] = {}  # memory_id → TF-IDF vector
+        # 检索索引（按需重建）
+        self._vocab: Dict[str, int] = {}          # word → index
+        self._idf: Dict[str, float] = {}          # word → idf
+        self._memory_vectors: Dict[str, List[float]] = {}  # id → tfidf_vec
+        self._needs_rebuild = True
 
-    # ========== 公共接口 ==========
+    # ========== 公开接口 ==========
 
-    def retrieve(
-        self,
-        query: str,
-        memories: List[Dict],
-        working_memories: List[Dict],
-        limit: int = 5,
-        on_access_hit: callable = None,
-    ) -> List[Dict]:
+    def search(self,
+               query: str,
+               long_memories: List[Dict],
+               short_memories: List[Dict],
+               working_memories: List[Dict],
+               limit: int = 5) -> List[Dict]:
         """
         根据查询文本检索最相关的记忆条目。
 
         参数:
-            query:             查询文本。
-            memories:          长期 + 短期记忆列表（不含 work）。
-            working_memories:  工作记忆列表。
-            limit:             最大返回条数。
-            on_access_hit:     命中回调，签名: on_access_hit(memory_id: str)。
+            query:            查询文本。
+            long_memories:    长期记忆列表。
+            short_memories:   短期记忆列表。
+            working_memories: 工作记忆列表。
+            limit:            最大返回条数。
 
         返回:
-            按最终得分降序排列的记忆字典列表（每个字典额外包含 "score" 键）。
-            若向量化失败或记忆为空，返回 []。
+            按最终得分降序排列的记忆字典列表（已附加 "_score" 字段）。
         """
-        if not memories and not working_memories:
+        all_persistent = long_memories + short_memories
+        if not all_persistent and not working_memories:
+            logger.debug("记忆为空，返回 []")
             return []
 
+        # 预处理查询
         query_tokens = self._tokenize(query)
         if not query_tokens:
-            logger.warning("查询分词后为空（可能全是停用词），返回空列表")
+            logger.warning("查询分词后为空（可能全是停用词）")
             return []
 
-        # 1. 处理工作记忆（Jaccard 相似度）
-        results = self._retrieve_working(query, working_memories)
+        # 搜索持久化记忆
+        results = []
+        if all_persistent:
+            persistent_results = self._search_persistent(
+                query_tokens, all_persistent, limit
+            )
+            results.extend(persistent_results)
 
-        # 2. 处理长期/短期记忆（TF-IDF + 余弦相似度）
-        if memories:
-            self.rebuild_index(memories)
-            long_results = self._retrieve_tfidf(query, query_tokens, memories, on_access_hit)
-            results.extend(long_results)
+        # 搜索工作记忆（Jaccard）
+        if working_memories:
+            working_results = self._search_working(
+                query_tokens, working_memories, limit
+            )
+            # 工作记忆排在长期记忆之前
+            results = working_results + results
 
-        # 3. 按得分降序排列并截取
-        results.sort(key=lambda x: x.get("score", 0), reverse=True)
-        return results[:limit]
+        # 截断到 limit
+        results = results[:limit]
 
-    def rebuild_index(self, memories: List[Dict]) -> None:
+        # 命中后更新 access_count / last_access（仅持久化条目才有 id）
+        for r in results:
+            if "id" in r:
+                r["access_count"] = r.get("access_count", 0) + 1
+                r["last_access"] = int(time.time())
+
+        return results
+
+    def rebuild_index(self, memories: Optional[List[Dict]] = None) -> None:
         """
-        重建 TF-IDF 索引（通常在 forget 后调用）。
+        重建 TF‑IDF 索引。
 
         参数:
-            memories: 长期 + 短期记忆列表。
+            memories: 要建索引的记忆列表，None 表示保留现有向量。
         """
+        self._needs_rebuild = True
+        if memories is not None:
+            self._memory_vectors = {}
+            logger.info(f"索引已标记重建，共 {len(memories)} 条记忆")
+
+    # ========== 持久化记忆检索 ==========
+
+    def _search_persistent(self,
+                           query_tokens: List[str],
+                           memories: List[Dict],
+                           limit: int) -> List[Dict]:
+        """对持久化记忆执行 TF‑IDF 检索。"""
+        if self._needs_rebuild or not self._vocab:
+            self._build_index(memories)
+
+        query_vec = self._vectorize_tokens(query_tokens)
+
+        if all(v == 0.0 for v in query_vec):
+            logger.warning("查询向量全为零")
+            return []
+
+        scored = []
+        for mem in memories:
+            mem_id = mem["id"]
+            mem_vec = self._memory_vectors.get(mem_id)
+            if mem_vec is None:
+                # 新记忆未在索引中，重新向量化
+                mem_vec = self._vectorize_tokens(
+                    self._tokenize(mem.get("content", ""))
+                )
+                self._memory_vectors[mem_id] = mem_vec
+
+            raw_score = self._cosine_similarity(query_vec, mem_vec)
+
+            # 最终得分加权
+            importance = mem.get("importance", 0.5)
+            access_count = mem.get("access_count", 0)
+            final_score = (
+                raw_score
+                * (0.7 + 0.3 * importance)
+                * (1 + math.log(access_count + 1) / 10)
+            )
+
+            if final_score >= self._similarity_threshold:
+                scored.append((final_score, mem))
+
+        # 按 final_score 降序
+        scored.sort(key=lambda x: x[0], reverse=True)
+
+        results = []
+        for score, mem in scored[:limit]:
+            mem_copy = dict(mem)
+            mem_copy["_score"] = round(score, 4)
+            results.append(mem_copy)
+
+        return results
+
+    # ========== 工作记忆检索 ==========
+
+    def _search_working(self,
+                        query_tokens: List[str],
+                        working_memories: List[Dict],
+                        limit: int) -> List[Dict]:
+        """对工作记忆执行 Jaccard 相似度检索。"""
+        query_set = set(query_tokens)
+        scored = []
+
+        for mem in working_memories:
+            mem_tokens = set(self._tokenize(mem.get("content", "")))
+            if not mem_tokens:
+                continue
+
+            intersection = len(query_set & mem_tokens)
+            union = len(query_set | mem_tokens)
+            jaccard = intersection / union if union > 0 else 0.0
+
+            if jaccard >= self._similarity_threshold:
+                scored.append((jaccard, mem))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+
+        results = []
+        for score, mem in scored[:limit]:
+            mem_copy = dict(mem)
+            mem_copy["_score"] = round(score, 4)
+            results.append(mem_copy)
+
+        return results
+
+    # ========== TF‑IDF 构建 ==========
+
+    def _build_index(self, memories: List[Dict]) -> None:
+        """
+        从记忆列表构建词表、IDF 和向量。
+        """
+        self._vocab = {}
+        self._idf = {}
+        self._memory_vectors = {}
+
         if not memories:
-            self._vocabulary = {}
-            self._idf = []
-            self._vectors = {}
+            self._needs_rebuild = False
             return
 
-        # 对所有记忆分词
-        all_tokens = [self._tokenize(mem["content"]) for mem in memories]
+        # 1. 收集词频统计
+        all_docs_tokens = []
+        doc_word_sets = []  # 每条记忆出现的词集合（用于 IDF）
 
-        # 构建词表
-        self._build_vocabulary(all_tokens)
+        for mem in memories:
+            tokens = self._tokenize(mem.get("content", ""))
+            all_docs_tokens.append(tokens)
+            doc_word_sets.append(set(tokens))
 
-        # 计算 IDF
-        N = len(memories)
-        self._idf = self._compute_idf(all_tokens, N)
-
-        # 计算每条记忆的 TF-IDF 向量
-        self._vectors = {}
-        for mem, tokens in zip(memories, all_tokens):
-            self._vectors[mem["id"]] = self._compute_tfidf_vector(tokens)
-
-        logger.debug(f"已重建 TF-IDF 索引：词表大小 {len(self._vocabulary)}，记忆数 {N}")
-
-    # ========== 分词 ==========
-
-    @staticmethod
-    def _tokenize(text: str) -> List[str]:
-        """
-        小写化 → 按非字母数字字符分割（保留中文字符）→ 去停用词。
-
-        中文按单字切分，英文按空格/标点分割。
-        """
-        text = text.lower()
-
-        # 分离中文和非中文
-        # 按非字母数字非中文字符分割
-        parts = re.split(r'[^a-z0-9\u4e00-\u9fff]+', text)
-
-        tokens = []
-        for part in parts:
-            if not part:
-                continue
-            # 检查是否包含中文
-            if re.search(r'[\u4e00-\u9fff]', part):
-                # 中文部分：按单字切分
-                for char in part:
-                    if '\u4e00' <= char <= '\u9fff':
-                        if char not in _ZH_STOP_WORDS:
-                            tokens.append(char)
-                    else:
-                        # 英文/数字混合在中文块中
-                        if char not in _EN_STOP_WORDS:
-                            tokens.append(char)
-            else:
-                # 纯英文/数字
-                if part not in _EN_STOP_WORDS:
-                    tokens.append(part)
-
-        return tokens
-
-    # ========== 词汇表构建 ==========
-
-    def _build_vocabulary(self, all_tokens: List[List[str]]) -> None:
-        """
-        构建词表（word → index 映射）。
-
-        优化：记忆数量 > 500 时，限制词表大小为前 2000 个最高文档频率的词。
-        """
-        # 统计文档频率
+        # 2. 文档频率
         df = {}
-        for tokens in all_tokens:
-            seen = set()
-            for token in tokens:
-                if token not in seen:
-                    df[token] = df.get(token, 0) + 1
-                    seen.add(token)
+        N = len(memories)
+        for word_set in doc_word_sets:
+            for w in word_set:
+                df[w] = df.get(w, 0) + 1
 
-        N = len(all_tokens)
-        max_vocab = 2000 if N > 500 else None
-
-        if max_vocab and len(df) > max_vocab:
-            # 按文档频率降序截断
+        # 3. 优化：记忆数 > 500 时限词表
+        if N > 500:
             sorted_words = sorted(df.items(), key=lambda x: x[1], reverse=True)
-            selected_words = sorted_words[:max_vocab]
-            self._vocabulary = {word: idx for idx, (word, _) in enumerate(selected_words)}
-            logger.info(f"词表已截断至 {max_vocab} 个词（共 {len(df)} 个唯一词）")
+            top_words = sorted_words[:2000]
+            vocab_words = [w for w, _ in top_words]
         else:
-            sorted_words = sorted(df.keys())
-            self._vocabulary = {word: idx for idx, word in enumerate(sorted_words)}
+            vocab_words = sorted(df.keys())
 
-    # ========== IDF 计算 ==========
+        # 4. 构建词表映射
+        self._vocab = {w: i for i, w in enumerate(vocab_words)}
 
-    def _compute_idf(self, all_tokens: List[List[str]], N: int) -> List[float]:
-        """
-        计算 IDF 向量。
+        # 5. 计算 IDF
+        for w, idx in self._vocab.items():
+            self._idf[w] = math.log((N + 1) / (df.get(w, 0) + 1)) + 1
 
-        idf(w) = log((N + 1) / (df(w) + 1)) + 1
-        """
-        vocab_size = len(self._vocabulary)
-        idf = [0.0] * vocab_size
+        # 6. 为每条记忆计算 TF‑IDF 向量
+        for i, mem in enumerate(memories):
+            tokens = all_docs_tokens[i]
+            vec = self._compute_tfidf_vector(tokens)
+            self._memory_vectors[mem["id"]] = vec
 
-        # 统计每个词的文档频率
-        df = [0] * vocab_size
-        for tokens in all_tokens:
-            seen = set()
-            for token in tokens:
-                idx = self._vocabulary.get(token)
-                if idx is not None and token not in seen:
-                    df[idx] += 1
-                    seen.add(token)
+        self._needs_rebuild = False
+        logger.info(
+            f"索引构建完成: 词表大小={len(self._vocab)}, 记忆={N}"
+        )
 
-        for idx in range(vocab_size):
-            idf[idx] = math.log((N + 1) / (df[idx] + 1)) + 1
-
-        return idf
-
-    # ========== TF-IDF 向量 ==========
+    def _vectorize_tokens(self, tokens: List[str]) -> List[float]:
+        """计算 token 列表的 TF‑IDF 向量（用于查询）。"""
+        return self._compute_tfidf_vector(tokens)
 
     def _compute_tfidf_vector(self, tokens: List[str]) -> List[float]:
         """
-        计算单条记忆的 TF-IDF 向量。
-        """
-        vocab_size = len(self._vocabulary)
-        vector = [0.0] * vocab_size
+        计算 TF‑IDF 向量。
 
+        TF(w) = count(w) / len(tokens)
+        TF‑IDF(w) = TF(w) * IDF(w)
+        """
+        vec = [0.0] * len(self._vocab)
         if not tokens:
-            return vector
+            return vec
 
-        # TF
-        tf = {}
         total = len(tokens)
-        for token in tokens:
-            if token in self._vocabulary:
-                tf[token] = tf.get(token, 0) + 1
 
-        # TF-IDF
-        for token, count in tf.items():
-            idx = self._vocabulary[token]
-            if idx < len(self._idf):
-                tf_val = count / total
-                vector[idx] = tf_val * self._idf[idx]
+        for w in tokens:
+            if w in self._vocab:
+                idx = self._vocab[w]
+                vec[idx] += 1.0 / total
 
-        return vector
+        # 乘 IDF
+        for w, idx in self._vocab.items():
+            if vec[idx] > 0:
+                vec[idx] *= self._idf.get(w, 1.0)
 
-    # ========== 检索 ==========
+        return vec
 
-    def _retrieve_tfidf(
-        self,
-        query: str,
-        query_tokens: List[str],
-        memories: List[Dict],
-        on_access_hit: callable,
-    ) -> List[Dict]:
+    # ========== 文本预处理 ==========
+
+    def _tokenize(self, text: str) -> List[str]:
         """
-        TF-IDF + 余弦相似度检索长期/短期记忆。
+        预处理 + 分词。
+
+        步骤:
+            1. 小写化。
+            2. 按非字母数字/非中文字符分割。
+            3. 去停用词。
+            4. 中文按单字切分。
         """
-        # 查询向量
-        query_vec = self._compute_tfidf_vector(query_tokens)
+        text = text.lower()
 
-        results = []
-        for mem in memories:
-            mem_id = mem["id"]
-            mem_vec = self._vectors.get(mem_id, [])
-            if not mem_vec:
-                continue
+        # 分割：保留字母数字和中文字符
+        segments = re.split(r'[^a-z0-9\u4e00-\u9fff]+', text)
+        segments = [s for s in segments if s]
 
-            cosine = self._cosine_similarity(query_vec, mem_vec)
+        tokens = []
+        for seg in segments:
+            if re.search(r'[\u4e00-\u9fff]', seg):
+                # 中文段：按单字切分
+                for ch in seg:
+                    if ch not in ALL_STOPWORDS:
+                        tokens.append(ch)
+            else:
+                # 英文/数字段：整体保留
+                if seg not in ALL_STOPWORDS:
+                    tokens.append(seg)
 
-            if cosine < self._similarity_threshold:
-                continue
+        return tokens
 
-            # 最终得分 = cosine * importance 加成 * access_count 加成
-            importance = mem.get("importance", 0.5)
-            access_count = mem.get("access_count", 0)
-            final_score = cosine * (0.7 + 0.3 * importance) * (1 + math.log(access_count + 1) / 10)
-
-            results.append({
-                **mem,
-                "score": round(final_score, 4),
-            })
-
-            # 命中回调
-            if on_access_hit:
-                on_access_hit(mem_id)
-
-        return results
-
-    def _retrieve_working(
-        self,
-        query: str,
-        working_memories: List[Dict],
-    ) -> List[Dict]:
-        """
-        工作记忆使用 Jaccard 相似度检索。
-        """
-        query_tokens = set(self._tokenize(query))
-        results = []
-
-        for mem in working_memories:
-            content_tokens = set(self._tokenize(mem["content"]))
-            if not query_tokens and not content_tokens:
-                continue
-
-            intersection = len(query_tokens & content_tokens)
-            union = len(query_tokens | content_tokens)
-
-            if union == 0:
-                continue
-
-            jaccard = intersection / union
-
-            if jaccard > self._similarity_threshold:
-                results.append({
-                    **mem,
-                    "score": round(jaccard, 4),
-                })
-
-        return results
-
-    # ========== 相似度计算 ==========
+    # ========== 数学工具 ==========
 
     @staticmethod
-    def _cosine_similarity(a: List[float], b: List[float]) -> float:
+    def _cosine_similarity(vec_a: List[float], vec_b: List[float]) -> float:
         """
-        余弦相似度：cos_sim(a, b) = (a · b) / (||a|| * ||b|| + 1e-8)
+        计算余弦相似度。
+
+        sim = (a·b) / (||a|| * ||b|| + 1e-8)
         """
-        if len(a) != len(b):
+        if len(vec_a) != len(vec_b):
             return 0.0
 
-        dot = 0.0
-        norm_a = 0.0
-        norm_b = 0.0
-
-        for x, y in zip(a, b):
-            dot += x * y
-            norm_a += x * x
-            norm_b += y * y
+        dot = sum(a * b for a, b in zip(vec_a, vec_b))
+        norm_a = math.sqrt(sum(a * a for a in vec_a))
+        norm_b = math.sqrt(sum(b * b for b in vec_b))
 
         if norm_a == 0.0 or norm_b == 0.0:
             return 0.0
 
-        return dot / (math.sqrt(norm_a) * math.sqrt(norm_b) + 1e-8)
-
-    @property
-    def similarity_threshold(self) -> float:
-        return self._similarity_threshold
+        return dot / (norm_a * norm_b + 1e-8)

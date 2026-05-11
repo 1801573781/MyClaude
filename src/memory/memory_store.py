@@ -1,14 +1,15 @@
 """
-MemoryStore - JSON 文件持久化存储
+MemoryStore：基于 JSON 文件的物理存储层。
 
-负责记忆的物理存储：基于 JSON 文件的持久化，支持 CRUD 与元数据管理。
-包含原子写入、滚动备份、数据校验与损坏恢复。
+提供记忆条目的 CRUD、原子写入、滚动备份、损坏恢复等功能。
 """
 
 import json
 import logging
 import os
+import shutil
 import time
+import uuid
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -16,22 +17,14 @@ logger = logging.getLogger(__name__)
 
 
 class MemoryStore:
-    """
-    基于 JSON 文件的记忆持久化存储。
-
-    特性:
-        - 全量写入 + 原子替换（临时文件 → os.replace）
-        - 滚动备份（最多 3 个 .bak.N 文件）
-        - 启动时全量加载 + 数据校验
-        - 损坏文件自动回退到备份
-    """
+    """JSON 文件持久化存储，管理记忆条目的物理读写。"""
 
     def __init__(self, storage_path: str):
         """
-        初始化 MemoryStore，立即加载持久化文件。
+        初始化 MemoryStore，加载持久化文件。
 
         参数:
-            storage_path: 持久化文件目录的绝对路径（如 D:/AI/MyClaude/.memdir）。
+            storage_path: 存储目录的绝对路径（如 D:/AI/MyClaude/.memdir）。
         """
         self._storage_dir = Path(storage_path)
         self._storage_dir.mkdir(parents=True, exist_ok=True)
@@ -39,24 +32,44 @@ class MemoryStore:
         self._memories: List[Dict] = []
         self._load()
 
-    # ========== CRUD ==========
+    # ==================== 公开 CRUD ====================
 
-    def add(self, memory: Dict) -> None:
+    def add(self, memory: Dict) -> str:
         """
         添加一条记忆并持久化。
 
         参数:
-            memory: 记忆字典（必须包含所有必填字段）。
-        """
-        self._memories.append(memory)
-        self._flush()
-
-    def get_by_id(self, memory_id: str) -> Optional[Dict]:
-        """
-        按 ID 查找记忆。
+            memory: 经过校验的记忆字典。
 
         返回:
-            记忆字典，若未找到则返回 None。
+            新记忆的 id 字符串。
+        """
+        if not memory.get("id"):
+            memory["id"] = uuid.uuid4().hex
+        now = int(time.time())
+        if not memory.get("timestamp"):
+            memory["timestamp"] = now
+        if not memory.get("last_access"):
+            memory["last_access"] = now
+        memory.setdefault("access_count", 0)
+        memory.setdefault("importance", 0.5)
+        memory.setdefault("tags", [])
+        memory.setdefault("metadata", {})
+
+        self._memories.append(memory)
+        self._flush()
+        logger.info(f"添加记忆 {memory['id']} (type={memory.get('type')})")
+        return memory["id"]
+
+    def get(self, memory_id: str) -> Optional[Dict]:
+        """
+        根据 ID 获取单条记忆（返回引用，修改后需手动 flush）。
+
+        参数:
+            memory_id: 记忆 ID。
+
+        返回:
+            记忆字典，未找到返回 None。
         """
         for mem in self._memories:
             if mem["id"] == memory_id:
@@ -68,244 +81,224 @@ class MemoryStore:
         返回所有指定类型的记忆。
 
         参数:
-            mem_type: None 返回全部，或指定 "short" / "long" / "working"。
+            mem_type: None 返回全部，或指定 "working"/"short"/"long"。
 
         返回:
-            记忆字典列表（副本，调用方修改不影响内部状态）。
+            记忆字典列表（新列表，非内部引用）。
         """
         if mem_type is None:
             return list(self._memories)
-        return [mem for mem in self._memories if mem["type"] == mem_type]
+        return [mem for mem in self._memories if mem.get("type") == mem_type]
 
-    def get_by_types(self, types: List[str]) -> List[Dict]:
+    def update(self, memory_id: str,
+               content: Optional[str] = None,
+               importance: Optional[float] = None,
+               tags: Optional[List[str]] = None) -> bool:
         """
-        返回所有匹配类型的记忆。
+        更新已有记忆的部分字段。
 
         参数:
-            types: 类型列表，如 ["short", "long"]。
-
-        返回:
-            记忆字典列表（副本）。
-        """
-        return [mem for mem in self._memories if mem["type"] in types]
-
-    def update(self, memory_id: str, updates: Dict) -> bool:
-        """
-        更新记忆的部分字段。
-
-        参数:
-            memory_id: 目标记忆 ID。
-            updates: 要更新的字段字典（key 为字段名，value 为新值）。
+            memory_id:  目标记忆 ID。
+            content:    新内容（None 表示不修改）。
+            importance: 新重要性（None 表示不修改）。
+            tags:       新标签列表（None 表示不修改）。
 
         返回:
             True 表示更新成功，False 表示未找到指定 ID。
         """
-        mem = self.get_by_id(memory_id)
+        mem = self.get(memory_id)
         if mem is None:
             return False
-        for key, value in updates.items():
-            if key in mem and key != "id":
-                mem[key] = value
+        if content is not None:
+            mem["content"] = content
+        if importance is not None:
+            mem["importance"] = max(0.0, min(1.0, importance))
+        if tags is not None:
+            mem["tags"] = tags
         self._flush()
+        logger.info(f"更新记忆 {memory_id}")
         return True
 
     def delete(self, memory_id: str) -> bool:
         """
         永久删除一条记忆。
 
+        参数:
+            memory_id: 目标记忆 ID。
+
         返回:
-            True 表示删除成功，False 表示未找到指定 ID。
+            True 表示删除成功，False 表示未找到。
         """
         for i, mem in enumerate(self._memories):
             if mem["id"] == memory_id:
                 self._memories.pop(i)
                 self._flush()
+                logger.info(f"删除记忆 {memory_id}")
                 return True
         return False
 
-    def delete_many(self, memory_ids: List[str]) -> int:
+    def delete_batch(self, memory_ids: List[str]) -> int:
         """
         批量删除记忆。
 
+        参数:
+            memory_ids: 待删除的记忆 ID 列表。
+
         返回:
-            实际删除的条目数。
+            实际删除的条目数量。
         """
         ids_set = set(memory_ids)
-        before = len(self._memories)
+        original_len = len(self._memories)
         self._memories = [mem for mem in self._memories if mem["id"] not in ids_set]
-        after = len(self._memories)
-        deleted = before - after
+        deleted = original_len - len(self._memories)
         if deleted > 0:
             self._flush()
+            logger.info(f"批量删除 {deleted} 条记忆")
         return deleted
 
     def count(self, mem_type: Optional[str] = None) -> int:
-        """
-        返回指定类型的记忆数量。
-
-        参数:
-            mem_type: None 返回总数，或指定类型。
-        """
+        """返回指定类型的记忆数量。"""
         return len(self.get_all(mem_type))
 
-    # ========== 内部持久化 ==========
+    # ==================== 持久化 ====================
 
-    def _flush(self) -> None:
+    def _flush(self):
         """
-        全量写入 self._memories 到 JSON 文件（原子写入 + 滚动备份）。
+        全量序列化写入磁盘（原子写入 + 滚动备份）。
         """
+        self._backup()
+
+        temp_path = self._file_path.with_suffix(".json.tmp")
         try:
-            # 保留已有备份（如果存在）
-            if self._file_path.exists():
-                self._rotate_backups()
-
-            # 原子写入
-            tmp_path = self._file_path.with_suffix(".json.tmp")
-            with open(tmp_path, "w", encoding="utf-8") as f:
+            with open(temp_path, "w", encoding="utf-8") as f:
                 json.dump(self._memories, f, ensure_ascii=False, indent=2, default=str)
-
-            os.replace(str(tmp_path), str(self._file_path))
-            logger.debug(f"已持久化 {len(self._memories)} 条记忆到 {self._file_path}")
+            # Windows 上 os.replace 保证原子性
+            os.replace(str(temp_path), str(self._file_path))
         except Exception as e:
-            logger.error(f"持久化失败: {e}")
+            logger.error(f"写入记忆文件失败: {e}")
+            if temp_path.exists():
+                temp_path.unlink(missing_ok=True)
 
-    def _rotate_backups(self) -> None:
-        """
-        滚动备份：.bak.2 → .bak.3，.bak.1 → .bak.2，当前文件 → .bak.1。
-        """
-        bak_pattern = str(self._file_path) + ".bak."
-        # 删除最旧的 bak.3
-        bak3 = Path(str(self._file_path) + ".bak.3")
-        if bak3.exists():
-            bak3.unlink()
-        # 滚动
-        for i in range(2, 0, -1):
-            old_bak = Path(str(self._file_path) + f".bak.{i}")
-            new_bak = Path(str(self._file_path) + f".bak.{i + 1}")
-            if old_bak.exists():
-                os.replace(str(old_bak), str(new_bak))
-        # 将当前文件复制为 bak.1
-        bak1 = Path(str(self._file_path) + ".bak.1")
-        import shutil
-        shutil.copy2(str(self._file_path), str(bak1))
+    def _backup(self):
+        """滚动备份：保留 .bak.1 ~ .bak.3。"""
+        if not self._file_path.exists():
+            return
 
-    def _load(self) -> None:
+        # 滚动已有的备份文件
+        for i in range(3, 0, -1):
+            old_bak = self._storage_dir / f"memories.json.bak.{i}"
+            if i == 3:
+                old_bak.unlink(missing_ok=True)
+            else:
+                new_bak = self._storage_dir / f"memories.json.bak.{i + 1}"
+                if old_bak.exists():
+                    shutil.move(str(old_bak), str(new_bak))
+
+        # 复制当前文件为 .bak.1
+        shutil.copy2(str(self._file_path),
+                     str(self._storage_dir / "memories.json.bak.1"))
+
+    # ==================== 加载与恢复 ====================
+
+    def _load(self):
         """
-        从 JSON 文件加载记忆，包含损坏恢复和条目级校验。
+        启动时全量加载，含损坏恢复逻辑。
         """
         raw = self._read_with_recovery()
-
-        valid_memories = []
+        self._memories = []
         for item in raw:
             try:
                 validated = self._validate_item(item)
-                valid_memories.append(validated)
+                self._memories.append(validated)
             except Exception as e:
-                logger.warning(f"跳过损坏条目: {e} | 条目内容: {str(item)[:200]}")
+                logger.warning(f"跳过损坏条目: {e}")
 
-        self._memories = valid_memories
-        logger.info(f"已加载 {len(self._memories)} 条记忆")
+        logger.info(f"加载完成：共 {len(self._memories)} 条记忆")
 
     def _read_with_recovery(self) -> list:
-        """
-        尝试读取 JSON 文件，失败时从备份恢复。
-        """
-        # 尝试主文件
-        raw = self._try_read_json(self._file_path)
-        if raw is not None:
-            return raw
-
-        logger.warning(f"记忆文件损坏或不存在: {self._file_path}，尝试从备份恢复")
-
-        # 尝试备份文件（按优先级：bak.1 → bak.2 → bak.3）
-        for i in range(1, 4):
-            bak_path = Path(str(self._file_path) + f".bak.{i}")
-            raw = self._try_read_json(bak_path)
-            if raw is not None:
-                logger.info(f"从备份 {bak_path} 恢复成功")
-                return raw
-
-        logger.warning("所有备份均无法恢复，初始化为空列表")
-        return []
-
-    @staticmethod
-    def _try_read_json(path: Path) -> Optional[list]:
-        """
-        尝试读取并解析 JSON 文件。
-
-        返回:
-            解析后的列表，失败返回 None。
-        """
-        if not path.exists():
-            return None
+        """尝试读取 JSON 文件，失败时从备份恢复。"""
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            with open(self._file_path, "r", encoding="utf-8") as f:
                 raw = json.load(f)
             if not isinstance(raw, list):
                 raise ValueError("根元素不是列表")
             return raw
-        except (json.JSONDecodeError, ValueError, OSError) as e:
-            logger.warning(f"读取 {path} 失败: {e}")
-            return None
+        except (FileNotFoundError, json.JSONDecodeError, ValueError) as e:
+            logger.warning(f"记忆文件损坏或不存在: {e}")
 
-    @staticmethod
-    def _validate_item(item: Dict) -> Dict:
+            # 尝试从备份恢复
+            backups = sorted(
+                self._storage_dir.glob("memories.json.bak.*"),
+                key=lambda p: int(p.suffix.split(".")[-1])
+            )
+            for bak_path in backups:
+                try:
+                    with open(bak_path, "r", encoding="utf-8") as f:
+                        raw = json.load(f)
+                    if isinstance(raw, list):
+                        logger.info(f"从备份 {bak_path} 恢复成功")
+                        return raw
+                except Exception:
+                    continue
+
+            logger.warning("所有备份恢复失败，初始化为空列表")
+            return []
+
+    def _validate_item(self, item: Dict) -> Dict:
         """
-        校验单条记忆数据，修复或补充缺失字段。
+        条目级校验，见 4. 数据结构 - 导入时的数据校验规则。
 
-        校验规则（来自 memory_spec.md 第 4 节）:
-            - id 缺失或为空 → 自动生成
-            - type 不在枚举值 → 默认 "short"
-            - importance 超出 0.0~1.0 → 截断到边界
-            - timestamp 缺失或为 0 → 使用当前时间
-            - tags 不是列表 → 默认 []
-
-        返回:
-            校验并修复后的记忆字典。
-
-        异常:
-            若 item 不是 dict，抛出 TypeError。
+        修复常见问题并返回合法条目。
         """
-        import uuid
+        validated = dict(item)
 
-        if not isinstance(item, dict):
-            raise TypeError(f"记忆条目必须是字典，实际为 {type(item)}")
+        # id: 缺失或空 → 自动生成
+        if not isinstance(validated.get("id"), str) or not validated["id"].strip():
+            validated["id"] = uuid.uuid4().hex
+            logger.warning(f"记忆缺少有效 id，已生成: {validated['id']}")
 
-        # id
-        if not isinstance(item.get("id"), str) or not item["id"]:
-            item["id"] = uuid.uuid4().hex
-            logger.debug(f"为条目生成新 ID: {item['id']}")
+        # content: 确保存在
+        if "content" not in validated:
+            validated["content"] = ""
+            logger.warning(f"记忆 {validated['id']} 缺少 content 字段")
 
-        # type
-        valid_types = {"working", "short", "long"}
-        if item.get("type") not in valid_types:
-            logger.debug(f"修正无效 type: {item.get('type')} → 'short'")
-            item["type"] = "short"
+        # type: 枚举校验
+        if validated.get("type") not in ("working", "short", "long"):
+            logger.warning(f"记忆 {validated['id']} type 无效 ({validated.get('type')})，设为 'short'")
+            validated["type"] = "short"
 
-        # importance
-        imp = item.get("importance", 0.5)
-        if not isinstance(imp, (int, float)):
-            imp = 0.5
-        item["importance"] = max(0.0, min(1.0, float(imp)))
+        # importance: 范围截断
+        importance = validated.get("importance", 0.5)
+        if not isinstance(importance, (int, float)):
+            importance = 0.5
+        validated["importance"] = max(0.0, min(1.0, float(importance)))
 
-        # timestamp
-        if not isinstance(item.get("timestamp"), (int, float)) or item["timestamp"] == 0:
-            item["timestamp"] = int(time.time())
+        # timestamp: 缺失或 0 → 当前时间
+        ts = validated.get("timestamp", 0)
+        if not isinstance(ts, (int, float)) or ts <= 0:
+            validated["timestamp"] = int(time.time())
 
         # access_count
-        if "access_count" not in item or not isinstance(item["access_count"], (int, float)):
-            item["access_count"] = 0
+        validated.setdefault("access_count", 0)
 
         # last_access
-        if not isinstance(item.get("last_access"), (int, float)):
-            item["last_access"] = item["timestamp"]
+        la = validated.get("last_access", 0)
+        if not isinstance(la, (int, float)) or la <= 0:
+            validated["last_access"] = validated["timestamp"]
 
-        # tags
-        if not isinstance(item.get("tags"), list):
-            item["tags"] = []
+        # tags: 不是列表 → 空列表
+        if not isinstance(validated.get("tags"), list):
+            validated["tags"] = []
+            logger.warning(f"记忆 {validated['id']} tags 不是列表，设为 []")
 
-        # metadata
-        if not isinstance(item.get("metadata"), dict):
-            item["metadata"] = {}
+        # metadata: 不是字典 → 空字典
+        if not isinstance(validated.get("metadata"), dict):
+            validated["metadata"] = {}
+            logger.warning(f"记忆 {validated['id']} metadata 不是字典，设为 {{}}")
 
-        return item
+        return validated
+
+    def rebuild_from_list(self, memories: List[Dict]):
+        """用给定的记忆列表替换内部数据并持久化（用于测试恢复）。"""
+        self._memories = memories
+        self._flush()

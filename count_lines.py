@@ -16,7 +16,7 @@ def count_project_lines(root_dir="."):
 
     skip_dirs = {'.git', '.idea', '__pycache__', 'venv', '.venv',
                  'node_modules', 'code_output', 'log', 'context', '.memdir'}
-    skip_files = {'.gitignore', 'count_lines.py'}
+    skip_files = {'.gitignore'}
 
     code_exts = {'.py', '.yaml', '.yml', '.json', '.md', '.txt',
                  '.sh', '.bat', '.ps1', '.toml', '.ini', '.cfg'}
