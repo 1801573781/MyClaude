@@ -7,46 +7,8 @@
 - **架构风格**：全同步（刻意不用 async/await），降低心智负担；终端显示与业务逻辑部分解耦。
 - **非目标**：不做 Web UI、不做多模态、不做分布式并发、不追求完全解耦（接受 CLI 与 QueryLoop 在"何时打印"上存在合理耦合）。
 
-## 2. 目录地图
-MyClaude/
-├── config.yaml              # 全局配置：模型、路径、CLI 参数
-├── requirements.txt         # 核心依赖（openai, rich, pyyaml, numpy）
-├── pytest.ini              # pytest 测试配置
-├── .gitignore              # 忽略 code_output/, log/, context/, .idea/ 等
-├── README.md               # 对外项目介绍（双语）
-├── MyClaude.md             # 本文件：AI/开发者内部项目指南
-│
-├── skill/                  # Skill 行为模板：任务策略、工具组合、禁忌与示例
-│   └── add_tests.md        # 生成单元测试的 Skill 模板（示例）
-│
-└── src/
-├── myclaude.py         # CLI 入口，负责用户输入、命令分发、主循环
-│
-├── cli/
-│   ├── mycli.py        # ClaudeStyleCLI：终端外壳，注册回调给 QueryLoop
-│   └── cli_print.py    # Rich 渲染工具：打字机、Markdown、Syntax 高亮、状态动画
-│
-├── query/
-│   ├── query_loop.py   # QueryLoop 引擎：LLM 多轮交互、工具编排、死循环检测
-│   ├── chat_llm.py     # MiniMax API 封装：流式请求、截断检测、自动重试
-│   └── session_log.py  # 会话日志：Markdown 格式化、持久化到 log/.md
-│
-├── message/
-│   ├── llm_api_msg.py  # api_messages 组装：init / append_llm_response / append_tool_result
-│   └── sys_prompt.md   # 系统提示词（Layer 1~7 + Negative Example）
-│
-├── llm_tool/
-│   ├── tool_executor.py # XML 工具解析（parse_tools）与分发（execute_tool）
-│   ├── file_tool.py     # 文件操作：create / view / str_replace，含重复创建保护
-│   └── cmd_bash.py      # 本地 shell 命令执行（Windows CMD/PowerShell）
-│
-└── utility/
-├── config_loader.py # YAML 加载 → SimpleNamespace 点号访问
-└── normal_utility.py # strip_thinking、路径解析等通用函数
-├── MyClaude.md         # MyClaude项目说明
 
-
-## 2.5 文件系统规范
+## 2 文件系统规范
 
 ### 绝对路径强制（Mandatory）
 所有文件操作必须使用**绝对路径**，严禁使用裸文件名或相对路径。

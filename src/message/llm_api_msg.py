@@ -18,6 +18,15 @@ class LLMAPIMessage:
             }
             self._append_info(context_msg)
 
+        # 注入目录树缓存（放在项目上下文之后、用户输入之前）
+        tree_cache = self._load_tree_cache()
+        if tree_cache:
+            tree_cache_msg = {
+                "role": "user",
+                "content": f"[项目目录树]\n{tree_cache}"
+            }
+            self._append_info(tree_cache_msg)
+
 
     @staticmethod
     def _load_system_prompt() -> list[dict]:
@@ -49,6 +58,20 @@ class LLMAPIMessage:
         except (OSError, UnicodeDecodeError) as e:
             # 可选：打印警告，但不阻断主流程
             print(f"[warn] 加载 MyClaude.md 失败: {e}")
+            return ""
+
+
+    @staticmethod
+    def _load_tree_cache() -> str:
+        """从项目根目录加载 .tree_cache.md 作为目录树上下文注入"""
+        try:
+            project_root = Path(__file__).resolve().parent.parent.parent
+            tree_path = project_root / ".tree_cache.md"
+            if tree_path.exists():
+                return tree_path.read_text(encoding="utf-8")
+            return ""
+        except (OSError, UnicodeDecodeError) as e:
+            print(f"[warn] 加载 .tree_cache.md 失败: {e}")
             return ""
 
 
