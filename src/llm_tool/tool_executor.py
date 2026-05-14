@@ -1,8 +1,8 @@
-import re
-
 from utility.config_loader import global_cfg
 from utility.file_tool import file_view, file_create, file_str_replace
 from llm_tool.cmd_bash import tool_bash
+
+import re
 
 
 def parse_tools(response: str):
@@ -14,12 +14,9 @@ def parse_tools(response: str):
         ("file_view", re.compile(r'<file_view\s+path="([^"]*)"\s*/>')),
         ("create", re.compile(r'<create\s+path="([^"]*)"(?:\s+summary="([^"]*)")?\s*>(.*?)</create>', re.DOTALL)),
         ("bash", re.compile(r'<bash>(.*?)</bash>', re.DOTALL)),
-        ("str_replace", re.compile(
-            r'<str_replace\s+path="([^"]*)"(?:\s+summary="([^"]*)")?\s*>(.*?)<old>(.*?)</old>(.*?)<new>(.*?)</new>(.*?)</str_replace>',
-            re.DOTALL
-        )),
+        # 改：str_replace 改用“块提取”正则，整块交给辅助函数处理
+        ("str_replace", re.compile(r'<str_replace\b.*?</str_replace>', re.DOTALL)),
         ("use_skill", re.compile(r'<use_skill\s+name="([^"]*)"\s*/>')),
-        # 关键修复：兼容有闭合 </done> 和无闭合（到字符串结尾）两种情况
         ("done", re.compile(r'<done>(.*?)(?:</done>|$)', re.DOTALL)),
     ]
 
@@ -48,22 +45,19 @@ def parse_tools(response: str):
                 content = content[1:]
             if content.endswith('\n'):
                 content = content[:-1]
-            tools.append({"llm_tool": "create", "params": {"path": m.group(1), "content": content, "summary": summary}})
+            tools.append({
+                "llm_tool": "create",
+                "params": {"path": m.group(1), "content": content, "summary": summary}
+            })
+
+        elif tool_name == "str_replace":
+            # 调用容错解析器处理整个块
+            tool = _parse_str_replace_block(m.group(0))
+            if tool:
+                tools.append(tool)
 
         elif tool_name == "bash":
             tools.append({"llm_tool": "bash", "params": {"command": m.group(1).strip()}})
-
-        elif tool_name == "str_replace":
-            summary = m.group(2) or ""
-            tools.append({
-                "llm_tool": "str_replace",
-                "params": {
-                    "path": m.group(1),
-                    "summary": summary,
-                    "old": m.group(4),
-                    "new": m.group(6)
-                }
-            })
 
         elif tool_name == "use_skill":
             tools.append({"llm_tool": "use_skill", "params": {"name": m.group(1)}})
@@ -80,6 +74,140 @@ def parse_tools(response: str):
     remaining = re.sub(r'\n{3,}', '\n\n', remaining)
 
     return remaining, tools
+
+
+def _parse_str_replace_block(block: str):
+    """
+    容错解析单个 <str_replace> 块。
+    即使 <new> 错误地以 </old> 结束，也能正确提取 new 内容。
+    """
+    # 1. 提取 path 和 summary 属性
+    header = re.search(r'<str_replace\s+path="([^"]*)"(?:\s+summary="([^"]*)")?\s*>', block)
+    if not header:
+        return None
+    path = header.group(1)
+    summary = header.group(2) or ""
+
+    # 2. 提取 <old> 内容（正常情况）
+    old_match = re.search(r'<old>(.*?)</old>', block, re.DOTALL)
+    old = old_match.group(1) if old_match else ""
+
+    # 3. 提取 <new> 内容，优先用 </new>，找不到则容忍 </old> 或 </str_replace>
+    new_match = re.search(r'<new>(.*?)</new>', block, re.DOTALL)
+    if new_match:
+        new_content = new_match.group(1)
+    else:
+        # 容错：<new> 到 </old> 或 </str_replace>
+        new_start = block.find('<new>')
+        if new_start != -1:
+            new_start += len('<new>')
+            # 尝试找 </new>, </old>, </str_replace>
+            end_idx = -1
+            for end_tag in ['</new>', '</old>', '</str_replace>']:
+                idx = block.find(end_tag, new_start)
+                if idx != -1:
+                    end_idx = idx
+                    break
+            if end_idx != -1:
+                new_content = block[new_start:end_idx]
+            else:
+                new_content = block[new_start:]  # 极端情况：完全没闭合
+        else:
+            return None  # 连 <new> 都没有，解析失败
+
+    return {
+        "llm_tool": "str_replace",
+        "params": {
+            "path": path,
+            "summary": summary,
+            "old": old,
+            "new": new_content
+        }
+    }
+
+
+'''
+def parse_tools(response: str):
+    """
+    按顺序解析 AI 响应中的 XML 工具调用。
+    返回: (剩余普通文本, 工具列表)
+    """
+    # 定义模式：file_view, create, bash, str_replace, use_skill, done
+    # 注意：str_replace 和 create 匹配整个标签（含内容），用于后续 XML 解析
+    patterns = [
+        ("file_view", re.compile(r'<file_view\s+path="([^"]*)"\s*/>')),
+        ("create", re.compile(r'<create\s+path="([^"]*)"(?:\s+summary="([^"]*)")?\s*>(.*?)</create>', re.DOTALL)),
+        ("bash", re.compile(r'<bash>(.*?)</bash>', re.DOTALL)),
+        ("str_replace", re.compile(
+            r'<str_replace\s+path="([^"]*)"(?:\s+summary="([^"]*)")?\s*>(?:.*?)<old>(.*?)</old>(?:.*?)<new>(.*?)</new>(?:.*?)</str_replace>',
+            re.DOTALL
+        )),
+        ("use_skill", re.compile(r'<use_skill\s+name="([^"]*)"\s*/>')),
+        ("done", re.compile(r'<done>(.*?)(?:</done>|$)', re.DOTALL)),
+    ]
+
+    all_matches = []
+    for tool_name, pattern in patterns:
+        for m in pattern.finditer(response):
+            all_matches.append((m.start(), m.end(), tool_name, m))
+
+    all_matches.sort(key=lambda x: x[0])
+
+    tools = []
+    remaining_parts = []
+    last_end = 0
+
+    for start, end, tool_name, m in all_matches:
+        if start > last_end:
+            remaining_parts.append(response[last_end:start])
+
+        if tool_name == "file_view":
+            tools.append({"llm_tool": "file_view", "params": {"path": m.group(1)}})
+
+        elif tool_name == "create":
+            summary = m.group(2) or ""
+            content = m.group(3)
+            if content.startswith('\n'):
+                content = content[1:]
+            if content.endswith('\n'):
+                content = content[:-1]
+            tools.append({
+                "llm_tool": "create",
+                "params": {"path": m.group(1), "content": content, "summary": summary}
+            })
+
+        elif tool_name == "str_replace":
+            summary = m.group(2) or ""
+            tools.append({
+                "llm_tool": "str_replace",
+                "params": {
+                    "path": m.group(1),
+                    "summary": summary,
+                    "old": m.group(3),
+                    "new": m.group(4)
+                }
+            })
+
+        elif tool_name == "bash":
+            tools.append({"llm_tool": "bash", "params": {"command": m.group(1).strip()}})
+
+        elif tool_name == "use_skill":
+            tools.append({"llm_tool": "use_skill", "params": {"name": m.group(1)}})
+
+        elif tool_name == "done":
+            tools.append({"llm_tool": "done", "params": {"message": m.group(1).strip()}})
+
+        last_end = end
+
+    if last_end < len(response):
+        remaining_parts.append(response[last_end:])
+
+    remaining = "".join(remaining_parts).strip()
+    remaining = re.sub(r'\n{3,}', '\n\n', remaining)
+
+    return remaining, tools
+'''
+
 
 
 code_output_root = global_cfg.base_path.code_output_root

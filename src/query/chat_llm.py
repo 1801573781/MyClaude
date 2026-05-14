@@ -28,7 +28,8 @@ client = OpenAI(
 
 
 def chat_with_retry(api_messages):
-    """调用 stream_chat，若因 max_tokens 不足被截断则自动翻倍重试"""
+    """调用 stream_chat，若因 max_tokens 不足被截断则自动翻倍重试
+    返回 (content: str, is_truncated: bool, reasoning_content: str)"""
 
     initial_max_tokens = global_cfg.model_chat.initial_max_tokens
     max_retries = global_cfg.model_chat.max_retries
