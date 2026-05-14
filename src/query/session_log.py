@@ -154,7 +154,7 @@ class SessionLog:
             "project_context": "📋 项目上下文",
             "directory_tree": "🗂️ 项目目录树",
             "user": "👤 用户输入",
-            "reasoning": "💭 推理过程",
+            "reasoning": "💭 LLM 推理过程",
             "assistant": "🤖 LLM 应答",
             "tool": "🔧 工具调用与执行结果",
         }
@@ -254,11 +254,16 @@ class SessionLog:
                 sections.append((current_section, current_items))
             current_items = []
 
+        # 标记是否正在处理 api_messages 历史（需过滤 assistant）
+        _in_api_history = [False]
+
         def process_item(item):
             nonlocal current_section, current_items
             if isinstance(item, list):
+                _in_api_history[0] = True
                 for sub in item:
                     process_item(sub)
+                _in_api_history[0] = False
                 return
             if not isinstance(item, dict):
                 return
@@ -268,6 +273,9 @@ class SessionLog:
                 return
             if "role" in item:
                 role = item["role"]
+                # 跳过 api_messages 历史中的 assistant 消息（已在之前 Turn 中展示过）
+                if _in_api_history[0] and role == "assistant":
+                    return
                 if role == "user":
                     # 细分 user 消息
                     new_section = _classify_user(item.get("content", ""))
@@ -317,6 +325,42 @@ class SessionLog:
 
 
     def _save_html(self, save_session):
+        # 判断是否为初始会话条目（含 "file name" 键）
+        is_init_session = any(isinstance(item, dict) and "file name" in item for item in save_session)
+
+        if is_init_session:
+            # 初始条目：提取时间戳和文件名，生成简洁醒目的标题栏
+            session_time = ""
+            session_file = ""
+            for item in save_session:
+                if isinstance(item, dict):
+                    if "time" in item:
+                        session_time = item["time"]
+                    if "file name" in item:
+                        session_file = item["file name"]
+
+            init_html = (
+                f'<div class="session-banner">\n'
+                f'<div class="session-title">📄 {session_file}</div>\n'
+                f'<div class="session-time">🕐 {session_time}</div>\n'
+                f'</div>'
+            )
+
+            full_path = Path(self.log_root) / self.session_file_name
+            if full_path.exists():
+                old_html = full_path.read_text(encoding="utf-8")
+                body_end = old_html.rfind("</body>")
+                if body_end != -1:
+                    old_html = old_html[:body_end]
+                else:
+                    old_html = old_html.rstrip() + "\n\n"
+                new_html = old_html + '<hr/>\n' + init_html + "\n</body>\n</html>"
+            else:
+                new_html = self._html_template(init_html)
+
+            full_path.write_text(new_html, encoding="utf-8")
+            return
+
         md_chunks = []
         for item in save_session:
             md_chunks.append(self._format_log_item(item))
@@ -460,11 +504,11 @@ class SessionLog:
             '}\n'
             '.toggle-icon { \n'
             '    display: inline-block;\n'
-            '    width: 14px;\n'
+            '    width: 18px;\n'
             '    text-align: center;\n'
             '    transition: transform 0.2s;\n'
             '    color: #666;\n'
-            '    font-size: 10px;\n'
+            '    font-size: 14px;\n'
             '}\n'
             '.toggle-icon.collapsed { transform: rotate(-90deg); }\n'
             'h1, h2, h3 { color: #7c3aed; }\n'
@@ -509,6 +553,25 @@ class SessionLog:
             '    transition: background 0.15s;\n'
             '}\n'
             '.section-summary:hover { background: #f0f0f0; }\n'
+            '.session-banner {\n'
+            '    text-align: center;\n'
+            '    padding: 24px 20px;\n'
+            '    background: linear-gradient(135deg, #f5f3ff 0%, #ede9fe 100%);\n'
+            '    border-radius: 10px;\n'
+            '    margin-bottom: 8px;\n'
+            '    border: 1px solid #d8d0f0;\n'
+            '}\n'
+            '.session-title {\n'
+            '    font-size: 22px;\n'
+            '    font-weight: 700;\n'
+            '    color: #5b21b6;\n'
+            '    margin-bottom: 6px;\n'
+            '}\n'
+            '.session-time {\n'
+            '    font-size: 15px;\n'
+            '    color: #8b8ba7;\n'
+            '    font-weight: 400;\n'
+            '}\n'
             '</style>\n'
             '<script>\n'
             'function toggleEntry(id) {\n'
