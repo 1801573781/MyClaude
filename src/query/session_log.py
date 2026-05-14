@@ -59,6 +59,16 @@ class SessionLog:
         self.rsp_tokens += len(llm_rsp) // 2  # 粗略估计, 2个字节，一个token
 
 
+    def log_reasoning_content(self, reasoning_content: str):
+        """
+        记录 LLM 返回的推理内容。如果推理内容非空，以 <details> 折叠块形式记录。
+        """
+        if not reasoning_content:
+            return
+        dict_info = {"reasoning": reasoning_content}
+        self.log_dict_info(dict_info)
+
+
     def log_tool_call(self, tool_name, tool_paras):
         dict_info = {
             "tool_name": tool_name,
@@ -124,8 +134,31 @@ class SessionLog:
 
         entry_id = f"entry-{datetime.now().strftime('%H%M%S%f')}"
 
-        # 对 Markdown 代码块及散落的多行 Python 代码进行语法高亮
-        processed_content = self._process_code_blocks(new_content)
+        # 提取并移除 reasoning <details> 块（避免嵌套在 <pre> 中）
+        reasoning_blocks = []
+        reasoning_pattern = re.compile(
+            r'<details>\s*<summary>展开查看推理过程</summary>\s*(.*?)\s*</details>',
+            re.DOTALL
+        )
+        def extract_reasoning(m):
+            reasoning_blocks.append(m.group(1).strip())
+            return ''
+
+        new_content_no_reasoning = reasoning_pattern.sub(extract_reasoning, new_content)
+
+        # 对剩余内容进行语法高亮
+        processed_content = self._process_code_blocks(new_content_no_reasoning)
+
+        # 构建 reasoning 区块 HTML（在 <pre> 外部）
+        reasoning_html = ""
+        for i, r_content in enumerate(reasoning_blocks):
+            r_content_escaped = r_content.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+            reasoning_html += (
+                f'<details style="margin: 8px 0; padding: 8px; background: #f0f4ff; border: 1px solid #c0d0f0; border-radius: 6px;">\n'
+                f'<summary style="cursor: pointer; font-weight: bold; color: #4a6da7;">展开查看推理过程</summary>\n'
+                f'<pre style="margin-top: 8px; white-space: pre-wrap;">{r_content_escaped}</pre>\n'
+                f'</details>\n'
+            )
 
         # 使用字符串拼接避免 f-string 与代码中的 {} 冲突
         entry_html = (
@@ -135,6 +168,7 @@ class SessionLog:
             f'<span>{header_time}</span>\n'
             f'</div>\n'
             f'<div class="entry-content" id="content-{entry_id}">\n'
+            + reasoning_html +
             f'<pre>\n'
             + processed_content +
             f'\n</pre>\n'
@@ -312,6 +346,16 @@ class SessionLog:
         # 会话文件名（初始化时）
         if "file name" in item:
             lines.append(f"> 📄 Session: `{item['file name']}`")
+
+        # 推理内容（折叠块）
+        if "reasoning" in item and item["reasoning"].strip():
+            lines.append("**推理内容**：")
+            lines.append("<details>")
+            lines.append("<summary>展开查看推理过程</summary>")
+            lines.append("")
+            lines.append(item["reasoning"])
+            lines.append("")
+            lines.append("</details>")
 
         # LLM 消息（system / user / assistant）
         if "role" in item:

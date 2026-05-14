@@ -82,10 +82,10 @@ class QueryLoop:
                 thinking_begin = self._on_llm_req(turn, user_input)
 
                 # 发送请求给LLM
-                ai_response = chat_llm.chat_with_retry(self.api_messages.get_msg())
+                ai_response, is_truncated, reasoning_content = chat_llm.chat_with_retry(self.api_messages.get_msg())
 
             """2. 解构 LLM response"""
-            tools = self._on_llm_rsp(turn, thinking_begin, ai_response)
+            tools = self._on_llm_rsp(turn, thinking_begin, ai_response, reasoning_content)
 
             """3. 开始处理工具"""
             quit_chat = self._handle_tools(tools)
@@ -135,9 +135,12 @@ class QueryLoop:
         return thinking_begin
 
 
-    def _on_llm_rsp(self, turn, thinking_begin, ai_response):
+    def _on_llm_rsp(self, turn, thinking_begin, ai_response, reasoning_content):
         # LLM回答结束的时间戳
         thinking_end = datetime.now().strftime("%Y-%m-%d %H : %M : %S")
+
+        # 记录推理内容（如果提供商支持）
+        self.session.log_reasoning_content(reasoning_content)
 
         # 记录LLM回应的原始内容（日志保留完整内容）
         self.session.log_llm_rsp(ai_response)

@@ -38,19 +38,19 @@ def chat_with_retry(api_messages):
     max_tokens = initial_max_tokens
 
     for attempt in range(max_retries + 1):  # +1 包含首次请求
-        ai_response, is_truncated = stream_chat(api_messages, max_tokens=max_tokens)
+        ai_response, is_truncated, reasoning = stream_chat(api_messages, max_tokens=max_tokens)
 
         # 成功：没有截断标记，直接返回
         if not is_truncated:
-            return ai_response
+            return ai_response, is_truncated, reasoning
 
         # 失败：被截断了，检查是否还能继续重试
         if attempt >= max_retries:
-            return ai_response  # 返回带截断标记的结果，让上层决定怎么处理
+            return ai_response, is_truncated, reasoning  # 返回带截断标记的结果，让上层决定怎么处理
 
         next_tokens = max_tokens * 2
         if next_tokens > max_tokens_limit:
-            return ai_response
+            return ai_response, is_truncated, reasoning
 
         max_tokens = next_tokens
 
@@ -58,10 +58,11 @@ def chat_with_retry(api_messages):
 # 同步，流式
 def stream_chat(msg, max_tokens=global_cfg.model_chat.initial_max_tokens):
     """
-    流式调用聊天接口，返回完整内容和是否因长度截断。
+    流式调用聊天接口，返回 (完整内容, 是否因长度截断, 推理内容)。
     """
     is_truncated = False
     full_content = ""
+    reasoning_content = ""
 
     try:
         stream = client.chat.completions.create(
@@ -76,11 +77,15 @@ def stream_chat(msg, max_tokens=global_cfg.model_chat.initial_max_tokens):
         for chunk in stream:
             choice = chunk.choices[0]
 
-            # ① 优先收集内容（防止最后一个块同时带有内容和 finish_reason）
+            # ① 收集推理内容（如果提供商支持）
+            if choice.delta.reasoning_content:
+                reasoning_content += choice.delta.reasoning_content
+
+            # ② 收集内容（防止最后一个块同时带有内容和 finish_reason）
             if choice.delta.content:
                 full_content += choice.delta.content
 
-            # ② 再处理结束原因
+            # ③ 再处理结束原因
             if choice.finish_reason is not None:
                 if choice.finish_reason == "length":
                     # 长度截断，添加明确标记
@@ -95,14 +100,14 @@ def stream_chat(msg, max_tokens=global_cfg.model_chat.initial_max_tokens):
     except APIError as e:
         # 内容安全拦截、账号异常等
         error_body = getattr(e, 'body', str(e))
-        return f"[API_ERROR: {error_body}]", is_truncated
+        return f"[API_ERROR: {error_body}]", is_truncated, ""
     except (APIConnectionError, RateLimitError) as e:
-        return f"[API_ERROR: 网络/限流问题，{e}]", is_truncated
+        return f"[API_ERROR: 网络/限流问题，{e}]", is_truncated, ""
     except Exception as e:
         # 兜底异常（例如流读取过程中意外中断）
-        return f"[API_ERROR: 流式读取异常，{e}]", is_truncated
+        return f"[API_ERROR: 流式读取异常，{e}]", is_truncated, ""
 
-    return full_content, is_truncated
+    return full_content, is_truncated, reasoning_content
 
 
 """
