@@ -137,6 +137,13 @@ class SessionLog:
                 start_idx = i + 1
                 break
 
+        # 从缓冲中提取首个时间戳，用于 Turn 标题后缀
+        turn_time = ""
+        for item in buffer[start_idx:]:
+            if isinstance(item, dict) and "time" in item:
+                turn_time = item["time"]
+                break
+
         # 将缓冲条目按类型分组为逻辑节
         sections = self._parse_buffer_sections(buffer[start_idx:])
 
@@ -144,7 +151,9 @@ class SessionLog:
         section_html_parts = []
         section_titles = {
             "system": "⚙️ 系统提示词",
-            "user": "👤 用户输入 / 项目上下文",
+            "project_context": "📋 项目上下文",
+            "directory_tree": "🗂️ 项目目录树",
+            "user": "👤 用户输入",
             "reasoning": "💭 推理过程",
             "assistant": "🤖 LLM 应答",
             "tool": "🔧 工具调用与执行结果",
@@ -179,8 +188,10 @@ class SessionLog:
 
         all_sections_html = "\n".join(section_html_parts)
 
-        # Turn 层折叠
+        # Turn 层折叠：标题包含轮次和时间戳
         turn_label = f"🔄 Turn {self._current_turn}" if self._current_turn is not None else "Log Entry"
+        if turn_time:
+            turn_label += f"&nbsp;&nbsp;&nbsp;<span style='font-weight:normal; color:#999; font-size:0.9em;'>🕐 {turn_time}</span>"
         entry_id = f"turn-{self._current_turn or 0}-{datetime.now().strftime('%H%M%S%f')}"
 
         entry_html = (
@@ -214,10 +225,34 @@ class SessionLog:
 
 
     def _parse_buffer_sections(self, items):
-        """将 Turn 缓冲条目按内容类型分组为逻辑节，用于多级折叠。"""
+        """将 Turn 缓冲条目按内容类型分组为逻辑节，用于多级折叠。
+        细分 user 消息为：项目上下文、项目目录树、用户输入。
+        忽略纯时间戳条目（None section），合并连续同类型 section。"""
         sections = []
         current_section = None
         current_items = []
+
+        # 识别 user 消息的子类型
+        def _classify_user(content: str) -> str:
+            if not isinstance(content, str):
+                return "user"
+            if content.startswith("[项目上下文]"):
+                return "project_context"
+            if content.startswith("[项目目录树]"):
+                return "directory_tree"
+            return "user"
+
+        def _flush_section():
+            nonlocal current_section, current_items
+            if not current_items or current_section is None:
+                current_items = []
+                return
+            # 合并：如果新 section 和上一个 section 类型相同，则合并到上一个
+            if sections and sections[-1][0] == current_section:
+                sections[-1][1].extend(current_items)
+            else:
+                sections.append((current_section, current_items))
+            current_items = []
 
         def process_item(item):
             nonlocal current_section, current_items
@@ -228,26 +263,34 @@ class SessionLog:
             if not isinstance(item, dict):
                 return
             if "time" in item:
+                # 时间戳条目仅在跟随有实际内容时保留，否则忽略
                 current_items.append(item)
                 return
             if "role" in item:
                 role = item["role"]
-                if role in ("system", "user", "assistant"):
-                    if current_section != role:
-                        if current_items:
-                            sections.append((current_section, current_items))
-                        current_section = role
-                        current_items = []
-                    current_items.append(item)
+                if role == "user":
+                    # 细分 user 消息
+                    new_section = _classify_user(item.get("content", ""))
+                elif role == "assistant":
+                    new_section = "assistant"
+                elif role == "system":
+                    new_section = "system"
+                else:
+                    return
+                if current_section != new_section:
+                    _flush_section()
+                    current_section = new_section
+                    current_items = []
+                current_items.append(item)
             elif "reasoning" in item:
-                if current_items:
-                    sections.append((current_section, current_items))
-                current_section = "reasoning"
-                current_items = [item]
+                if current_section != "reasoning":
+                    _flush_section()
+                    current_section = "reasoning"
+                    current_items = []
+                current_items.append(item)
             elif "tool_name" in item:
                 if current_section != "tool":
-                    if current_items:
-                        sections.append((current_section, current_items))
+                    _flush_section()
                     current_section = "tool"
                     current_items = []
                 current_items.append(item)
@@ -255,8 +298,7 @@ class SessionLog:
         for item in items:
             process_item(item)
 
-        if current_items:
-            sections.append((current_section, current_items))
+        _flush_section()
 
         return sections
 
@@ -450,6 +492,23 @@ class SessionLog:
             '    font-size: 15px;\n'
             '    line-height: 1.5;\n'
             '}\n'
+            '.section-fold {\n'
+            '    margin: 6px 0;\n'
+            '    border: 1px solid #e8e8e8;\n'
+            '    border-radius: 6px;\n'
+            '    overflow: hidden;\n'
+            '}\n'
+            '.section-summary {\n'
+            '    padding: 8px 12px;\n'
+            '    background: #fafafa;\n'
+            '    cursor: pointer;\n'
+            '    font-weight: 600;\n'
+            '    font-size: 16px;\n'
+            '    color: #4a5568;\n'
+            '    user-select: none;\n'
+            '    transition: background 0.15s;\n'
+            '}\n'
+            '.section-summary:hover { background: #f0f0f0; }\n'
             '</style>\n'
             '<script>\n'
             'function toggleEntry(id) {\n'
