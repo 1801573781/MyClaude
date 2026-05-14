@@ -1,3 +1,5 @@
+一、这是一开始的需求
+
 D:\AI\MyClaude\src\query\session_log.py，是记录日志的代码。D:\AI\MyClaude\log\MyClaude 2026-05-14 15-07-31.html，是日志记录文件，是session_log.py所记录的日志。
 
 这个日志展现（view）不尽如人意。日志中轮次（turn），每个轮次中还有，有系统提示词，有skill信息，有项目信息，有项目的路径文件地图，有用户的输入，有LLM的思考，LLM的应答，有工具的执行结果。
@@ -6,3 +8,31 @@ D:\AI\MyClaude\src\query\session_log.py，是记录日志的代码。D:\AI\MyCla
 这里面最好的折叠是“展开查看推理过程”，但是很遗憾，这个折叠的外面，也包裹了两个时间戳，看起来不好看。时间戳需要记录在日志里，但是放在外层包括里面的内容，就不太好看。
 
 请阅读D:\AI\MyClaude\src\query\session_log.py、D:\AI\MyClaude\log\MyClaude 2026-05-14 15-07-31.html。分析相关的信息，并对D:\AI\MyClaude\src\query\session_log.py做修改，优化其所记录日志的view。
+
+二、你根据此需求，修改了代码
+修改总结：
+
+
+ 文件            改动
+ ───────────────────────────────────────────────────────────────────────────────────────────
+ session_log.py  添加 Turn 级缓冲机制：_turn_buffer、_current_turn、_has_turn_content
+ session_log.py  log_turn() 改为先 flush 上一 Turn 再开新缓冲
+ session_log.py  log_dict_info() 改为追加到缓冲而非直接写盘
+ session_log.py  新增 flush_turn() 公共方法
+ session_log.py  新增 _flush_turn_html()：折叠标题用 "🔄 Turn N"，时间戳仅作内部 **🕐** 标签
+ query_loop.py   会话结束时调用 self.session.flush_turn() 确保最后一 Turn 持久化
+
+
+效果：
+
+ • 每个 Turn 的所有内容（系统提示词、项目上下文、用户输入、推理过程、LLM 应答、工具调用及结果）折叠在一个条目下，标题为 🔄 Turn N
+ • 原来丑陋的时间戳外包裹不再存在，时间戳退化为内容内部的小标签
+ • "展开查看推理过程" 折叠块保持独立，仍位于 <pre> 外部，不受影响
+ • Session 初始化条目保持原有格式（时间戳标题，内容极少，不影响观感）
+
+ 三、你修改的很好，但是，还需要继续改进。
+ 1、每个turn里面的内容，有系统提示词，有skill信息，有项目信息，有项目的路径文件地图，有用户的输入，有LLM的思考，LLM的应答，有工具的执行结果，这些都需要折叠
+ 2、展开查看推理过程，位置放的不对，不能放在每个Turn的开头，得放在用户的输入之后
+ 3、你修改后的代码是D:\AI\MyClaude\src\query\session_log.py，你修改后的代码所记录的日志是：D:\AI\MyClaude\log\MyClaude 2026-05-14 15-44-15.html
+ 4、请阅读这两个文件，如果有必要的话，请阅读D:\AI\MyClaude\src\query\query_loop.py，以及项目中其他文件，请仔细思考，代码该怎么修改，能让日志的展现（view）变得可以多级折叠
+ 

@@ -125,52 +125,63 @@ class SessionLog:
 
 
     def _flush_turn_html(self):
-        """将当前 Turn 缓冲一次性写入 HTML 文件，折叠标题为 🔄 Turn N，时间戳仅作内部标签。"""
+        """将当前 Turn 缓冲一次性写入 HTML 文件，Turn 内按内容类型进行多级折叠。"""
         buffer = self._turn_buffer
         if not buffer:
             return
 
-        # 跳过第一条 turn 条目（已在 fold 标题中显示），只格式化其余内容
-        start_idx = 1
+        # 跳过 turn 标记条目
+        start_idx = 0
         for i, item in enumerate(buffer):
             if isinstance(item, dict) and "turn" in item:
                 start_idx = i + 1
                 break
 
-        md_chunks = []
-        for item in buffer[start_idx:]:
-            md_chunks.append(self._format_log_item(item))
-        new_content = "\n\n".join(md_chunks)
+        # 将缓冲条目按类型分组为逻辑节
+        sections = self._parse_buffer_sections(buffer[start_idx:])
 
-        # 提取 Turn 标题
+        # 为每个节构建子折叠 HTML
+        section_html_parts = []
+        section_titles = {
+            "system": "⚙️ 系统提示词",
+            "user": "👤 用户输入 / 项目上下文",
+            "reasoning": "💭 推理过程",
+            "assistant": "🤖 LLM 应答",
+            "tool": "🔧 工具调用与执行结果",
+        }
+
+        for section_name, items in sections:
+            if section_name == "reasoning":
+                reasoning_text = ""
+                for item in items:
+                    if isinstance(item, dict) and "reasoning" in item:
+                        reasoning_text = item["reasoning"]
+                        break
+                reasoning_escaped = reasoning_text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                section_content = f'<pre>{reasoning_escaped}</pre>'
+            else:
+                md_chunks = []
+                for item in items:
+                    md_chunks.append(self._format_log_item(item))
+                md_content = "\n\n".join(md_chunks)
+                section_content = f'<pre>{self._process_code_blocks(md_content)}</pre>'
+
+            title = section_titles.get(section_name, section_name)
+            # 推理节默认折叠，其余默认展开
+            open_attr = "" if section_name == "reasoning" else " open"
+            section_html = (
+                f'<details class="section-fold"{open_attr}>\n'
+                f'<summary class="section-summary">{title}</summary>\n'
+                + section_content +
+                f'\n</details>'
+            )
+            section_html_parts.append(section_html)
+
+        all_sections_html = "\n".join(section_html_parts)
+
+        # Turn 层折叠
         turn_label = f"🔄 Turn {self._current_turn}" if self._current_turn is not None else "Log Entry"
         entry_id = f"turn-{self._current_turn or 0}-{datetime.now().strftime('%H%M%S%f')}"
-
-        # 提取并移除 reasoning <details> 块
-        reasoning_blocks = []
-        reasoning_pattern = re.compile(
-            r'<details>\s*<summary>展开查看推理过程</summary>\s*(.*?)\s*</details>',
-            re.DOTALL
-        )
-        def extract_reasoning(m):
-            reasoning_blocks.append(m.group(1).strip())
-            return ''
-
-        new_content_no_reasoning = reasoning_pattern.sub(extract_reasoning, new_content)
-
-        # 语法高亮
-        processed_content = self._process_code_blocks(new_content_no_reasoning)
-
-        # 推理区块 HTML
-        reasoning_html = ""
-        for r_content in reasoning_blocks:
-            r_content_escaped = r_content.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-            reasoning_html += (
-                '<details style="margin: 8px 0; padding: 8px; background: #f0f4ff; border: 1px solid #c0d0f0; border-radius: 6px;">\n'
-                '<summary style="cursor: pointer; font-weight: bold; color: #4a6da7;">展开查看推理过程</summary>\n'
-                f'<pre style="margin-top: 8px; white-space: pre-wrap;">{r_content_escaped}</pre>\n'
-                '</details>\n'
-            )
 
         entry_html = (
             f'<div class="entry">\n'
@@ -179,11 +190,8 @@ class SessionLog:
             f'<span><strong>{turn_label}</strong></span>\n'
             f'</div>\n'
             f'<div class="entry-content" id="content-{entry_id}">\n'
-            + reasoning_html +
-            f'<pre>\n'
-            + processed_content +
-            f'\n</pre>\n'
-            f'</div>\n'
+            + all_sections_html +
+            f'\n</div>\n'
             f'</div>'
         )
 
@@ -203,6 +211,54 @@ class SessionLog:
             new_html = self._html_template(entry_html)
 
         full_path.write_text(new_html, encoding="utf-8")
+
+
+    def _parse_buffer_sections(self, items):
+        """将 Turn 缓冲条目按内容类型分组为逻辑节，用于多级折叠。"""
+        sections = []
+        current_section = None
+        current_items = []
+
+        def process_item(item):
+            nonlocal current_section, current_items
+            if isinstance(item, list):
+                for sub in item:
+                    process_item(sub)
+                return
+            if not isinstance(item, dict):
+                return
+            if "time" in item:
+                current_items.append(item)
+                return
+            if "role" in item:
+                role = item["role"]
+                if role in ("system", "user", "assistant"):
+                    if current_section != role:
+                        if current_items:
+                            sections.append((current_section, current_items))
+                        current_section = role
+                        current_items = []
+                    current_items.append(item)
+            elif "reasoning" in item:
+                if current_items:
+                    sections.append((current_section, current_items))
+                current_section = "reasoning"
+                current_items = [item]
+            elif "tool_name" in item:
+                if current_section != "tool":
+                    if current_items:
+                        sections.append((current_section, current_items))
+                    current_section = "tool"
+                    current_items = []
+                current_items.append(item)
+
+        for item in items:
+            process_item(item)
+
+        if current_items:
+            sections.append((current_section, current_items))
+
+        return sections
 
 
     def _save_md(self, save_session):
