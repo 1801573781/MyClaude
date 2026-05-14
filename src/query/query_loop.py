@@ -98,6 +98,9 @@ class QueryLoop:
             self._print_info(f"达到最大轮次限制 ({self.max_turns})，强制结束")
         # 否则的话，就是正常退出，这里不用打印任何信息
 
+        # 确保最后一个 Turn 的内容被持久化
+        self.session.flush_turn()
+
         # 估算tokens
         req_tokens, rsp_tokens = self.session.get_tokens()
         self.req_tokens += req_tokens

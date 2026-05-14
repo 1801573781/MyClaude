@@ -1,0 +1,8 @@
+D:\AI\MyClaude\src\query\session_log.py，是记录日志的代码。D:\AI\MyClaude\log\MyClaude 2026-05-14 15-07-31.html，是日志记录文件，是session_log.py所记录的日志。
+
+这个日志展现（view）不尽如人意。日志中轮次（turn），每个轮次中还有，有系统提示词，有skill信息，有项目信息，有项目的路径文件地图，有用户的输入，有LLM的思考，LLM的应答，有工具的执行结果。
+
+这些能不能都有一个很好的折叠？
+这里面最好的折叠是“展开查看推理过程”，但是很遗憾，这个折叠的外面，也包裹了两个时间戳，看起来不好看。时间戳需要记录在日志里，但是放在外层包括里面的内容，就不太好看。
+
+请阅读D:\AI\MyClaude\src\query\session_log.py、D:\AI\MyClaude\log\MyClaude 2026-05-14 15-07-31.html。分析相关的信息，并对D:\AI\MyClaude\src\query\session_log.py做修改，优化其所记录日志的view。

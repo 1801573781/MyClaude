@@ -17,6 +17,9 @@ class SessionLog:
         self.session_file_name = ""
         self.req_tokens = 0
         self.rsp_tokens = 0
+        self._turn_buffer = []
+        self._current_turn = None
+        self._has_turn_content = False
 
 
     def init_session(self):
@@ -37,8 +40,12 @@ class SessionLog:
 
 
     def log_turn(self, turn):
-        dict_info = {"turn": turn}
-        self.log_dict_info(dict_info)
+        # 先 flush 上一 Turn（如果有）
+        if self._has_turn_content:
+            self.flush_turn()
+        self._current_turn = turn
+        self._turn_buffer = [{"turn": turn}]
+        self._has_turn_content = True
 
 
     def log_llm_req(self, req_dict):
@@ -86,13 +93,22 @@ class SessionLog:
 
 
     def log_dict_info(self, dict_info):
-        save_session = []
         timestamp = datetime.now().strftime("%Y-%m-%d %H : %M : %S")
+        self._turn_buffer.append({"time": timestamp})
+        self._turn_buffer.append(dict_info)
 
-        save_session.append({"time": timestamp})
-        save_session.append(dict_info)
 
-        self._save_session_log(save_session)
+    def flush_turn(self):
+        """将当前 Turn 缓冲的所有条目一次性写入文件。"""
+        if not self._has_turn_content:
+            return
+        if self.format == "html":
+            self._flush_turn_html()
+        else:
+            self._save_session_log(self._turn_buffer)
+        self._turn_buffer = []
+        self._has_turn_content = False
+        self._current_turn = None
 
 
     """持久化 session 会话的历史"""
@@ -106,6 +122,87 @@ class SessionLog:
             self._save_html(save_session)
         else:
             self._save_md(save_session)
+
+
+    def _flush_turn_html(self):
+        """将当前 Turn 缓冲一次性写入 HTML 文件，折叠标题为 🔄 Turn N，时间戳仅作内部标签。"""
+        buffer = self._turn_buffer
+        if not buffer:
+            return
+
+        # 跳过第一条 turn 条目（已在 fold 标题中显示），只格式化其余内容
+        start_idx = 1
+        for i, item in enumerate(buffer):
+            if isinstance(item, dict) and "turn" in item:
+                start_idx = i + 1
+                break
+
+        md_chunks = []
+        for item in buffer[start_idx:]:
+            md_chunks.append(self._format_log_item(item))
+        new_content = "\n\n".join(md_chunks)
+
+        # 提取 Turn 标题
+        turn_label = f"🔄 Turn {self._current_turn}" if self._current_turn is not None else "Log Entry"
+        entry_id = f"turn-{self._current_turn or 0}-{datetime.now().strftime('%H%M%S%f')}"
+
+        # 提取并移除 reasoning <details> 块
+        reasoning_blocks = []
+        reasoning_pattern = re.compile(
+            r'<details>\s*<summary>展开查看推理过程</summary>\s*(.*?)\s*</details>',
+            re.DOTALL
+        )
+        def extract_reasoning(m):
+            reasoning_blocks.append(m.group(1).strip())
+            return ''
+
+        new_content_no_reasoning = reasoning_pattern.sub(extract_reasoning, new_content)
+
+        # 语法高亮
+        processed_content = self._process_code_blocks(new_content_no_reasoning)
+
+        # 推理区块 HTML
+        reasoning_html = ""
+        for r_content in reasoning_blocks:
+            r_content_escaped = r_content.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+            reasoning_html += (
+                '<details style="margin: 8px 0; padding: 8px; background: #f0f4ff; border: 1px solid #c0d0f0; border-radius: 6px;">\n'
+                '<summary style="cursor: pointer; font-weight: bold; color: #4a6da7;">展开查看推理过程</summary>\n'
+                f'<pre style="margin-top: 8px; white-space: pre-wrap;">{r_content_escaped}</pre>\n'
+                '</details>\n'
+            )
+
+        entry_html = (
+            f'<div class="entry">\n'
+            f'<div class="entry-header" onclick="toggleEntry(\'{entry_id}\')">\n'
+            f'<span class="toggle-icon" id="icon-{entry_id}">&#9662;</span>\n'
+            f'<span><strong>{turn_label}</strong></span>\n'
+            f'</div>\n'
+            f'<div class="entry-content" id="content-{entry_id}">\n'
+            + reasoning_html +
+            f'<pre>\n'
+            + processed_content +
+            f'\n</pre>\n'
+            f'</div>\n'
+            f'</div>'
+        )
+
+        full_path = Path(self.log_root) / self.session_file_name
+
+        if full_path.exists():
+            old_html = full_path.read_text(encoding="utf-8")
+            body_end = old_html.rfind("</body>")
+            if body_end != -1:
+                old_html = old_html[:body_end]
+            else:
+                old_html = old_html.rstrip() + "\n\n"
+
+            separator = '<hr/>\n'
+            new_html = old_html + separator + entry_html + "\n</body>\n</html>"
+        else:
+            new_html = self._html_template(entry_html)
+
+        full_path.write_text(new_html, encoding="utf-8")
 
 
     def _save_md(self, save_session):
@@ -349,7 +446,6 @@ class SessionLog:
 
         # 推理内容（折叠块）
         if "reasoning" in item and item["reasoning"].strip():
-            lines.append("**推理内容**：")
             lines.append("<details>")
             lines.append("<summary>展开查看推理过程</summary>")
             lines.append("")
