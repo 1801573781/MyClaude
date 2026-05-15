@@ -151,6 +151,7 @@ class SessionLog:
         section_html_parts = []
         section_titles = {
             "system": "⚙️ 系统提示词",
+            "installed_skills": "📦 Installed Skills",
             "project_context": "📋 项目上下文",
             "directory_tree": "🗂️ 项目目录树",
             "user": "👤 用户输入",
@@ -176,8 +177,8 @@ class SessionLog:
                 section_content = f'<pre>{self._process_code_blocks(md_content)}</pre>'
 
             title = section_titles.get(section_name, section_name)
-            # 推理节默认折叠，其余默认展开
-            open_attr = "" if section_name == "reasoning" else " open"
+            # 所有子节默认折叠
+            open_attr = ""
             section_html = (
                 f'<details class="section-fold"{open_attr}>\n'
                 f'<summary class="section-summary">{title}</summary>\n'
@@ -227,6 +228,7 @@ class SessionLog:
     def _parse_buffer_sections(self, items):
         """将 Turn 缓冲条目按内容类型分组为逻辑节，用于多级折叠。
         细分 user 消息为：项目上下文、项目目录树、用户输入。
+        将 system 消息中的 Installed Skills 拆分为独立 section。
         忽略纯时间戳条目（None section），合并连续同类型 section。"""
         sections = []
         current_section = None
@@ -282,6 +284,30 @@ class SessionLog:
                 elif role == "assistant":
                     new_section = "assistant"
                 elif role == "system":
+                    # 检查是否需要将 Installed Skills 独立拆分
+                    content = item.get("content", "")
+                    if "## Installed Skills" in str(content):
+                        # 找到 ## Installed Skills 的位置，拆分为 system 和 installed_skills 两部分
+                        idx = content.index("## Installed Skills")
+                        sys_part = content[:idx]
+                        skill_part = content[idx:]
+                        # 先 flush 当前 system section
+                        if current_section != "system":
+                            _flush_section()
+                            current_section = "system"
+                            current_items = []
+                        # 放入 system 部分（去除尾部空白以保持整洁）
+                        if sys_part.strip():
+                            system_item = {"role": "system", "content": sys_part}
+                            current_items.append(system_item)
+                        _flush_section()
+                        # 再创建 installed_skills section
+                        current_section = "installed_skills"
+                        current_items = [{"role": "system", "content": skill_part}]
+                        _flush_section()
+                        current_section = None
+                        current_items = []
+                        return
                     new_section = "system"
                 else:
                     return
@@ -504,11 +530,11 @@ class SessionLog:
             '}\n'
             '.toggle-icon { \n'
             '    display: inline-block;\n'
-            '    width: 18px;\n'
+            '    width: 24px;\n'
             '    text-align: center;\n'
             '    transition: transform 0.2s;\n'
             '    color: #666;\n'
-            '    font-size: 14px;\n'
+            '    font-size: 36px;\n'
             '}\n'
             '.toggle-icon.collapsed { transform: rotate(-90deg); }\n'
             'h1, h2, h3 { color: #7c3aed; }\n'
