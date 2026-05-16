@@ -79,7 +79,8 @@ class MemoryManager:
                    content: str,
                    mem_type: str,
                    importance: float = 0.5,
-                   tags: Optional[List[str]] = None) -> str:
+                   tags: Optional[List[str]] = None,
+                   metadata: Optional[Dict] = None) -> str:
         """
         添加一条记忆，返回记忆 ID（32 位十六进制字符串）。
 
@@ -88,6 +89,7 @@ class MemoryManager:
             mem_type:   "working" | "short" | "long"。
             importance: 0.0~1.0，默认 0.5。
             tags:       可选标签列表。
+            metadata:   可选元数据字典（如 user_input / llm_reasoning 等结构化字段）。
 
         行为:
             - mem_type == "working" → 仅追加到 self._working_memories，不持久化。
@@ -109,7 +111,7 @@ class MemoryManager:
                 "access_count": 0,
                 "last_access": now,
                 "tags": tags if isinstance(tags, list) else [],
-                "metadata": {}
+                "metadata": metadata if isinstance(metadata, dict) else {}
             }
             self._working_memories.append(memory)
             self._enforce_working_token_limit()
@@ -126,7 +128,7 @@ class MemoryManager:
             "access_count": 0,
             "last_access": now,
             "tags": tags or [],
-            "metadata": {}
+            "metadata": metadata if isinstance(metadata, dict) else {}
         }
         return self._store.add(memory)
 

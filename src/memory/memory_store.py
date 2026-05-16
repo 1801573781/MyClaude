@@ -34,6 +34,40 @@ class MemoryStore:
 
     # ==================== 公开 CRUD ====================
 
+    @staticmethod
+    def _now_iso() -> str:
+        """返回当前时间的 ISO 格式字符串（人类可读）。"""
+        return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+
+    @staticmethod
+    def _normalize_timestamp(value, field_name: str = "") -> str:
+        """
+        将 timestamp/last_access 统一转换为人类可读的 ISO 格式字符串。
+
+        处理三种情况：
+        1. 已经是 ISO 格式字符串 → 直接返回
+        2. 是 Unix 时间戳（int/float）→ 转换为 ISO
+        3. 无效值（0、空、非数字）→ 返回当前 ISO 时间
+        """
+        # 情况 1：已经是 ISO 字符串
+        if isinstance(value, str):
+            if value.strip():
+                return value
+            else:
+                return MemoryStore._now_iso()
+
+        # 情况 2：是 int/float Unix 时间戳
+        if isinstance(value, (int, float)):
+            if value > 0:
+                try:
+                    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(value))
+                except (OSError, ValueError):
+                    pass
+            return MemoryStore._now_iso()
+
+        # 情况 3：其他无效类型
+        return MemoryStore._now_iso()
+
     def add(self, memory: Dict) -> str:
         """
         添加一条记忆并持久化。
@@ -46,11 +80,9 @@ class MemoryStore:
         """
         if not memory.get("id"):
             memory["id"] = uuid.uuid4().hex
-        now = int(time.time())
-        if not memory.get("timestamp"):
-            memory["timestamp"] = now
-        if not memory.get("last_access"):
-            memory["last_access"] = now
+        now = self._now_iso()
+        memory["timestamp"] = self._normalize_timestamp(memory.get("timestamp", now))
+        memory["last_access"] = self._normalize_timestamp(memory.get("last_access", now))
         memory.setdefault("access_count", 0)
         memory.setdefault("importance", 0.5)
         memory.setdefault("tags", [])
@@ -122,7 +154,7 @@ class MemoryStore:
         if access_count is not None:
             mem["access_count"] = access_count
         if last_access is not None:
-            mem["last_access"] = last_access
+            mem["last_access"] = self._normalize_timestamp(last_access)
         self._flush()
         logger.info(f"更新记忆 {memory_id}")
         return True
@@ -281,18 +313,16 @@ class MemoryStore:
             importance = 0.5
         validated["importance"] = max(0.0, min(1.0, float(importance)))
 
-        # timestamp: 缺失或 0 → 当前时间
+        # timestamp: 缺失或无效 → 当前 ISO 时间
         ts = validated.get("timestamp", 0)
-        if not isinstance(ts, (int, float)) or ts <= 0:
-            validated["timestamp"] = int(time.time())
+        validated["timestamp"] = self._normalize_timestamp(ts, "timestamp")
 
         # access_count
         validated.setdefault("access_count", 0)
 
         # last_access
         la = validated.get("last_access", 0)
-        if not isinstance(la, (int, float)) or la <= 0:
-            validated["last_access"] = validated["timestamp"]
+        validated["last_access"] = self._normalize_timestamp(la, "last_access")
 
         # tags: 不是列表 → 空列表
         if not isinstance(validated.get("tags"), list):

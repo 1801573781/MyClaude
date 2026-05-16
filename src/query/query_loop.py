@@ -261,19 +261,34 @@ class QueryLoop:
         # 每轮对话后，将摘要存入工作记忆
         if self._memory_manager is not None:
             try:
-                # 生成用户输入摘要（截取前150字符）
-                user_summary = user_input[:150] if user_input else ""
-                # 生成工具调用摘要（含路径和 summary，对 LLM 更有价值）
+                # 用户输入摘要（截取前100字符）
+                user_summary = user_input[:100] if user_input else ""
+
+                # LLM 推理过程摘要
+                thinking_summary = ""
+                if reasoning_content:
+                    thinking_summary = reasoning_content[:250].strip()
+                    if len(reasoning_content) > 250:
+                        thinking_summary += "..."
+
+                # LLM 应答摘要
+                response_summary = ""
+                if remaining_text:
+                    response_summary = remaining_text[:250].strip()
+                    if len(remaining_text) > 250:
+                        response_summary += "..."
+
+                # 工具调用摘要
                 tool_details = []
                 for t in tools:
                     name = t.get("llm_tool", "")
                     params = t.get("params", {})
                     path = params.get("path", "")
-                    summary = params.get("summary", "")
+                    summ = params.get("summary", "")
                     if name in ("create", "str_replace") and path:
                         detail = f"{name}({path}"
-                        if summary:
-                            detail += f": {summary}"
+                        if summ:
+                            detail += f": {summ}"
                         detail += ")"
                     elif name == "file_view" and path:
                         detail = f"file_view({path})"
@@ -285,16 +300,35 @@ class QueryLoop:
                         detail = name
                     tool_details.append(detail)
                 tool_summary = "; ".join(tool_details) if tool_details else "无工具调用"
-                memory_content = f"[Turn {turn}] 用户: {user_summary} | LLM: {tool_summary}"
 
-                # 截断到 500 字符以内（为丰富信息留足空间）
-                if len(memory_content) > 500:
-                    memory_content = memory_content[:497] + "..."
+                # 构造换行分隔的 content（方便直接阅读）
+                content_parts = [f"[Turn {turn}]"]
+                content_parts.append(f"用户输入: {user_summary}")
+                if thinking_summary:
+                    content_parts.append(f"LLM推理过程: {thinking_summary}")
+                if response_summary:
+                    content_parts.append(f"LLM应答: {response_summary}")
+                content_parts.append(f"LLM工具调用: {tool_summary}")
+                memory_content = "\n".join(content_parts)
+
+                # 截断到 800 字符以内
+                if len(memory_content) > 800:
+                    memory_content = memory_content[:797] + "..."
+
+                # 构造结构化 metadata（保留完整字段，供 memory_injector 格式化展示）
+                metadata = {
+                    "turn": turn,
+                    "user_input": user_summary,
+                    "llm_reasoning": thinking_summary,
+                    "llm_response": response_summary,
+                    "llm_tool_call": tool_summary
+                }
 
                 self._memory_manager.add_memory(
                     content=memory_content,
                     mem_type="working",
-                    importance=0.5
+                    importance=0.5,
+                    metadata=metadata
                 )
             except Exception as e:
                 self._print_info(f"[记忆存储失败] {e}")

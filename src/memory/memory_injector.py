@@ -72,11 +72,30 @@ class MemoryInjector:
 
     @staticmethod
     def _format_working_section(working_memories: List[Dict]) -> str:
-        """格式化工作记忆段。"""
+        """格式化工作记忆段（优先使用 metadata 结构化字段，换行展示）。"""
         lines = ["[当前任务上下文]"]
         for mem in working_memories:
-            content = mem.get("content", "")
-            lines.append(f"- {content}")
+            metadata = mem.get("metadata", {})
+            if metadata and isinstance(metadata, dict) and "turn" in metadata:
+                # 使用结构化 metadata 换行展示
+                turn = metadata.get("turn", "?")
+                user_input = metadata.get("user_input", "")
+                llm_reasoning = metadata.get("llm_reasoning", "")
+                llm_response = metadata.get("llm_response", "")
+                llm_tool_call = metadata.get("llm_tool_call", "")
+
+                parts = [f"- [Turn {turn}]"]
+                parts.append(f"  用户输入: {user_input}")
+                if llm_reasoning:
+                    parts.append(f"  LLM推理过程: {llm_reasoning}")
+                if llm_response:
+                    parts.append(f"  LLM应答: {llm_response}")
+                parts.append(f"  LLM工具调用: {llm_tool_call}")
+                lines.append("\n".join(parts))
+            else:
+                # 降级：直接展示 content（兼容旧格式）
+                content = mem.get("content", "")
+                lines.append(f"- {content}")
         return "\n".join(lines)
 
     @staticmethod
