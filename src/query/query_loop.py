@@ -1,13 +1,17 @@
 from enum import Enum
 from contextlib import AbstractContextManager
 from datetime import datetime
-from typing import Callable, Dict
+from typing import Callable, Dict, Optional
 from query import chat_llm
 from message import llm_api_msg
 from llm_tool import tool_executor
 from utility.config_loader import global_cfg
 from utility.normal_utility import strip_thinking
 from query.session_log import SessionLog
+from memory.memory_manager import MemoryManager
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class ChatOrNot(Enum):
@@ -31,6 +35,9 @@ class QueryLoop:
         self.max_turns = 0
         self.is_chat_mode = True
 
+        self._memory_manager = self._init_memory_manager()
+        self._memory_used = False
+
         self._print_info = None
         self._print_llm_rsp = None
         self._print_tool_call = None
@@ -38,6 +45,41 @@ class QueryLoop:
 
         self.req_tokens = 0
         self.rsp_tokens = 0
+
+
+    @staticmethod
+    def _init_memory_manager():
+        """根据全局配置初始化 MemoryManager，CLI 层无需感知。"""
+        from utility.config_loader import global_cfg
+        from memory.memory_manager import MemoryManager
+
+        mem_enabled = getattr(global_cfg.memory, 'enabled', False)
+
+        if not mem_enabled:
+            return None
+
+        mem_cfg_dict = {
+            'enabled': getattr(global_cfg.memory, 'enabled', True),
+            'storage_path': getattr(global_cfg.memory, 'storage_path', '.memdir'),
+            'similarity_threshold': getattr(global_cfg.memory, 'similarity_threshold', 0.15),
+            'short_term_max_entries': getattr(global_cfg.memory, 'short_term_max_entries', 50),
+            'short_term_max_tokens': getattr(global_cfg.memory, 'short_term_max_tokens', 8000),
+            'compress_batch_size': getattr(global_cfg.memory, 'compress_batch_size', 20),
+            'working_memory_max_tokens': getattr(global_cfg.memory, 'working_memory_max_tokens', 2000),
+            'long_term_max_inject': getattr(global_cfg.memory, 'long_term_max_inject', 5),
+            'forget_older_than_days': getattr(global_cfg.memory, 'forget_older_than_days', 30),
+            'forget_importance_below': getattr(global_cfg.memory, 'forget_importance_below', 0.2),
+        }
+        memory_manager = MemoryManager(config={'memory': mem_cfg_dict})
+
+        # 为 MemoryCompressor 注入 LLM 回调
+        def _llm_call_simple(messages, max_tokens, temperature):
+            result, _, _ = chat_llm.chat_with_retry(messages)
+            return result
+
+        memory_manager.set_llm_call(_llm_call_simple)
+
+        return memory_manager
 
 
     def get_tokens(self):
@@ -72,6 +114,13 @@ class QueryLoop:
         self.max_turns = global_cfg.cli.max_turns
         self.is_chat_mode = True
 
+        # 新任务开始，清空上一轮的工作记忆
+        if self._memory_manager is not None:
+            try:
+                self._memory_manager.clear_working_memory()
+            except Exception as e:
+                self._print_info(f"[清空工作记忆失败] {e}")
+
         # 开始跟LLM多次循环交互，目的是为了完成用户任务（user_input）
         while turn < self.max_turns:
             turn += 1
@@ -85,7 +134,7 @@ class QueryLoop:
                 ai_response, is_truncated, reasoning_content = chat_llm.chat_with_retry(self.api_messages.get_msg())
 
             """2. 解构 LLM response"""
-            tools = self._on_llm_rsp(turn, thinking_begin, ai_response, reasoning_content)
+            tools = self._on_llm_rsp(turn, user_input, thinking_begin, ai_response, reasoning_content)
 
             """3. 开始处理工具"""
             quit_chat = self._handle_tools(tools)
@@ -106,6 +155,20 @@ class QueryLoop:
         self.req_tokens += req_tokens
         self.rsp_tokens += rsp_tokens
 
+        # 会话结束时：持久化工作记忆 → 压缩 → 遗忘
+        if self._memory_manager is not None and self._memory_used:
+            try:
+                count = self._memory_manager.persist_working_to_short()
+                logger.info(f"已持久化 {count} 条工作记忆为短期记忆")
+
+                compressed_count = self._memory_manager.compress_short_term()
+                logger.info(f"本次压缩生成 {compressed_count} 条长期记忆")
+
+                forgot_count = self._memory_manager.forget()
+                logger.info(f"本次遗忘 {forgot_count} 条长期记忆")
+            except Exception as e:
+                logger.error(f"记忆生命周期处理失败: {e}")
+
 
     """
     1. 本来想着，这里跟CLI那个模块，完全解耦，但是发现做不到
@@ -123,6 +186,22 @@ class QueryLoop:
 
             self.api_messages.init_api_msg(user_input)
 
+            # 注入记忆上下文（如果启用了记忆模块）
+            if self._memory_manager is not None:
+                self._memory_used = True  # 只要启用记忆，就需要走生命周期流程
+                try:
+                    mem_context = self._memory_manager.inject_context(
+                        current_query=user_input
+                    )
+                    if mem_context:
+                        wrapped = (
+                            "[系统提醒] 以下是与当前任务相关的历史记忆，仅供参考：\n\n"
+                            + mem_context
+                        )
+                        self.api_messages.append_micro_info("user", wrapped)
+                except Exception as e:
+                    self._print_info(f"[记忆注入失败] {e}")
+
         # 倒数最后一轮，命令式提醒
         if turn == self.max_turns and not self.is_chat_mode:
             command = "命令：如果你已完成所有修改，请立即调用 <llm_tool>done</llm_tool> 结束任务。不要继续调用其他工具。"
@@ -138,7 +217,7 @@ class QueryLoop:
         return thinking_begin
 
 
-    def _on_llm_rsp(self, turn, thinking_begin, ai_response, reasoning_content):
+    def _on_llm_rsp(self, turn, user_input, thinking_begin, ai_response, reasoning_content):
         # LLM回答结束的时间戳
         thinking_end = datetime.now().strftime("%Y-%m-%d %H : %M : %S")
 
@@ -151,15 +230,16 @@ class QueryLoop:
         # 去除thinking部分（针对 Claude 风格，DeepSeek 无此部分）
         ai_response_clean = strip_thinking(ai_response)
 
+        '''
         # ---------- 新增：压缩 assistant 消息 ----------
         compressed_response = self._compress_assistant_message(ai_response_clean)
-        # -----------------------------------------
-
+        
         # 将压缩后的响应追加到历史消息中（用于下一轮对话）
-        # self.api_messages.append_llm_response(compressed_response)
+        self.api_messages.append_llm_response(compressed_response)
+        # -----------------------------------------
+        '''
 
-        # 或者是直接附上原始的LLM的response（去除thinking部分）
-        # 到底是哪种方法好，待测试
+        # 或者是直接附上原始的LLM的response（去除thinking部分），现在看来，LLM response消息不能压缩后再扔回去
         self.api_messages.append_llm_response(ai_response_clean)
 
         # 是否给用户显示LLM的think过程
@@ -177,6 +257,28 @@ class QueryLoop:
             self._print_llm_rsp(remaining_text)
 
         self._print_info(f"Thinking-{turn}, 结束时间：{thinking_end}")
+
+        # 每轮对话后，将摘要存入工作记忆
+        if self._memory_manager is not None:
+            try:
+                # 生成用户输入摘要（截取前150字符）
+                user_summary = user_input[:150] if user_input else ""
+                # 生成工具调用摘要
+                tool_names = [t.get("llm_tool", "") for t in tools]
+                tool_summary = "; ".join(tool_names) if tool_names else "无工具调用"
+                memory_content = f"[Turn {turn}] 用户: {user_summary} | LLM: {tool_summary}"
+
+                # 截断到200字符以内
+                if len(memory_content) > 200:
+                    memory_content = memory_content[:197] + "..."
+
+                self._memory_manager.add_memory(
+                    content=memory_content,
+                    mem_type="working",
+                    importance=0.5
+                )
+            except Exception as e:
+                self._print_info(f"[记忆存储失败] {e}")
 
         return tools
 

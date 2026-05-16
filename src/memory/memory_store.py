@@ -93,15 +93,19 @@ class MemoryStore:
     def update(self, memory_id: str,
                content: Optional[str] = None,
                importance: Optional[float] = None,
-               tags: Optional[List[str]] = None) -> bool:
+               tags: Optional[List[str]] = None,
+               access_count: Optional[int] = None,
+               last_access: Optional[int] = None) -> bool:
         """
         更新已有记忆的部分字段。
 
         参数:
-            memory_id:  目标记忆 ID。
-            content:    新内容（None 表示不修改）。
-            importance: 新重要性（None 表示不修改）。
-            tags:       新标签列表（None 表示不修改）。
+            memory_id:   目标记忆 ID。
+            content:     新内容（None 表示不修改）。
+            importance:  新重要性（None 表示不修改）。
+            tags:        新标签列表（None 表示不修改）。
+            access_count: 新访问次数（None 表示不修改）。
+            last_access:  新最后访问时间戳（None 表示不修改）。
 
         返回:
             True 表示更新成功，False 表示未找到指定 ID。
@@ -115,6 +119,10 @@ class MemoryStore:
             mem["importance"] = max(0.0, min(1.0, importance))
         if tags is not None:
             mem["tags"] = tags
+        if access_count is not None:
+            mem["access_count"] = access_count
+        if last_access is not None:
+            mem["last_access"] = last_access
         self._flush()
         logger.info(f"更新记忆 {memory_id}")
         return True

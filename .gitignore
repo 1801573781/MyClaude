@@ -3,12 +3,16 @@
 
 # 忽略整个目录
 .memdir/
+.memdir_test/
 __pycache__/
 venv/
 .idea/
 logo/
 src/crawler/
 src/spider/
+
+# 忽略这个特殊文件，这个文件是为了给MyClaude提问题单的
+spec/wanneng.txt
 
 # 忽略这些目录下的所有内容
 code_output/*

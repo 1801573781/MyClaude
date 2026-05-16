@@ -128,7 +128,7 @@ class MemoryManager:
             "tags": tags or [],
             "metadata": {}
         }
-        return self._store.save(memory)
+        return self._store.add(memory)
 
     def get_memories(self,
                      query: str,
@@ -345,13 +345,13 @@ class MemoryManager:
         if not self._enabled:
             return ""
 
-        # 检索长期记忆
+        # 检索长期记忆 + 短期记忆
         long_mems = []
         if current_query:
             long_mems = self._retrieval.search(
                 query=current_query,
                 long_memories=self._store.get_all("long"),
-                short_memories=[],
+                short_memories=self._store.get_all("short"),
                 working_memories=[],
                 limit=self._long_term_max_inject
             )
@@ -385,7 +385,7 @@ class MemoryManager:
         """
         count = len(self._working_memories)
         for mem in self._working_memories:
-            self._store.save({
+            self._store.add({
                 "id": mem.get("id"),
                 "content": mem.get("content", ""),
                 "type": "short",
@@ -433,7 +433,7 @@ class MemoryManager:
             "tags": tags,
             "metadata": metadata
         }
-        return self._store.save(memory)
+        return self._store.add(memory)
 
     def _enforce_working_token_limit(self) -> None:
         """
