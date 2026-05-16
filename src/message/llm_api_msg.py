@@ -1,5 +1,5 @@
 from pathlib import Path
-from utility.skill_loader import get_skill_loader
+from src.utility.skill_loader import get_skill_loader
 
 
 # 通过API与LLM交互时，Message的构建

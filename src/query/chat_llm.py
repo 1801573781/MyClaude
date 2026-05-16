@@ -1,7 +1,7 @@
 from openai import OpenAI, APIConnectionError, RateLimitError, APIError
 from openai import AsyncOpenAI
 
-from utility.config_loader import global_cfg
+from src.utility.config_loader import global_cfg
 import httpx
 
 

@@ -1,6 +1,6 @@
 from datetime import datetime
-from cli import cli_print
-from query.query_loop import QueryLoop
+from src.cli import cli_print
+from src.query.query_loop import QueryLoop
 
 
 class MyClaudeCLI:

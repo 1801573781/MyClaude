@@ -1,5 +1,5 @@
 from pathlib import Path
-from utility.config_loader import global_cfg
+from src.utility.config_loader import global_cfg
 
 
 def add_root_path(root: str, path: str) -> str:

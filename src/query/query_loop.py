@@ -2,13 +2,13 @@ from enum import Enum
 from contextlib import AbstractContextManager
 from datetime import datetime
 from typing import Callable, Dict, Optional
-from query import chat_llm
-from message import llm_api_msg
-from llm_tool import tool_executor
-from utility.config_loader import global_cfg
-from utility.normal_utility import strip_thinking
-from query.session_log import SessionLog
-from memory.memory_manager import MemoryManager
+from src.query import chat_llm
+from src.message import llm_api_msg
+from src.llm_tool import tool_executor
+from src.utility.config_loader import global_cfg
+from src.utility.normal_utility import strip_thinking
+from src.query.session_log import SessionLog
+from src.memory.memory_manager import MemoryManager
 import logging
 
 logger = logging.getLogger(__name__)
@@ -50,8 +50,8 @@ class QueryLoop:
     @staticmethod
     def _init_memory_manager():
         """根据全局配置初始化 MemoryManager，CLI 层无需感知。"""
-        from utility.config_loader import global_cfg
-        from memory.memory_manager import MemoryManager
+        from src.utility.config_loader import global_cfg
+        from src.memory.memory_manager import MemoryManager
 
         mem_enabled = getattr(global_cfg.memory, 'enabled', False)
 
@@ -263,14 +263,33 @@ class QueryLoop:
             try:
                 # 生成用户输入摘要（截取前150字符）
                 user_summary = user_input[:150] if user_input else ""
-                # 生成工具调用摘要
-                tool_names = [t.get("llm_tool", "") for t in tools]
-                tool_summary = "; ".join(tool_names) if tool_names else "无工具调用"
+                # 生成工具调用摘要（含路径和 summary，对 LLM 更有价值）
+                tool_details = []
+                for t in tools:
+                    name = t.get("llm_tool", "")
+                    params = t.get("params", {})
+                    path = params.get("path", "")
+                    summary = params.get("summary", "")
+                    if name in ("create", "str_replace") and path:
+                        detail = f"{name}({path}"
+                        if summary:
+                            detail += f": {summary}"
+                        detail += ")"
+                    elif name == "file_view" and path:
+                        detail = f"file_view({path})"
+                    elif name == "bash":
+                        detail = "bash"
+                    elif name == "done":
+                        detail = "done"
+                    else:
+                        detail = name
+                    tool_details.append(detail)
+                tool_summary = "; ".join(tool_details) if tool_details else "无工具调用"
                 memory_content = f"[Turn {turn}] 用户: {user_summary} | LLM: {tool_summary}"
 
-                # 截断到200字符以内
-                if len(memory_content) > 200:
-                    memory_content = memory_content[:197] + "..."
+                # 截断到 500 字符以内（为丰富信息留足空间）
+                if len(memory_content) > 500:
+                    memory_content = memory_content[:497] + "..."
 
                 self._memory_manager.add_memory(
                     content=memory_content,
