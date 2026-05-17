@@ -98,6 +98,7 @@ Welcome to MyClaude Code CLI! A beautiful terminal interface for AI Coding.
 - `/clear` - Clear conversation history
 - `/help` - Show this help message
 - `/tokens` - Show the tokens statistics
+- `/t [number]` - 展开指定 Turn 的思考过程
 - `/quit` or `/exit` - Exit the application
 
 ---
@@ -259,6 +260,62 @@ def print_unknown_cmd(command):
     console.print("[dim]Type /help for available commands[/dim]")
 
 
+def typewriter_then_collapse(text: str, delay: float = 0.003):
+    """
+    打字机效果逐字显示推理过程，完成后折叠为 1-2 行预览。
+    打字阶段限制 Panel 高度（最多终端可见行数），避免内容超屏时 Rich Live 无法渲染。
+    不阻塞主流程，折叠后立即继续执行。
+    用户可通过输入 /t 命令展开/折叠完整思考内容。
+    """
+    set_reasoning_text(text)  # 保存文本供展开/折叠命令使用
+    char_count = len(text)
+    preview_lines = 2
+
+    base_title = "💭 思考过程"
+    # 预留标题、边框、折叠提示等占用的行数，取终端高度的 2/3 作为打字阶段最大行数
+    max_visible_lines = max(4, (console.height * 2) // 3 - 4)
+
+    with Live(
+        Panel("", title=base_title, border_style="dim", padding=(0, 1)),
+        console=console,
+        refresh_per_second=30,
+        transient=False,
+        vertical_overflow="ellipsis"
+    ) as live:
+        # 阶段1：打字机 —— 只显示最后 max_visible_lines 行，确保 Panel 不超出终端高度
+        accumulated = ""
+        for _, char in enumerate(text):
+            accumulated += char
+            # 截取最后 N 行，保持 Live 渲染高度可控
+            all_lines = accumulated.split('\n')
+            visible_lines = all_lines[-max_visible_lines:]
+            display_text = '\n'.join(visible_lines)
+            if len(all_lines) > max_visible_lines:
+                display_text = f"[dim]… {len(all_lines) - max_visible_lines} 行已滚出 …[/dim]\n" + display_text
+            live.update(
+                Panel(display_text, title=base_title, border_style="dim", padding=(0, 1)),
+                refresh=True
+            )
+            if delay:
+                time.sleep(delay)
+
+        # 阶段2：打字完成后，折叠为 1-2 行预览
+        lines = text.split('\n')
+        preview = '\n'.join(lines[:preview_lines])
+        if len(lines) > preview_lines or len(preview) < char_count:
+            preview += "\n···"
+
+        collapsed_panel = Panel(
+            preview + f"\n[dim][已折叠，共 {char_count} 字符] — 输入 /t 数字 展开[/dim]",
+            title=f"💭 思考过程 ({char_count} 字符) [已折叠]",
+            border_style="dim",
+            padding=(0, 1)
+        )
+        live.update(collapsed_panel, refresh=True)
+
+    # 不阻塞，直接继续。完整文本由 QueryLoop 存储，通过 /t 命令访问。
+
+
 def print_tool_call(tool_name: str, params: dict):
     """打印工具调用预告，根据工具类型显示关键参数"""
     if tool_name == "bash":
@@ -292,6 +349,100 @@ def print_tool_result(tool_name: str, content: str):
         console.print(f"    [green]✓[/green] [dim]({lines} 行，共 {len(content)} 字符)[/dim]", markup=True)
         safe_content = escape(content)
         console.print(safe_content, markup=True)
+
+
+# 存储所有轮次的推理过程内容，供展开/折叠命令循环访问
+_reasoning_history = []          # 列表元素: (text, turn_number)
+_reasoning_cursor = -1           # 当前选中的索引，-1 表示最新轮次
+_reasoning_expanded = False
+
+
+_reasoning_turn_counter = 0
+
+
+def set_reasoning_text(text: str):
+    """保存推理过程文本（由 query_loop 调用），自动递增轮次号"""
+    global _reasoning_history, _reasoning_cursor, _reasoning_turn_counter
+    _reasoning_turn_counter += 1
+    _reasoning_history.append((text, _reasoning_turn_counter))
+    _reasoning_cursor = -1  # 新内容来了，光标回到最新
+
+
+def expand_reasoning(turn: int = -1):
+    """展开指定轮次的思考过程。
+
+    Args:
+        turn: 要展开的轮次号。-1 表示最新轮次；正数表示具体 Turn 编号。
+    """
+    global _reasoning_history, _reasoning_cursor, _reasoning_expanded
+    if not _reasoning_history:
+        console.print("[dim]无思考过程可展开[/dim]")
+        return
+
+    total = len(_reasoning_history)
+
+    if turn == -1:
+        # 展开最新轮次
+        idx = total - 1
+        _reasoning_cursor = -1
+    else:
+        # 查找指定 turn 号对应的记录
+        idx = None
+        for i, (_, t) in enumerate(_reasoning_history):
+            if t == turn:
+                idx = i
+                break
+        if idx is None:
+            console.print(f"[dim]未找到 Turn {turn} 的思考过程（共 {total} 轮）[/dim]")
+            return
+        _reasoning_cursor = idx
+
+    text, turn_num = _reasoning_history[idx]
+    _reasoning_expanded = True
+    console.print(Panel(
+        text,
+        title=f"💭 思考过程 [Turn {turn_num}] {idx + 1}/{total} ({len(text)} 字符) [已展开]",
+        border_style="dim",
+        padding=(0, 1)
+    ))
+
+
+def fold_reasoning():
+    """折叠当前展开的思考过程"""
+    global _reasoning_history, _reasoning_cursor, _reasoning_expanded
+    if not _reasoning_history:
+        console.print("[dim]无思考过程可折叠[/dim]")
+        return
+
+    if not _reasoning_expanded:
+        console.print("[dim]当前已是折叠状态[/dim]")
+        return
+
+    total = len(_reasoning_history)
+    if _reasoning_cursor == -1:
+        idx = total - 1
+    else:
+        idx = _reasoning_cursor
+
+    text, turn = _reasoning_history[idx]
+    _show_reasoning_folded(text, turn, total)
+
+
+def _show_reasoning_folded(text: str, turn: int, total: int):
+    """折叠显示推理过程"""
+    global _reasoning_expanded
+    _reasoning_expanded = False
+    lines = text.split('\n')
+    preview = '\n'.join(lines[:2])
+    char_count = len(text)
+    if len(lines) > 2 or len(preview) < char_count:
+        preview += "\n···"
+    console.print(Panel(
+        preview + f"\n[dim][已折叠，共 {char_count} 字符] — 输入 /t 数字 展开[/dim]",
+        title=f"💭 思考过程 [Turn {turn}] ({char_count} 字符) [已折叠]",
+        border_style="dim",
+        padding=(0, 1)
+    ))
 
 
 @contextmanager

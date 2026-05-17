@@ -95,6 +95,7 @@ class QueryLoop:
             print_llm_rsp: Callable[[str], None],
             print_tool_call: Callable[[str, Dict], None],
             print_tool_result: Callable[[str], None],
+            print_llm_reasoning: Callable[[str], None] = None,
     ):
 
         # 赋值
@@ -102,6 +103,7 @@ class QueryLoop:
         self._print_llm_rsp = print_llm_rsp
         self._print_tool_call = print_tool_call
         self._print_tool_result = print_tool_result
+        self._print_llm_reasoning = print_llm_reasoning
 
         """
         每一次 query_loop.run 的调用，都是与LLM的一次新的session
@@ -261,9 +263,12 @@ class QueryLoop:
         # 打印部分 LLM response（有些内容不打印，显示一分神秘感）
         self._print_info(f"Thinking-{turn}, 开始时间：{thinking_begin}")
 
-        # 打印推理内容给前端（打字机效果）
+        # 打印推理内容给前端（打字机效果，完成后自动折叠）
         if reasoning_content:
-            self._print_llm_rsp(reasoning_content)
+            if self._print_llm_reasoning:
+                self._print_llm_reasoning(reasoning_content)
+            else:
+                self._print_llm_rsp(reasoning_content)
 
         self._print_info(f"Thinking-{turn}, 结束时间：{thinking_end}")
 

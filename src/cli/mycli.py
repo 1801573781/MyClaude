@@ -36,6 +36,16 @@ class MyClaudeCLI:
             cli_print.show_token_count(req_tokens, rsp_tokens)
             return True
 
+        elif cmd.startswith('/t'):
+            # /t [number] — 展开指定轮次的思考过程
+            parts = command.strip().split()
+            if len(parts) > 1:
+                turn = int(parts[1])
+                cli_print.expand_reasoning(turn)
+            else:
+                cli_print.print_error("Usage: /t [number] — 展开指定 Turn 的思考过程")
+            return True
+
         elif cmd.startswith('/'):
             cli_print.print_unknown_cmd(command)
             return True
@@ -66,6 +76,7 @@ class MyClaudeCLI:
                                 cli_print.print_info,
                                 cli_print.typewriter_then_markdown,
                                 cli_print.print_tool_call,
-                                cli_print.print_tool_result)
+                                cli_print.print_tool_result,
+                                cli_print.typewriter_then_collapse)
 
             cli_print.print_blank()
