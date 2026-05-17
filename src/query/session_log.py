@@ -196,6 +196,11 @@ class SessionLog:
             "tool": "🔧 工具执行",
         }
 
+        # 检查是否有记忆召唤 section，如果没有则添加占位
+        has_memory_section = any(sec_name == "memory_context" for sec_name, _ in sections)
+        if not has_memory_section:
+            sections.insert(0, ("memory_context", [{"role": "user", "content": "没有召唤到相关记忆"}]))
+
         for section_name, items in sections:
             if section_name == "reasoning":
                 reasoning_text = ""
@@ -205,6 +210,9 @@ class SessionLog:
                         break
                 reasoning_escaped = reasoning_text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
                 section_content = f'<pre>{reasoning_escaped}</pre>'
+            elif section_name == "memory_context":
+                # 对记忆召唤小节特殊处理：如果有多条记忆，拆分为子折叠块
+                section_content = self._build_memory_section_html(items)
             else:
                 md_chunks = []
                 for item in items:
@@ -382,6 +390,94 @@ class SessionLog:
         _flush_section()
 
         return sections
+
+
+    def _build_memory_section_html(self, items) -> str:
+        """为记忆召唤小节构建 HTML。
+        如果只有一条记忆（或"没有召唤到相关记忆"），直接以 <pre> 显示；
+        如果有多条记忆，每条拆分为独立的子折叠块。"""
+        # 提取记忆内容
+        content = ""
+        for item in items:
+            if isinstance(item, dict) and "content" in item:
+                content = item["content"]
+                break
+
+        if not content:
+            return "<pre>（无记忆内容）</pre>"
+
+        # 转义 HTML
+        escaped = content.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
+        # 如果只有一条记忆或"没有召唤到相关记忆"，直接展示
+        if "没有召唤到相关记忆" in content:
+            return f'<pre style="color:#999; font-style:italic;">{escaped}</pre>'
+
+        # 先定位 "[相关历史记忆]" 作为前缀/正文分割点
+        # 搜索最后一个 "[相关历史记忆]" 标题行（紧跟记忆条目）
+        rel_mem_marker = re.search(r'\n\[相关历史记忆\]\s*\n', content)
+        if rel_mem_marker:
+            prefix = content[:rel_mem_marker.end()].strip()
+            body = content[rel_mem_marker.end():].strip()
+        else:
+            # 回退：尝试用 "[记忆上下文" 分割
+            ctx_marker = re.search(r'\[记忆上下文[^\]]*\]', content)
+            if ctx_marker:
+                prefix = content[:ctx_marker.end()].strip()
+                body = content[ctx_marker.end():].strip()
+            else:
+                prefix = ""
+                body = content.strip()
+
+        # 按 "- [Turn" 拆分记忆条目（使用正则分割，保留分隔符）
+        parts = re.split(r'(\n(?=- \[Turn\s))', body)
+        memories = []
+        if parts:
+            # parts[0] 可能是空白或"纯标题"行（如残留的 "[相关历史记忆]"）
+            first = parts[0].strip()
+            # 过滤掉仅包含 "[相关历史记忆]" 或空白的伪条目
+            if first and not re.match(r'^\[相关历史记忆\]$', first):
+                memories.append(first)
+            for i in range(1, len(parts)):
+                part = parts[i].strip()
+                if part:
+                    memories.append(part)
+
+        if len(memories) <= 1:
+            # 单条记忆，直接显示
+            return f'<pre>{escaped}</pre>'
+
+        # 多条记忆：每条构建为子折叠块
+        prefix_escaped = prefix.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        sub_html_parts = []
+        if prefix_escaped:
+            sub_html_parts.append(
+                f'<div style="padding:8px 12px; color:#666; font-size:14px; '
+                f'border-bottom:1px solid #e8e8e8;">{prefix_escaped}</div>'
+            )
+
+        for idx, mem in enumerate(memories):
+            # 提取 Turn 编号和相关性得分，生成摘要
+            turn_match = re.search(r'\[Turn\s*(\d+)\]', mem)
+            score_match = re.search(r'\(相关性:\s*([\d.]+)\)', mem)
+            turn_num = turn_match.group(1) if turn_match else str(idx + 1)
+            score = score_match.group(1) if score_match else "?"
+            summary_text = f"📌 - 记忆{idx + 1}（相关性: {score}）"
+
+            # 移除记忆内容末尾的 "(相关性: X.XX)" 标注
+            mem_clean = re.sub(r'\s*\(相关性:\s*[\d.]+\)\s*$', '', mem)
+
+            mem_escaped = mem_clean.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+            summary_escaped = summary_text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
+            sub_html_parts.append(
+                f'<details class="memory-fold" style="margin:4px 0;">\n'
+                f'<summary class="memory-summary">{summary_escaped}</summary>\n'
+                f'<pre style="margin:4px 12px; font-size:15px;">{mem_escaped}</pre>\n'
+                f'</details>'
+            )
+
+        return '\n'.join(sub_html_parts)
 
 
     def _save_md(self, save_session):
@@ -644,6 +740,31 @@ class SessionLog:
             '    font-size: 15px;\n'
             '    color: #8b8ba7;\n'
             '    font-weight: 400;\n'
+            '}\n'
+            '.memory-fold {\n'
+            '    margin: 4px 0 4px 16px;\n'
+            '    border: 1px solid #e8e8e8;\n'
+            '    border-radius: 4px;\n'
+            '    overflow: hidden;\n'
+            '}\n'
+            '.memory-summary {\n'
+            '    padding: 6px 10px;\n'
+            '    background: #fafafa;\n'
+            '    cursor: pointer;\n'
+            '    font-weight: 600;\n'
+            '    font-size: 14px;\n'
+            '    color: #6b7280;\n'
+            '    user-select: none;\n'
+            '    transition: background 0.15s;\n'
+            '}\n'
+            '.memory-summary:hover { background: #f0f0f0; }\n'
+            '.memory-pre {\n'
+            '    margin: 0;\n'
+            '    padding: 8px 12px;\n'
+            '    font-size: 14px;\n'
+            '    border: none;\n'
+            '    border-top: 1px solid #f0f0f0;\n'
+            '    border-radius: 0;\n'
             '}\n'
             '</style>\n'
             '<script>\n'
