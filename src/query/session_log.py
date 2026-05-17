@@ -154,6 +154,7 @@ class SessionLog:
             "installed_skills": "📦 Installed Skills",
             "project_context": "📋 项目上下文",
             "directory_tree": "🗂️ 项目目录树",
+            "memory_context": "🧠 记忆上下文",
             "user": "👤 用户输入",
             "reasoning": "💭 LLM 推理过程",
             "assistant": "🤖 LLM 应答",
@@ -242,6 +243,8 @@ class SessionLog:
                 return "project_context"
             if content.startswith("[项目目录树]"):
                 return "directory_tree"
+            if content.startswith("[系统提醒] 以下是与当前任务相关的历史记忆"):
+                return "memory_context"
             return "user"
 
         def _flush_section():
