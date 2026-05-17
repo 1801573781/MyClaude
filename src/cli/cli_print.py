@@ -168,6 +168,7 @@ Welcome to MyClaude Code CLI! A beautiful terminal interface for AI Coding.
 - `/help` - Show this help message
 - `/tokens` - Show the tokens statistics
 - `/t [number]` - 展开指定 Turn 的思考过程
+- `/r memory` - 清除所有记忆（短期 + 长期 + 工作记忆）
 - `/save <filename>` - Save conversation to HTML file
 - `/quit` or `/exit` - Exit the application
 

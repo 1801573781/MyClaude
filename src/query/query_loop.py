@@ -36,6 +36,7 @@ class QueryLoop:
         self.is_chat_mode = True
 
         self._memory_manager = self._init_memory_manager()
+        self.memory_manager = self._memory_manager  # 公开引用，供 CLI 使用 /r memory 等
         self._memory_used = False
 
         self._print_info = None

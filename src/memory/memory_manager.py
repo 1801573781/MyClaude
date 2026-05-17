@@ -265,6 +265,26 @@ class MemoryManager:
         # 查持久化记忆
         return self._store.delete(memory_id)
 
+    def clear_all_memories(self) -> int:
+        """
+        清除所有记忆（短期 + 长期 + 工作记忆）。
+
+        返回:
+            被删除的记忆条目总数。
+        """
+        # 删除所有持久化记忆
+        all_mems = self._store.get_all()
+        ids = [mem["id"] for mem in all_mems]
+        persisted_count = self._store.delete_batch(ids)
+
+        # 清空工作记忆
+        working_count = len(self._working_memories)
+        self._working_memories.clear()
+
+        total = persisted_count + working_count
+        logger.info(f"清除所有记忆: {total} 条 (持久化={persisted_count}, 工作={working_count})")
+        return total
+
     # ========== 记忆生命周期 ==========
 
     def compress_short_term(self) -> int:

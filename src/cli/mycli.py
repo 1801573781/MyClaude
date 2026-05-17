@@ -47,6 +47,16 @@ class MyClaudeCLI:
                 cli_print.print_error("Usage: /t [number] — 展开指定 Turn 的思考过程")
             return True
 
+        elif cmd == '/r memory':
+            # /r memory — 清除所有记忆（短期 + 长期 + 工作记忆）
+            mm = self.query_loop.memory_manager
+            if mm is None:
+                cli_print.print_error("记忆模块未启用，无法执行此操作。")
+                return True
+            total = mm.clear_all_memories()
+            cli_print.print_info(f"已清除所有记忆（共 {total} 条）。")
+            return True
+
         elif cmd.startswith('/save'):
             # /save <filename> — 保存屏幕输出到文件（HTML/Word）
             parts = command.strip().split(maxsplit=1)
