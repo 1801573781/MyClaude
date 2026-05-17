@@ -40,6 +40,7 @@ class QueryLoop:
 
         self._print_info = None
         self._print_llm_rsp = None
+        self._print_llm_reasoning = None
         self._print_tool_call = None
         self._print_tool_result = None
 
@@ -250,18 +251,29 @@ class QueryLoop:
 
         remaining_text, tools = tool_executor.parse_tools(ai_response_show)
 
+        # 如果 ai_response 中没有工具，尝试从 reasoning_content 宽松提取工具（兜底）
+        if reasoning_content and not tools:
+            _, tools_from_reasoning = tool_executor.parse_tools(reasoning_content)
+            if tools_from_reasoning:
+                tools = tools_from_reasoning
+                remaining_text = ""   # 确保不重复打印
+
         # 打印部分 LLM response（有些内容不打印，显示一分神秘感）
         self._print_info(f"Thinking-{turn}, 开始时间：{thinking_begin}")
+
+        # 打印推理内容给前端（打字机效果）
+        if reasoning_content:
+            self._print_llm_rsp(reasoning_content)
+
+        self._print_info(f"Thinking-{turn}, 结束时间：{thinking_end}")
 
         if remaining_text:
             self._print_llm_rsp(remaining_text)
 
-        self._print_info(f"Thinking-{turn}, 结束时间：{thinking_end}")
-
         # 每轮对话后，将摘要存入工作记忆
         if self._memory_manager is not None:
             try:
-                # 用户输入摘要（截取前100字符）
+                # 用户输入摘要（截取前100个字符）
                 user_summary = user_input[:100] if user_input else ""
 
                 # LLM 推理过程摘要
@@ -288,7 +300,7 @@ class QueryLoop:
                     if name in ("create", "str_replace") and path:
                         detail = f"{name}({path}"
                         if summ:
-                            detail += f": {summ}"
+                            detail += f"{summ}"
                         detail += ")"
                     elif name == "file_view" and path:
                         detail = f"file_view({path})"
