@@ -1,6 +1,7 @@
 from datetime import datetime
 from src.cli import cli_print
 from src.query.query_loop import QueryLoop
+from src.cli.cli_print import save_buffer_to_file
 
 
 class MyClaudeCLI:
@@ -44,6 +45,24 @@ class MyClaudeCLI:
                 cli_print.expand_reasoning(turn)
             else:
                 cli_print.print_error("Usage: /t [number] — 展开指定 Turn 的思考过程")
+            return True
+
+        elif cmd.startswith('/save'):
+            # /save <filename> — 保存屏幕输出到文件（HTML/Word）
+            parts = command.strip().split(maxsplit=1)
+            if len(parts) > 1:
+                from pathlib import Path
+                from src.utility.config_loader import global_cfg
+                filename = parts[1].strip()
+                filepath = Path(filename)
+                if not filepath.is_absolute():
+                    logs_root = global_cfg.base_path.logs_root
+                    filepath = Path(logs_root) / filepath.name
+                    filepath.parent.mkdir(parents=True, exist_ok=True)
+                saved_path = save_buffer_to_file(str(filepath))
+                cli_print.print_info(f"已保存到: {saved_path}")
+            else:
+                cli_print.print_error("Usage: /save <filename>")
             return True
 
         elif cmd.startswith('/'):

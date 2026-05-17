@@ -1,6 +1,8 @@
 import os
 import time
 from contextlib import contextmanager
+from html import escape as html_escape  # 用于 HTML 转义
+from pathlib import Path
 
 from rich.markup import escape
 from rich.console import Console
@@ -15,6 +17,11 @@ from rich.text import Text
 
 
 # MyClaude Code 风格的 CLI 界面
+
+# ============================
+# HTML 缓冲区（用于 /save 命令）
+# ============================
+_html_parts = []  # 累积所有屏幕输出的 HTML 片段
 
 
 # 自定义样式
@@ -43,6 +50,58 @@ COLORS = {
 console = Console()
 
 
+def _append_html(html_fragment: str):
+    """将 HTML 片段追加到全局缓冲区。"""
+    _html_parts.append(html_fragment)
+
+
+def save_buffer_to_file(filepath: str):
+    """
+    将累积的 HTML 缓冲区保存为完整的 HTML 文件，可双击用浏览器打开。
+    文件名扩展名决定行为：
+      - .html / .htm → 直接保存 HTML
+      - .doc / .docx → 保存为 HTML（Word 能打开 HTML 文件）
+      - 其他 → 自动添加 .html 后缀
+    """
+    path = Path(filepath)
+    ext = path.suffix.lower()
+
+    # 统一保存为 HTML 格式（Word 也能直接打开 HTML 文件）
+    if ext == '.html' or ext == '.htm' or ext == '.doc' or ext == '.docx' or ext == '.pdf':
+        # 用原路径
+        html_path = path.with_suffix('.html') if ext not in ('.html', '.htm') else path
+    else:
+        # 无扩展名或未知扩展名，强制改为 .html
+        html_path = path.with_suffix('.html')
+
+    all_html = "\n".join(_html_parts)
+
+    full_html = f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>MyClaude Session</title>
+<style>
+body {{
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    background: #1E1E2E;
+    color: #E2E8F0;
+    padding: 20px;
+    max-width: 900px;
+    margin: 0 auto;
+    line-height: 1.6;
+}}
+</style>
+</head>
+<body>
+{all_html}
+</body>
+</html>"""
+
+    html_path.write_text(full_html, encoding='utf-8')
+    return str(html_path)
+
+
 def clear_screen():
     """清屏"""
     os.system('cls' if os.name == 'nt' else 'clear')
@@ -51,11 +110,13 @@ def clear_screen():
 def print_error(content: str):
     """打印错误消息"""
     console.print(f"\n[{STYLES['error']}]❌ Error: {content}[/{STYLES['error']}]\n")
+    _append_html(f'<p style="color:#ef4444;">❌ Error: {html_escape(content)}</p>')
 
 
 def print_info(content: str):
     """打印通用消息"""
     console.print(f"\n[{STYLES['info']}]✅ {content}[/{STYLES['info']}]\n")
+    _append_html(f'<p style="color:#3b82f6;">✅ {html_escape(content)}</p>')
 
 
 def print_user_input(content: str):
@@ -78,6 +139,14 @@ def print_user_input(content: str):
 
     console.print()
 
+    # 追加到 HTML 缓冲区
+    _append_html(f'<div style="margin:12px 0;">'
+                 f'<span style="color:#22d3ee;">👤 You</span> '
+                 f'<span style="color:#94a3b8;">{html_escape(timestamp)}</span>'
+                 f'<div style="border:1px solid #22d3ee; border-radius:4px; padding:8px; margin-top:4px;">'
+                 f'{html_escape(content)}'
+                 f'</div></div>')
+
 
 def print_welcome():
     """打印欢迎信息"""
@@ -99,6 +168,7 @@ Welcome to MyClaude Code CLI! A beautiful terminal interface for AI Coding.
 - `/help` - Show this help message
 - `/tokens` - Show the tokens statistics
 - `/t [number]` - 展开指定 Turn 的思考过程
+- `/save <filename>` - Save conversation to HTML file
 - `/quit` or `/exit` - Exit the application
 
 ---
@@ -112,6 +182,13 @@ Welcome to MyClaude Code CLI! A beautiful terminal interface for AI Coding.
         border_style="blue",
         padding=(1, 2)
     ))
+
+    # HTML 缓冲区：欢迎信息文本（Markdown 格式无渲染，纯文本存储）
+    _append_html('<div style="border:2px solid #3b82f6; border-radius:8px; padding:12px; margin-bottom:16px;">'
+                 '<h1 style="color:#c084fc; margin:0 0 12px 0; font-size:28px; border-bottom:2px solid #7C3AED; padding-bottom:8px; text-align:center;">🤖 MyClaude Code CLI</h1>'
+                 '<pre style="color:#e2e8f0; white-space:pre-wrap; font-family:inherit;">'
+                 + html_escape(welcome_text) +
+                 '</pre></div>')
 
 
 def print_banner():
@@ -214,6 +291,15 @@ def typewriter_then_markdown(text: str, delay: float = 0.005):
                 live.update(Markdown(text))
 
     # Live 退出后，Markdown 效果保留在终端上
+    # 追加到 HTML 缓冲区（Markdown 文本 + 时间戳）
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    _append_html(f'<div style="margin:12px 0;">'
+                 f'<span style="color:#4ade80;">🤖 MyClaude</span> '
+                 f'<span style="color:#94a3b8;">{html_escape(ts)}</span>'
+                 f'<pre style="background:#2D2D3F; border-radius:4px; padding:12px; '
+                 f'color:#e2e8f0; white-space:pre-wrap; font-family:inherit; margin-top:4px;">'
+                 f'{html_escape(text)}'
+                 f'</pre></div>')
 
 
 def show_history(messages):
@@ -253,6 +339,8 @@ def show_token_count(req_tokens, rsp_tokens):
     stats_table.add_row("rsp tokens", f"{rsp_tokens}")
 
     console.print(stats_table)
+    # HTML 缓冲区
+    _append_html(f'<p style="color:#f59e0b;">📊 Token: req={req_tokens}, rsp={rsp_tokens}</p>')
 
 
 def print_unknown_cmd(command):
@@ -314,6 +402,13 @@ def typewriter_then_collapse(text: str, delay: float = 0.003):
         live.update(collapsed_panel, refresh=True)
 
     # 不阻塞，直接继续。完整文本由 QueryLoop 存储，通过 /t 命令访问。
+    # 追加完整推理过程到 HTML 缓冲区
+    _append_html(f'<details style="margin:8px 0;">'
+                 f'<summary style="color:#94a3b8; cursor:pointer;">💭 思考过程 ({char_count} 字符)</summary>'
+                 f'<pre style="background:#2D2D3F; border-radius:4px; padding:12px; '
+                 f'color:#e2e8f0; white-space:pre-wrap; font-family:inherit; margin-top:8px;">'
+                 f'{html_escape(text)}'
+                 f'</pre></details>')
 
 
 def print_tool_call(tool_name: str, params: dict):
@@ -327,28 +422,41 @@ def print_tool_call(tool_name: str, params: dict):
 
     # 箭头用亮青色（与工具名一致），工具名亮青加粗，参数亮白
     console.print(f"  [bold cyan]→[/bold cyan] [bold cyan]{tool_name}[/bold cyan] [white]{detail}[/white]")
+    # HTML 缓冲区
+    _append_html(f'<p style="margin:4px 0 4px 20px; color:#22d3ee;">→ {html_escape(tool_name)} {html_escape(detail)}</p>')
 
 
 def print_tool_result(tool_name: str, content: str):
     if not content:
         console.print("    [yellow]⚠ 无输出[/yellow]")
+        _append_html('<p style="margin:4px 0 4px 40px; color:#f59e0b;">⚠ 无输出</p>')
         return
 
     # 对于 file_view 和 use_skill，不打印详细内容，只输出简洁提示
     if tool_name in ("file_view", "use_skill"):
         # 注意：不要转义颜色标记部分，只转义可能出现在固定文本中的方括号（但这里固定文本没有方括号，所以无需转义）
         console.print(f"    [green]✓[/green] [{tool_name}]工具执行结果：详细内容略", markup=True)
+        _append_html(f'<p style="margin:4px 0 4px 40px; color:#4ade80;">✓ [{tool_name}] 工具执行结果</p>')
         return
 
     # 其他工具正常打印
     if len(content) < 300:
         safe_content = escape(content)  # 只转义用户内容
         console.print(f"    [green]✓[/green] {safe_content}", markup=True)
+        _append_html(f'<p style="margin:4px 0 4px 40px; color:#4ade80;">✓</p>'
+                     f'<pre style="background:#2D2D3F; margin:4px 0 4px 40px; padding:8px; '
+                     f'border-radius:4px; color:#e2e8f0; white-space:pre-wrap; font-family:inherit; '
+                     f'font-size:13px;">{html_escape(content)}</pre>')
     else:
         lines = content.count("\n") + 1
         console.print(f"    [green]✓[/green] [dim]({lines} 行，共 {len(content)} 字符)[/dim]", markup=True)
         safe_content = escape(content)
         console.print(safe_content, markup=True)
+        _append_html(f'<p style="margin:4px 0 4px 40px; color:#4ade80;">✓'
+                     f' <span style="color:#94a3b8;">({lines} 行，{len(content)} 字符)</span></p>'
+                     f'<pre style="background:#2D2D3F; margin:4px 0 4px 40px; padding:8px; '
+                     f'border-radius:4px; color:#e2e8f0; white-space:pre-wrap; font-family:inherit; '
+                     f'font-size:13px;">{html_escape(content)}</pre>')
 
 
 # 存储所有轮次的推理过程内容，供展开/折叠命令循环访问
