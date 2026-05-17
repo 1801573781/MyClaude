@@ -267,22 +267,23 @@ class MemoryManager:
 
     def clear_all_memories(self) -> int:
         """
-        清除所有记忆（短期 + 长期 + 工作记忆）。
+        清除所有记忆（短期 + 长期 + 工作记忆），并删除所有备份文件。
 
         返回:
             被删除的记忆条目总数。
         """
-        # 删除所有持久化记忆
+        # 删除所有持久化记忆（含备份文件）
         all_mems = self._store.get_all()
         ids = [mem["id"] for mem in all_mems]
         persisted_count = self._store.delete_batch(ids)
+        self._store.clear_all()
 
         # 清空工作记忆
         working_count = len(self._working_memories)
         self._working_memories.clear()
 
         total = persisted_count + working_count
-        logger.info(f"清除所有记忆: {total} 条 (持久化={persisted_count}, 工作={working_count})")
+        logger.info(f"清除所有记忆: {total} 条 (持久化={persisted_count}, 工作={working_count})，备份已删除")
         return total
 
     # ========== 记忆生命周期 ==========

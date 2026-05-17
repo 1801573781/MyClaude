@@ -336,6 +336,18 @@ class MemoryStore:
 
         return validated
 
+    def clear_all(self):
+        """清空所有记忆并删除备份文件。"""
+        self._memories = []
+        self._flush()
+        # 删除所有滚动备份文件
+        for bak_path in self._storage_dir.glob("memories.json.bak.*"):
+            try:
+                bak_path.unlink()
+                logger.info(f"已删除备份: {bak_path}")
+            except OSError as e:
+                logger.warning(f"删除备份失败 {bak_path}: {e}")
+
     def rebuild_from_list(self, memories: List[Dict]):
         """用给定的记忆列表替换内部数据并持久化（用于测试恢复）。"""
         self._memories = memories
