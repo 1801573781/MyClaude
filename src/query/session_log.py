@@ -1,3 +1,4 @@
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -20,6 +21,8 @@ class SessionLog:
         self._turn_buffer = []
         self._current_turn = None
         self._has_turn_content = False
+        # 用于去重：记录上一轮 api_messages 中各消息内容的哈希值
+        self._prev_msg_hashes = set()
 
 
     def init_session(self):
@@ -49,8 +52,9 @@ class SessionLog:
 
 
     def log_llm_req(self, req_dict):
-        # req_dict，直接就是个 dict
-        self.log_dict_info(req_dict)
+        # 去重：只记录该 Turn 新增的 api_messages（与上一 Turn 的 diff）
+        deduped = self._deduplicate_msg_list(req_dict)
+        self.log_dict_info(deduped)
 
         # 统计给LLM发送请求的tokens（近似计算）
         json_str = json.dumps(req_dict, ensure_ascii=False)
@@ -111,6 +115,36 @@ class SessionLog:
         self._current_turn = None
 
 
+    def _deduplicate_msg_list(self, req_dict):
+        """对 api_messages 列表去重，仅保留本次新增的消息条目。
+        通过比较每条消息的序列化哈希值来判断是否已在上次 log_llm_req 中出现过。
+        系统宪法/项目宪法/目录树等固定内容只会在第一个 Turn 完整记录。"""
+        if not isinstance(req_dict, list):
+            return req_dict
+
+        new_items = []
+        current_hashes = set()
+        for msg in req_dict:
+            # 计算该消息的哈希值
+            msg_copy = dict(msg)
+            # 移除截断前缀（如 "[系统提醒] 以下仅展示与当前任务最相关的历史记忆"），
+            # 因为同一段记忆内容前缀可能变化，导致哈希误判为新消息
+            content = msg_copy.get("content", "")
+            if isinstance(content, str) and content.startswith("[系统提醒] 以下仅展示与当前任务最相关的历史记忆"):
+                msg_copy["content"] = content  # 保留原文不截断，确保与上一轮的同一消息哈希一致
+            msg_hash = hashlib.md5(
+                json.dumps(msg_copy, ensure_ascii=False, sort_keys=True).encode("utf-8")
+            ).hexdigest()
+            current_hashes.add(msg_hash)
+
+            if msg_hash not in self._prev_msg_hashes:
+                new_items.append(msg)
+
+        # 更新上一轮哈希集合
+        self._prev_msg_hashes = current_hashes
+        return new_items
+
+
     """持久化 session 会话的历史"""
 
 
@@ -151,6 +185,7 @@ class SessionLog:
         section_html_parts = []
         section_titles = {
             "system": "⚙️ 系统宪法",
+            "system_notice": "⚙️ 系统提示",
             "installed_skills": "📦 系统技能",
             "project_context": "📋 项目宪法",
             "directory_tree": "🗂️ 项目目录",
@@ -287,8 +322,17 @@ class SessionLog:
                 elif role == "assistant":
                     new_section = "assistant"
                 elif role == "system":
-                    # 检查是否需要将 Installed Skills 独立拆分
                     content = item.get("content", "")
+                    # query_loop 兜底消息（LLM 未输出 done 时自动结束）归属"系统提示"
+                    if "LLM 未调用 done 工具" in str(content) or "未调用 done" in str(content):
+                        new_section = "system_notice"
+                        if current_section != "system_notice":
+                            _flush_section()
+                            current_section = "system_notice"
+                            current_items = []
+                        current_items.append(item)
+                        return
+                    # 检查是否需要将 Installed Skills 独立拆分
                     if "## Installed Skills" in str(content):
                         # 找到 ## Installed Skills 的位置，拆分为 system 和 installed_skills 两部分
                         idx = content.index("## Installed Skills")
@@ -616,6 +660,20 @@ class SessionLog:
             '        icon.innerHTML = "&#9656;";\n'
             '    }\n'
             '}\n'
+            'document.addEventListener("DOMContentLoaded", function() {\n'
+            '    var entries = document.querySelectorAll(".entry");\n'
+            '    if (entries.length > 1) {\n'
+            '        for (var i = 0; i < entries.length - 1; i++) {\n'
+            '            var content = entries[i].querySelector(".entry-content");\n'
+            '            var icon = entries[i].querySelector(".toggle-icon");\n'
+            '            if (content && icon) {\n'
+            '                content.classList.add("collapsed");\n'
+            '                icon.classList.add("collapsed");\n'
+            '                icon.innerHTML = "&#9656;";\n'
+            '            }\n'
+            '        }\n'
+            '    }\n'
+            '});\n'
             '</script>\n'
             '</head>\n'
             '<body>\n'
@@ -810,7 +868,8 @@ class SessionLog:
                     elif ptype == 'comment':
                         return f'<span style="color:#808080">{safe}</span>'
                     elif ptype == 'tag':
-                        return original  # XML 标签保持原样，不转义
+                        # 即使看起来像 XML 标签，在 <pre> 内也必须转义，否则破坏 HTML 结构
+                        return original.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
                     return safe
             return match.group(0)
 

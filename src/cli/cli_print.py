@@ -379,8 +379,6 @@ def typewriter_then_collapse(text: str, delay: float = 0.003):
             all_lines = accumulated.split('\n')
             visible_lines = all_lines[-max_visible_lines:]
             display_text = '\n'.join(visible_lines)
-            if len(all_lines) > max_visible_lines:
-                display_text = f"[dim]… {len(all_lines) - max_visible_lines} 行已滚出 …[/dim]\n" + display_text
             live.update(
                 Panel(display_text, title=base_title, border_style="dim", padding=(0, 1)),
                 refresh=True
