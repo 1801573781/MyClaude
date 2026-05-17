@@ -150,15 +150,15 @@ class SessionLog:
         # 为每个节构建子折叠 HTML
         section_html_parts = []
         section_titles = {
-            "system": "⚙️ 系统提示词",
-            "installed_skills": "📦 Installed Skills",
-            "project_context": "📋 项目上下文",
-            "directory_tree": "🗂️ 项目目录树",
-            "memory_context": "🧠 记忆上下文",
+            "system": "⚙️ 系统宪法",
+            "installed_skills": "📦 系统技能",
+            "project_context": "📋 项目宪法",
+            "directory_tree": "🗂️ 项目目录",
+            "memory_context": "🧠 记忆召唤",
             "user": "👤 用户输入",
-            "reasoning": "💭 LLM 推理过程",
+            "reasoning": "💭 LLM 思考",
             "assistant": "🤖 LLM 应答",
-            "tool": "🔧 工具调用与执行结果",
+            "tool": "🔧 工具执行",
         }
 
         for section_name, items in sections:
