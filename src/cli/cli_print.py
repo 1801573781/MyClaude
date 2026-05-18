@@ -22,6 +22,7 @@ from rich.text import Text
 # HTML 缓冲区（用于 /save 命令）
 # ============================
 _html_parts = []  # 累积所有屏幕输出的 HTML 片段
+_interaction_starts = []  # 记录每次用户输入时 _html_parts 的索引，用于按交互保存
 
 
 # 自定义样式
@@ -55,9 +56,12 @@ def _append_html(html_fragment: str):
     _html_parts.append(html_fragment)
 
 
-def save_buffer_to_file(filepath: str):
+def save_buffer_to_file(filepath: str, all: bool = True):
     """
     将累积的 HTML 缓冲区保存为完整的 HTML 文件，可双击用浏览器打开。
+    Args:
+        filepath: 保存路径
+        all: True 保存全部对话；False 只保存最后一次人-LLM 交互（当前 /save 默认行为由调用方决定）
     文件名扩展名决定行为：
       - .html / .htm → 直接保存 HTML
       - .doc / .docx → 保存为 HTML（Word 能打开 HTML 文件）
@@ -74,7 +78,15 @@ def save_buffer_to_file(filepath: str):
         # 无扩展名或未知扩展名，强制改为 .html
         html_path = path.with_suffix('.html')
 
-    all_html = "\n".join(_html_parts)
+    # 根据 all 参数选择保存范围
+    if all or not _interaction_starts:
+        parts_to_save = _html_parts
+    else:
+        # 保存最后一次交互：从最后一个 _interaction_starts 到末尾
+        start_idx = _interaction_starts[-1]
+        parts_to_save = _html_parts[start_idx:]
+
+    all_html = "\n".join(parts_to_save)
 
     full_html = f"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -121,6 +133,9 @@ def print_info(content: str):
 
 def print_user_input(content: str):
     """打印消息"""
+    # 记录本次交互的 HTML 起始索引
+    _interaction_starts.append(len(_html_parts))
+
     role_emoji = "👤"
     role_color = "cyan"
     role_name = "You"
@@ -169,7 +184,7 @@ Welcome to MyClaude Code CLI! A beautiful terminal interface for AI Coding.
 - `/tokens` - Show the tokens statistics
 - `/t [number]` - 展开指定 Turn 的思考过程
 - `/r memory` - 清除所有记忆（短期 + 长期 + 工作记忆）
-- `/save <filename>` - Save conversation to HTML file
+- `/save <filename> [all]` - Save last interaction (or all with "all" flag) to HTML file
 - `/quit` or `/exit` - Exit the application
 
 ---

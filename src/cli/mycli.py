@@ -58,21 +58,25 @@ class MyClaudeCLI:
             return True
 
         elif cmd.startswith('/save'):
-            # /save <filename> — 保存屏幕输出到文件（HTML/Word）
-            parts = command.strip().split(maxsplit=1)
+            # /save <filename> [all] — 保存屏幕输出到文件（HTML/Word）
+            parts = command.strip().split(maxsplit=2)
             if len(parts) > 1:
                 from pathlib import Path
                 from src.utility.config_loader import global_cfg
                 filename = parts[1].strip()
+                save_all = len(parts) > 2 and parts[2].strip().lower() == "all"
                 filepath = Path(filename)
                 if not filepath.is_absolute():
                     logs_root = global_cfg.base_path.logs_root
                     filepath = Path(logs_root) / filepath.name
                     filepath.parent.mkdir(parents=True, exist_ok=True)
-                saved_path = save_buffer_to_file(str(filepath))
-                cli_print.print_info(f"已保存到: {saved_path}")
+                saved_path = save_buffer_to_file(str(filepath), all=save_all)
+                if save_all:
+                    cli_print.print_info(f"已保存全部对话到: {saved_path}")
+                else:
+                    cli_print.print_info(f"已保存最后一次交互到: {saved_path}")
             else:
-                cli_print.print_error("Usage: /save <filename>")
+                cli_print.print_error("Usage: /save <filename> [all]")
             return True
 
         elif cmd.startswith('/'):
