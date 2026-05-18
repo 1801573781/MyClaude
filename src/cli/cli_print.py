@@ -371,6 +371,9 @@ def typewriter_then_collapse(text: str, delay: float = 0.003):
     不阻塞主流程，折叠后立即继续执行。
     用户可通过输入 /t 命令展开/折叠完整思考内容。
     """
+    # 转义 Rich markup 特殊字符（如方括号），避免解析错误
+    text = escape(text)
+
     set_reasoning_text(text)  # 保存文本供展开/折叠命令使用
     char_count = len(text)
     preview_lines = 2
