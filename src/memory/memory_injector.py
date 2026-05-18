@@ -61,8 +61,7 @@ class MemoryInjector:
         if not parts:
             return ""
 
-        header = "[记忆上下文 - 由 Memory 模块自动生成]\n\n"
-        raw = header + "\n\n".join(parts)
+        raw = "\n\n".join(parts)
 
         # Token 截断
         raw = self._truncate_by_tokens(raw, max_tokens)
@@ -102,7 +101,7 @@ class MemoryInjector:
     @staticmethod
     def _format_long_section(long_memories: List[Dict]) -> str:
         """格式化长期记忆段，包含 id 和 timestamp 字段以区分相似记忆。"""
-        lines = ["[相关历史记忆]"]
+        lines = []
         for mem in long_memories:
             content = mem.get("content", "")
             score = mem.get("_score", 0.0)

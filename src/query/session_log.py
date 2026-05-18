@@ -409,6 +409,9 @@ class SessionLog:
         if not content:
             return "<pre>（无记忆内容）</pre>"
 
+        # 移除 "[记忆上下文 - 由 Memory 模块自动生成]" 行
+        content = re.sub(r'\n?\[记忆上下文 - 由 Memory 模块自动生成\]\n?', '\n', content).strip()
+
         # 转义 HTML
         escaped = content.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 
@@ -416,30 +419,27 @@ class SessionLog:
         if "没有召唤到相关记忆" in content:
             return f'<pre style="color:#999; font-style:italic;">{escaped}</pre>'
 
-        # 先定位 "[相关历史记忆]" 作为前缀/正文分割点
-        # 搜索最后一个 "[相关历史记忆]" 标题行（紧跟记忆条目）
-        rel_mem_marker = re.search(r'\n\[相关历史记忆\]\s*\n', content)
-        if rel_mem_marker:
-            prefix = content[:rel_mem_marker.end()].strip()
-            body = content[rel_mem_marker.end():].strip()
+        # 以 "[当前任务上下文]" 作为前缀/正文分割点
+        ctx_marker = re.search(r'\[当前任务上下文\]', content)
+        if ctx_marker:
+            prefix = content[:ctx_marker.end()].strip()
+            body = content[ctx_marker.end():].strip()
         else:
-            # 回退：尝试用 "[记忆上下文" 分割
-            ctx_marker = re.search(r'\[记忆上下文[^\]]*\]', content)
-            if ctx_marker:
-                prefix = content[:ctx_marker.end()].strip()
-                body = content[ctx_marker.end():].strip()
+            # 无工作记忆，用系统提醒作为分割点
+            sys_marker = re.search(r'\[系统提醒\][^\n]*\n\n', content)
+            if sys_marker:
+                prefix = content[:sys_marker.end()].strip()
+                body = content[sys_marker.end():].strip()
             else:
                 prefix = ""
                 body = content.strip()
 
-        # 按记忆条目开头拆分（可能以 "[id=" 或以 "- [Turn" 开头）
+        # 按记忆条目开头拆分（以 "[id=" 或以 "- [Turn" 开头）
         parts = re.split(r'(\n(?=- \[(?:id=|Turn\s)))', body)
         memories = []
         if parts:
-            # parts[0] 可能是空白或"纯标题"行（如残留的 "[相关历史记忆]"）
             first = parts[0].strip()
-            # 过滤掉仅包含 "[相关历史记忆]" 或空白的伪条目
-            if first and not re.match(r'^\[相关历史记忆\]$', first):
+            if first:
                 memories.append(first)
             for i in range(1, len(parts)):
                 part = parts[i].strip()

@@ -199,10 +199,15 @@ class QueryLoop:
                     )
                     if mem_context:
                         wrapped = (
-                            "[系统提醒] 以下是与当前任务相关的历史记忆，仅供参考：\n\n"
+                            "[系统提醒] 以下是与当前任务相关的历史记忆，仅供参考！\n\n"
                             + mem_context
                         )
                         self.api_messages.append_micro_info("user", wrapped)
+                        # 诊断输出：告知用户记忆召回情况
+                        line_count = mem_context.count('\n') + 1
+                        self._print_info(f"[记忆召回] 注入了 {line_count} 行记忆上下文")
+                    else:
+                        self._print_info("[记忆召回] 未找到相关记忆，可能原因：跨会话数据尚未积累，或短期/长期记忆存储为空")
                 except Exception as e:
                     self._print_info(f"[记忆注入失败] {e}")
 
