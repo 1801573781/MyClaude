@@ -194,7 +194,7 @@ class QueryLoop:
             if self._memory_manager is not None:
                 self._memory_used = True  # 只要启用记忆，就需要走生命周期流程
                 try:
-                    mem_context = self._memory_manager.inject_context(
+                    mem_context, mem_count = self._memory_manager.inject_context(
                         current_query=user_input
                     )
                     if mem_context:
@@ -204,8 +204,7 @@ class QueryLoop:
                         )
                         self.api_messages.append_micro_info("user", wrapped)
                         # 诊断输出：告知用户记忆召回情况
-                        line_count = mem_context.count('\n') + 1
-                        self._print_info(f"[记忆召回] 注入了 {line_count} 行记忆上下文")
+                        self._print_info(f"[记忆召回] 召回了{mem_count}个记忆点")
                     else:
                         self._print_info("[记忆召回] 未找到相关记忆，可能原因：跨会话数据尚未积累，或短期/长期记忆存储为空")
                 except Exception as e:

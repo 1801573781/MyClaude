@@ -355,18 +355,18 @@ class MemoryManager:
 
     def inject_context(self,
                        current_query: str = "",
-                       max_tokens: int = 2000) -> str:
+                       max_tokens: int = 2000) -> tuple:
         """
         为当前 LLM 请求生成需要注入的上下文文本。
 
         详细格式见 spec 6.3 节。
 
         返回:
-            格式化的 Markdown 上下文字符串。
-            若 enabled=False 或工作记忆为空且无相关长期记忆，返回空字符串 ""。
+            (格式化的 Markdown 上下文字符串, 召回的记忆数量)。
+            若 enabled=False 或工作记忆为空且无相关长期记忆，返回 ("", 0)。
         """
         if not self._enabled:
-            return ""
+            return "", 0
 
         # 检索长期记忆 + 短期记忆
         long_mems = []
@@ -380,11 +380,15 @@ class MemoryManager:
             )
 
         # 格式化注入文本
-        return self._injector.format_context(
+        formatted = self._injector.format_context(
             working_memories=self._working_memories,
             long_memories=long_mems,
             max_tokens=max_tokens
         )
+
+        # 统计召回的记忆数量
+        memory_count = len(self._working_memories) + len(long_mems)
+        return formatted, memory_count
 
     def clear_working_memory(self) -> None:
         """

@@ -189,7 +189,7 @@ class SessionLog:
             "installed_skills": "📦 系统技能",
             "project_context": "📋 项目宪法",
             "directory_tree": "🗂️ 项目目录",
-            "memory_context": "🧠 记忆召唤",
+            "memory_context": "🧠 记忆召回",
             "user": "👤 用户输入",
             "reasoning": "💭 LLM 思考",
             "assistant": "🤖 LLM 应答",
