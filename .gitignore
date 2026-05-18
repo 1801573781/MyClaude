@@ -12,17 +12,16 @@ src/crawler/
 src/spider/
 src/memory2
 
-# 忽略这个特殊文件，这个文件是为了给MyClaude提问题单的
-spec/wanneng.txt
-
 # 忽略这些目录下的所有内容
 code_output/*
 context/*
 log/*
+spec/*
 
 # 但是保留这些目录本身（通过.gitkeep）
 !code_output/.gitkeep
 !context/.gitkeep
 !log/.gitkeep
+!spec/.gitkeep
 
 
