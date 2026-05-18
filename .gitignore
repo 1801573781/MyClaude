@@ -17,11 +17,13 @@ code_output/*
 context/*
 log/*
 spec/*
+tests/*
 
 # 但是保留这些目录本身（通过.gitkeep）
 !code_output/.gitkeep
 !context/.gitkeep
 !log/.gitkeep
 !spec/.gitkeep
+!tests/.gitkeep
 
 
