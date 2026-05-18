@@ -10,7 +10,6 @@ venv/
 logo/
 src/crawler/
 src/spider/
-src/memory2
 
 # 忽略这些目录下的所有内容
 code_output/*
