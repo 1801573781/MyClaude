@@ -1,0 +1,19 @@
+# 模型 API Key 配置（敏感信息，请勿提交到版本控制）
+# 修改后重启生效
+
+# DeepSeek API 连接参数
+DeepSeek:
+  api_key: "***"
+  base_url: "https://api.deepseek.com"
+  model_name: "deepseek-v4-pro"
+
+# MiniMax API 连接参数
+MiniMax:
+  api_key: "***"
+  base_url: "https://api.minimaxi.com/v1"
+  model_name: "MiniMax-M2.7"
+
+# 模型基本参数
+model:
+  # 模型供应商
+  provider: "DeepSeek"

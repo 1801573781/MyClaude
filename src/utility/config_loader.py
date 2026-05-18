@@ -34,20 +34,51 @@ def find_project_root(start: Path, marker: str = "config.yaml") -> Path:
     )
 
 
-def load_config(filename="config.yaml"):
+def _deep_merge(base, override):
+    """递归合并两个字典，override 中的值覆盖 base 中的同名字段"""
+    if not isinstance(base, dict) or not isinstance(override, dict):
+        return override
+    result = dict(base)
+    for k, v in override.items():
+        if k in result and isinstance(result[k], dict) and isinstance(v, dict):
+            result[k] = _deep_merge(result[k], v)
+        else:
+            result[k] = v
+    return result
+
+
+def load_config(config_yaml="config.yaml", model_key_yaml="model_key.yaml"):
     """
-    读取 YAML 配置文件，返回支持点号访问的命名空间对象。
+    读取 model_key.yaml 和 config.yaml 两个配置文件，合并后返回支持点号访问的命名空间对象。
     配置文件默认放在项目根目录（入口脚本的上级目录）。
+    config.yaml 中的字段优先级高于 model_key.yaml（即 config.yaml 可以覆盖 model_key.yaml 的同名字段）。
     """
-    # 从本文件所在目录开始找
+    # 从本文件所在目录开始找项目根目录
     start_dir = Path(__file__).resolve().parent
-    base_dir = find_project_root(start_dir, filename)
-    config_path = base_dir / filename
+    base_dir = find_project_root(start_dir, config_yaml)
 
-    with open(config_path, "r", encoding="utf-8") as f:
-        raw = yaml.safe_load(f)
+    # 加载 model_key.yaml
+    model_key_path = base_dir / model_key_yaml
+    model_key_raw = {}
+    if model_key_path.exists():
+        with open(model_key_path, "r", encoding="utf-8") as f:
+            raw = yaml.safe_load(f)
+            if raw is not None:
+                model_key_raw = raw
 
-    return _dict_to_namespace(raw)
+    # 加载 config.yaml
+    config_path = base_dir / config_yaml
+    config_raw = {}
+    if config_path.exists():
+        with open(config_path, "r", encoding="utf-8") as f:
+            raw = yaml.safe_load(f)
+            if raw is not None:
+                config_raw = raw
+
+    # 合并：config.yaml 覆盖 model_key.yaml
+    merged = _deep_merge(model_key_raw, config_raw)
+
+    return _dict_to_namespace(merged)
 
 
 """

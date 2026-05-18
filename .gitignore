@@ -10,6 +10,7 @@ venv/
 logo/
 src/crawler/
 src/spider/
+src/memory2
 
 # 忽略这个特殊文件，这个文件是为了给MyClaude提问题单的
 spec/wanneng.txt
