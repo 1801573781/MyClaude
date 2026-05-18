@@ -50,13 +50,13 @@ class MemoryManager:
             llm_call=None  # 由外部注入
         )
         self._injector = MemoryInjector(
-            max_tokens=mem_cfg.get("working_memory_max_tokens", 2000)
+            max_tokens=int(mem_cfg.get("working_memory_max_tokens", 2000))
         )
 
-        self._long_term_max_inject = mem_cfg.get("long_term_max_inject", 5)
-        self._working_memory_max_tokens = mem_cfg.get(
+        self._long_term_max_inject = int(mem_cfg.get("long_term_max_inject", 5))
+        self._working_memory_max_tokens = int(mem_cfg.get(
             "working_memory_max_tokens", 2000
-        )
+        ))
         self._forget_older_than_days = mem_cfg.get("forget_older_than_days", 30)
         self._forget_importance_below = mem_cfg.get(
             "forget_importance_below", 0.2

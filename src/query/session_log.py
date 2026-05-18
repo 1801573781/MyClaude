@@ -197,9 +197,12 @@ class SessionLog:
         }
 
         # 检查是否有记忆召唤 section，如果没有则添加占位
+        # 记忆召唤应放在"用户输入"之前、"项目目录树"等固定上下文之后
         has_memory_section = any(sec_name == "memory_context" for sec_name, _ in sections)
         if not has_memory_section:
-            sections.insert(0, ("memory_context", [{"role": "user", "content": "没有召唤到相关记忆"}]))
+            # 找到"用户输入" section 的位置，插在它前面
+            insert_idx = next((i for i, (name, _) in enumerate(sections) if name == "user"), len(sections))
+            sections.insert(insert_idx, ("memory_context", [{"role": "user", "content": "没有召唤到相关记忆"}]))
 
         for section_name, items in sections:
             if section_name == "reasoning":
@@ -429,8 +432,8 @@ class SessionLog:
                 prefix = ""
                 body = content.strip()
 
-        # 按 "- [Turn" 拆分记忆条目（使用正则分割，保留分隔符）
-        parts = re.split(r'(\n(?=- \[Turn\s))', body)
+        # 按记忆条目开头拆分（可能以 "[id=" 或以 "- [Turn" 开头）
+        parts = re.split(r'(\n(?=- \[(?:id=|Turn\s)))', body)
         memories = []
         if parts:
             # parts[0] 可能是空白或"纯标题"行（如残留的 "[相关历史记忆]"）

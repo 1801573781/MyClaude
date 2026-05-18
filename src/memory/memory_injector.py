@@ -1,5 +1,6 @@
 import logging
 import re
+from datetime import datetime
 from typing import List, Dict
 
 
@@ -19,7 +20,7 @@ class MemoryInjector:
         参数:
             max_tokens: 注入上下文的最大 token 数。
         """
-        self._max_tokens = max_tokens
+        self._max_tokens = int(max_tokens) if max_tokens else DEFAULT_MAX_TOKENS
 
     # ========== 公开接口 ==========
 
@@ -100,12 +101,28 @@ class MemoryInjector:
 
     @staticmethod
     def _format_long_section(long_memories: List[Dict]) -> str:
-        """格式化长期记忆段。"""
+        """格式化长期记忆段，包含 id 和 timestamp 字段以区分相似记忆。"""
         lines = ["[相关历史记忆]"]
         for mem in long_memories:
             content = mem.get("content", "")
             score = mem.get("_score", 0.0)
-            lines.append(f"- {content} (相关性: {score:.2f})")
+            mem_id = mem.get("id", "")
+            ts = mem.get("timestamp", 0)
+            if ts:
+                # timestamp 可能是 Unix 时间戳（int/float），也可能是 ISO 字符串
+                if isinstance(ts, (int, float)) and ts > 0:
+                    ts_str = datetime.fromtimestamp(ts).strftime(
+                        "%Y-%m-%d %H:%M:%S"
+                    )
+                elif isinstance(ts, str) and ts.strip():
+                    ts_str = ts[:19]  # "YYYY-MM-DD HH:MM:SS"
+                else:
+                    ts_str = "未知"
+            else:
+                ts_str = "未知"
+            # 截取 id 前 8 位，方便阅读
+            id_short = mem_id[:8] if mem_id else "无ID"
+            lines.append(f"- [id={id_short}, ts={ts_str}] {content} (相关性: {score:.2f})")
         return "\n".join(lines)
 
     # ========== Token 截断 ==========
