@@ -30,8 +30,8 @@ class LLMAPIMessage:
 
     @staticmethod
     def _load_system_prompt() -> list[dict]:
-        """从同目录加载 sys_prompt.md，包装为 API 消息格式，并追加技能清单（L1 Metadata）。"""
-        md_path = Path(__file__).with_name("sys_prompt.md")
+        """从项目根目录加载 sys_prompt.md，包装为 API 消息格式，并追加技能清单（L1 Metadata）。"""
+        md_path = Path(__file__).resolve().parent.parent.parent / "sys_prompt.md"
         base_prompt = ""
         if md_path.exists():
             base_prompt = md_path.read_text(encoding="utf-8")

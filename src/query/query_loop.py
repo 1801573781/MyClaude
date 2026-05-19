@@ -3,7 +3,7 @@ from contextlib import AbstractContextManager
 from datetime import datetime
 from typing import Callable, Dict, Optional
 from src.query import chat_llm
-from src.message import llm_api_msg
+from src.utility import llm_api_msg
 from src.llm_tool import tool_executor
 from src.utility.config_loader import global_cfg
 from src.utility.normal_utility import strip_thinking
