@@ -1,22 +1,7 @@
 # MyClaude 全局配置文件
 # 修改后重启生效
 
-# DeepSeek API 连接参数
-DeepSeek:
-  api_key: "***"
-  base_url: "https://api.deepseek.com"
-  model_name: "deepseek-v4-pro"
-
-# MiniMax API 连接参数
-MiniMax:
-  api_key: "***"
-  base_url: "https://api.minimaxi.com/v1"
-  model_name: "MiniMax-M2.7"
-
-# 模型基本参数
-model:
-  # 模型供应商
-  provider: "DeepSeek"
+# model api_key 配置文件，换到model_key.yaml
 
 # 模型交互基本参数
 model_chat:
@@ -27,9 +12,18 @@ model_chat:
 
 # 记忆系统存储配置
 memory:
-  root_dir: ".memdir"     # 记忆文件存放目录（以.开头，默认隐藏）
-  max_inject_tokens: 2000 # 注入上下文的记忆最大 token 数
-  compact_threshold: 0.9  # 压缩触发阈值
+  enabled: true                                       # 是否启用记忆模块
+  use_new: false                                      # true=src/memory2（Embedding+LLM双路召回），false=src/memory（TF-IDF检索）
+  storage_path: "D:/AI/MyClaude/.memdir"              # 记忆文件存放路径
+  max_inject_tokens: 2000                             # 注入上下文的记忆最大 token 数
+  similarity_threshold: 0.15                          # 检索相似度阈值
+  short_term_max_entries: 50                          # 短期记忆条目数上限
+  short_term_max_tokens: 8000                         # 短期记忆 token 总量上限
+  compress_batch_size: 20                             # 每批压缩条目数
+  working_memory_max_tokens: 2000                     # 工作记忆 token 上限
+  long_term_max_inject: 5                             # 注入长期记忆最大条数
+  forget_older_than_days: 30                          # 遗忘时间阈值（天）
+  forget_importance_below: 0.2                        # 遗忘重要性阈值
 
 # 项目基本目录结构
 base_path:
