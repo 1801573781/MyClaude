@@ -8,7 +8,7 @@ from src.llm_tool import tool_executor
 from src.utility.config_loader import global_cfg
 from src.utility.normal_utility import strip_thinking
 from src.query.session_log import SessionLog
-from src.memory.memory_manager import MemoryManager
+from src.memory.memory_interface import create_memory_backend
 import logging
 
 logger = logging.getLogger(__name__)
@@ -51,37 +51,8 @@ class QueryLoop:
 
     @staticmethod
     def _init_memory_manager():
-        """根据全局配置初始化 MemoryManager，CLI 层无需感知。"""
-        from src.utility.config_loader import global_cfg
-        from src.memory.memory_manager import MemoryManager
-
-        mem_enabled = getattr(global_cfg.memory, 'enabled', False)
-
-        if not mem_enabled:
-            return None
-
-        mem_cfg_dict = {
-            'enabled': getattr(global_cfg.memory, 'enabled', True),
-            'storage_path': getattr(global_cfg.memory, 'storage_path', '.memdir'),
-            'similarity_threshold': getattr(global_cfg.memory, 'similarity_threshold', 0.15),
-            'short_term_max_entries': getattr(global_cfg.memory, 'short_term_max_entries', 50),
-            'short_term_max_tokens': getattr(global_cfg.memory, 'short_term_max_tokens', 8000),
-            'compress_batch_size': getattr(global_cfg.memory, 'compress_batch_size', 20),
-            'working_memory_max_tokens': getattr(global_cfg.memory, 'working_memory_max_tokens', 2000),
-            'long_term_max_inject': getattr(global_cfg.memory, 'long_term_max_inject', 5),
-            'forget_older_than_days': getattr(global_cfg.memory, 'forget_older_than_days', 30),
-            'forget_importance_below': getattr(global_cfg.memory, 'forget_importance_below', 0.2),
-        }
-        memory_manager = MemoryManager(config={'memory': mem_cfg_dict})
-
-        # 为 MemoryCompressor 注入 LLM 回调
-        def _llm_call_simple(messages, max_tokens, temperature):
-            result, _, _ = chat_llm.chat_with_retry(messages)
-            return result
-
-        memory_manager.set_llm_call(_llm_call_simple)
-
-        return memory_manager
+        """根据全局配置（memory.enabled + memory.use_new）自动选择记忆后端。"""
+        return create_memory_backend()
 
 
     def get_tokens(self):
@@ -162,14 +133,7 @@ class QueryLoop:
         # 会话结束时：持久化工作记忆 → 压缩 → 遗忘
         if self._memory_manager is not None and self._memory_used:
             try:
-                count = self._memory_manager.persist_working_to_short()
-                logger.info(f"已持久化 {count} 条工作记忆为短期记忆")
-
-                compressed_count = self._memory_manager.compress_short_term()
-                logger.info(f"本次压缩生成 {compressed_count} 条长期记忆")
-
-                forgot_count = self._memory_manager.forget()
-                logger.info(f"本次遗忘 {forgot_count} 条长期记忆")
+                self._memory_manager.persist_and_maintain()
             except Exception as e:
                 logger.error(f"记忆生命周期处理失败: {e}")
 
@@ -194,17 +158,10 @@ class QueryLoop:
             if self._memory_manager is not None:
                 self._memory_used = True  # 只要启用记忆，就需要走生命周期流程
                 try:
-                    mem_context, mem_count = self._memory_manager.inject_context(
-                        current_query=user_input
-                    )
+                    mem_context = self._memory_manager.inject_context(current_query=user_input)
                     if mem_context:
-                        wrapped = (
-                            "[系统提醒] 以下是与当前任务相关的历史记忆，仅供参考！\n\n"
-                            + mem_context
-                        )
-                        self.api_messages.append_micro_info("user", wrapped)
-                        # 诊断输出：告知用户记忆召回情况
-                        self._print_info(f"[记忆召回] 召回了{mem_count}个记忆点")
+                        self.api_messages.append_micro_info("user", mem_context)
+                        self._print_info(f"[记忆召回] 已注入相关记忆")
                     else:
                         self._print_info("[记忆召回] 未找到相关记忆，可能原因：跨会话数据尚未积累，或短期/长期记忆存储为空")
                 except Exception as e:
@@ -280,77 +237,15 @@ class QueryLoop:
         if remaining_text:
             self._print_llm_rsp(remaining_text)
 
-        # 每轮对话后，将摘要存入工作记忆
+        # 每轮对话后，将摘要存入工作记忆（适配器内部处理摘要逻辑）
         if self._memory_manager is not None:
             try:
-                # 用户输入摘要（截取前100个字符）
-                user_summary = user_input[:100] if user_input else ""
-
-                # LLM 推理过程摘要
-                thinking_summary = ""
-                if reasoning_content:
-                    thinking_summary = reasoning_content[:250].strip()
-                    if len(reasoning_content) > 250:
-                        thinking_summary += "..."
-
-                # LLM 应答摘要
-                response_summary = ""
-                if remaining_text:
-                    response_summary = remaining_text[:250].strip()
-                    if len(remaining_text) > 250:
-                        response_summary += "..."
-
-                # 工具调用摘要
-                tool_details = []
-                for t in tools:
-                    name = t.get("llm_tool", "")
-                    params = t.get("params", {})
-                    path = params.get("path", "")
-                    summ = params.get("summary", "")
-                    if name in ("create", "str_replace") and path:
-                        detail = f"{name}({path}"
-                        if summ:
-                            detail += f"{summ}"
-                        detail += ")"
-                    elif name == "file_view" and path:
-                        detail = f"file_view({path})"
-                    elif name == "bash":
-                        detail = "bash"
-                    elif name == "done":
-                        detail = "done"
-                    else:
-                        detail = name
-                    tool_details.append(detail)
-                tool_summary = "; ".join(tool_details) if tool_details else "无工具调用"
-
-                # 构造换行分隔的 content（方便直接阅读）
-                content_parts = [f"[Turn {turn}]"]
-                content_parts.append(f"用户输入: {user_summary}")
-                if thinking_summary:
-                    content_parts.append(f"LLM推理过程: {thinking_summary}")
-                if response_summary:
-                    content_parts.append(f"LLM应答: {response_summary}")
-                content_parts.append(f"LLM工具调用: {tool_summary}")
-                memory_content = "\n".join(content_parts)
-
-                # 截断到 800 字符以内
-                if len(memory_content) > 800:
-                    memory_content = memory_content[:797] + "..."
-
-                # 构造结构化 metadata（保留完整字段，供 memory_injector 格式化展示）
-                metadata = {
-                    "turn": turn,
-                    "user_input": user_summary,
-                    "llm_reasoning": thinking_summary,
-                    "llm_response": response_summary,
-                    "llm_tool_call": tool_summary
-                }
-
-                self._memory_manager.add_memory(
-                    content=memory_content,
-                    mem_type="working",
-                    importance=0.5,
-                    metadata=metadata
+                self._memory_manager.add_turn_memory(
+                    user_input=user_input,
+                    turn=turn,
+                    reasoning_content=reasoning_content,
+                    remaining_text=remaining_text,
+                    tools=tools,
                 )
             except Exception as e:
                 self._print_info(f"[记忆存储失败] {e}")
