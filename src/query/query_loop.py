@@ -161,7 +161,8 @@ class QueryLoop:
                     mem_context = self._memory_manager.inject_context(current_query=user_input)
                     if mem_context:
                         self.api_messages.append_micro_info("user", mem_context)
-                        self._print_info(f"[记忆召回] 已注入相关记忆")
+                        mem_count = mem_context.count("- [id=")
+                        self._print_info(f"[记忆召回] 已召回{mem_count}条相关记忆")
                     else:
                         self._print_info("[记忆召回] 未找到相关记忆，可能原因：跨会话数据尚未积累，或短期/长期记忆存储为空")
                 except Exception as e:

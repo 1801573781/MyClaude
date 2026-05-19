@@ -1,7 +1,7 @@
 # MyClaude.md
 
 ## 1. 项目 DNA
-- **定位**：Claude Code 的 Python 复刻，基于国产大模型（MiniMax）的终端 AI 编程助手。
+- **定位**：Claude Code 的 Python 复刻，基于国产大模型（DeepSeek）的终端 AI 编程助手。
 - **核心循环**：Query Loop —— 用户输入 → LLM 决策 → XML 工具执行 → 结果反馈 → 多轮循环直至 `<done>`。
 - **技术栈**：Python 3.12 + OpenAI SDK（调用 MiniMax）+ Rich（终端 UI）+ PyYAML（配置）+ pathlib（路径管理）。
 - **架构风格**：全同步（刻意不用 async/await），降低心智负担；终端显示与业务逻辑部分解耦。
