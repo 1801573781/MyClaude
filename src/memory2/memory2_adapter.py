@@ -27,22 +27,25 @@ class Memory2Adapter(MemoryBackend):
     """适配新 memory 模块（Embedding + LLM 双路召回）到统一接口。"""
 
     def __init__(self):
+        mem = global_cfg.memory
+        storage = mem.storage_path
+
         cfg = MemoryConfig(
-            long_term_path="D:/AI/MyClaude/data/memory2_long_term.json",
-            short_term_path="D:/AI/MyClaude/data/memory2_short_term.json",
-            max_short_term=15,
-            max_long_term=200,
-            max_working_memories=20,
-            embedding_top_k=10,
-            llm_top_k=5,
-            similarity_threshold=0.35,
-            context_token_budget=1500,
-            chars_per_token=2.0,
-            forgetting_slope=0.5,
-            forgetting_min=0.01,
-            decay_check_interval=3600,
-            compress_trigger_count=12,
-            max_compressed_per_batch=6,
+            long_term_path=f"{storage}/memory2_long_term.json",
+            short_term_path=f"{storage}/memory2_short_term.json",
+            max_short_term=getattr(mem, 'short_term_max_entries', 50),
+            max_long_term=getattr(mem, 'long_term_max_entries', 200),
+            max_working_memories=getattr(mem, 'working_memory_max_entries', 20),
+            embedding_top_k=getattr(mem, 'embedding_top_k', 10),
+            llm_top_k=getattr(mem, 'llm_top_k', 5),
+            similarity_threshold=getattr(mem, 'similarity_threshold', 0.15),
+            context_token_budget=getattr(mem, 'context_token_budget', 1500),
+            chars_per_token=getattr(mem, 'chars_per_token', 2.0),
+            forgetting_slope=getattr(mem, 'forgetting_slope', 0.5),
+            forgetting_min=getattr(mem, 'forgetting_min', 0.01),
+            decay_check_interval=getattr(mem, 'decay_check_interval', 3600),
+            compress_trigger_count=getattr(mem, 'compress_trigger_count', 12),
+            max_compressed_per_batch=getattr(mem, 'max_compressed_per_batch', 6),
             inject_header="[系统提醒] 以下是与当前任务相关的历史记忆，仅供参考！\n",
         )
 

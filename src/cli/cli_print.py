@@ -182,8 +182,8 @@ Welcome to MyClaude Code CLI! A beautiful terminal interface for AI Coding.
 - `/clear` - Clear conversation history
 - `/help` - Show this help message
 - `/tokens` - Show the tokens statistics
-- `/t [number]` - 展开指定 Turn 的思考过程
-- `/r memory` - 清除所有记忆（短期 + 长期 + 工作记忆）
+- `/t number` - 展开指定 Turn 的思考过程
+- `/r mem` - 清除所有记忆（短期 + 长期 + 工作记忆）
 - `/save <filename> [all]` - Save last interaction (or all with "all" flag) to HTML file
 - `/quit` or `/exit` - Exit the application
 
@@ -434,6 +434,17 @@ def print_tool_call(tool_name: str, params: dict):
         detail = params.get("command", "")
     elif tool_name == "done":
         detail = ""
+    elif tool_name == "file_view":
+        # file_view 额外显示 limit 和 offset 参数
+        path = params.get("path", "")
+        limit = params.get("limit")
+        offset = params.get("offset")
+        parts = [path]
+        if limit is not None:
+            parts.append(f"limit={limit}")
+        if offset is not None:
+            parts.append(f"offset={offset}")
+        detail = "，".join(parts)
     else:
         detail = params.get("path", "")
 
@@ -485,12 +496,30 @@ _reasoning_expanded = False
 _reasoning_turn_counter = 0
 
 
+def reset_reasoning():
+    """重置推理历史（新对话开始时调用）。"""
+    global _reasoning_history, _reasoning_cursor, _reasoning_expanded, _reasoning_turn_counter
+    _reasoning_history.clear()
+    _reasoning_cursor = -1
+    _reasoning_expanded = False
+    _reasoning_turn_counter = 0
+
+
 def set_reasoning_text(text: str):
     """保存推理过程文本（由 query_loop 调用），自动递增轮次号"""
     global _reasoning_history, _reasoning_cursor, _reasoning_turn_counter
     _reasoning_turn_counter += 1
     _reasoning_history.append((text, _reasoning_turn_counter))
     _reasoning_cursor = -1  # 新内容来了，光标回到最新
+
+
+def reset_reasoning():
+    """重置推理历史（新对话开始时调用）。"""
+    global _reasoning_history, _reasoning_cursor, _reasoning_expanded, _reasoning_turn_counter
+    _reasoning_history.clear()
+    _reasoning_cursor = -1
+    _reasoning_expanded = False
+    _reasoning_turn_counter = 0
 
 
 def expand_reasoning(turn: int = -1):

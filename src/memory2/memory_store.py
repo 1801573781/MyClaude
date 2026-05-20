@@ -25,22 +25,28 @@ from dataclasses import dataclass, field, asdict
 
 @dataclass
 class MemoryEntry:
-    """单条记忆条目"""
+    """单条记忆条目
+
+    字段名与 memory1 的字典格式保持兼容：
+    - type: "working" / "short" / "long"（兼容 memory1 的 type）
+    - timestamp: 创建时间（兼容 memory1 的 timestamp，float 类型可无损兼容 int）
+    """
     id: str = ""
     content: str = ""
     embedding: Optional[List[float]] = None
     importance: float = 0.5
     access_count: int = 0
     last_access: float = 0.0
-    created_at: float = 0.0
+    timestamp: float = 0.0          # 原名 created_at，对齐 memory1
     source_turn: int = 0
-    memory_type: str = "long_term"  # short_term / long_term / working
+    type: str = "long"              # 原名 memory_type，值对齐 memory1: working/short/long
     tags: List[str] = field(default_factory=list)
     summary: str = ""
+    metadata: Dict = field(default_factory=dict)
 
     def __post_init__(self):
-        if not self.created_at:
-            self.created_at = time.time()
+        if not self.timestamp:
+            self.timestamp = time.time()
         if not self.id:
             self.id = uuid.uuid4().hex[:12]
 
@@ -260,7 +266,7 @@ class MemoryStore:
     def get_by_type(self, memory_type: str) -> List[MemoryEntry]:
         """按类型筛选记忆。"""
         self._ensure_loaded()
-        return [m for m in self._memories.values() if m.memory_type == memory_type]
+        return [m for m in self._memories.values() if m.type == memory_type]
 
     def count(self) -> int:
         """返回记忆总数。"""

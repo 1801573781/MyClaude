@@ -11,7 +11,7 @@ def parse_tools(response: str):
     返回: (剩余普通文本, 工具列表)
     """
     patterns = [
-        ("file_view", re.compile(r'<file_view\s+path="([^"]*)"\s*/>')),
+        ("file_view", re.compile(r'<file_view\s+path="([^"]*)"[^>]*/>')),
         ("create", re.compile(r'<create\s+path="([^"]*)"(?:\s+summary="([^"]*)")?\s*>(.*?)</create>', re.DOTALL)),
         ("bash", re.compile(r'<bash>(.*?)</bash>', re.DOTALL)),
         # 改：str_replace 改用“块提取”正则，整块交给辅助函数处理
@@ -36,7 +36,15 @@ def parse_tools(response: str):
             remaining_parts.append(response[last_end:start])
 
         if tool_name == "file_view":
-            tools.append({"llm_tool": "file_view", "params": {"path": m.group(1)}})
+            params = {"path": m.group(1)}
+            # 提取可选的 limit（最多行数）和 offset（起始行，1-based）
+            limit_match = re.search(r'limit="(\d+)"', m.group(0))
+            offset_match = re.search(r'offset="(\d+)"', m.group(0))
+            if limit_match:
+                params["limit"] = int(limit_match.group(1))
+            if offset_match:
+                params["offset"] = int(offset_match.group(1))
+            tools.append({"llm_tool": "file_view", "params": params})
 
         elif tool_name == "create":
             summary = m.group(2) or ""
@@ -145,7 +153,9 @@ def execute_code_tool(tool):
     如果 LLM 没有遵守指令，回复的是相对路径，出现错误，那就错吧
     '''
     if name == "file_view":
-        result = file_view(spec_root, p["path"])
+        result = file_view(spec_root, p["path"],
+                           limit=p.get("limit"),
+                           offset=p.get("offset"))
 
     elif name == "create":
         # 写入文件

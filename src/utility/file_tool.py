@@ -18,10 +18,10 @@ def add_root_path(root: str, path: str) -> str:
     return str(Path(root) / p)
 
 
-def file_view(root: str, path: str) -> str:
+def file_view(root: str, path: str, limit: int = None, offset: int = None) -> str:
     full_path = add_root_path(root, path)
 
-    """查看文件或目录"""
+    """查看文件或目录，支持 limit（最多读取行数）和 offset（从第N行开始，1-based）"""
     p = Path(full_path)
     if not p.exists():
         return f"错误：路径不存在 {full_path}"
@@ -32,7 +32,18 @@ def file_view(root: str, path: str) -> str:
             items.append(f"{prefix} {f.name}")
         return "\n".join(items) if items else "（空目录）"
     try:
-        return p.read_text(encoding="utf-8")
+        lines = p.read_text(encoding="utf-8").splitlines()
+        # offset: 从第几行开始（1-based，默认从第1行）
+        start = 0 if offset is None else max(0, offset - 1)
+
+        # limit: 最多读取行数
+        end = len(lines) if limit is None else start + limit
+
+        # 防止越界
+        start = min(start, len(lines))
+        end = min(end, len(lines))
+
+        return "\n".join(lines[start:end])
     except OSError as e:
         return f"读取错误：{e}"
 

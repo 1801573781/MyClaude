@@ -16,6 +16,7 @@ code_output/*
 context/*
 log/*
 spec/*
+memory_storage/*
 tests/*
 
 # 但是保留这些目录本身（通过.gitkeep）
@@ -23,6 +24,7 @@ tests/*
 !context/.gitkeep
 !log/.gitkeep
 !spec/.gitkeep
+!memory_storage/.gitkeep
 !tests/.gitkeep
 
 

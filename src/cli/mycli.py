@@ -1,7 +1,7 @@
 from datetime import datetime
 from src.cli import cli_print
 from src.query.query_loop import QueryLoop
-from src.cli.cli_print import save_buffer_to_file
+from src.cli.cli_print import save_buffer_to_file, reset_reasoning
 
 
 class MyClaudeCLI:
@@ -44,11 +44,11 @@ class MyClaudeCLI:
                 turn = int(parts[1])
                 cli_print.expand_reasoning(turn)
             else:
-                cli_print.print_error("Usage: /t [number] — 展开指定 Turn 的思考过程")
+                cli_print.print_error("Usage: /t number — 展开指定 Turn 的思考过程")
             return True
 
-        elif cmd == '/r memory':
-            # /r memory — 清除所有记忆（短期 + 长期 + 工作记忆）
+        elif cmd == '/r mem':
+            # /r mem — 清除所有记忆（短期 + 长期 + 工作记忆）
             mm = self.query_loop.memory_manager
             if mm is None:
                 cli_print.print_error("记忆模块未启用，无法执行此操作。")
@@ -103,6 +103,9 @@ class MyClaudeCLI:
 
             # 记录用户消息
             cli_print.print_user_input(user_input)
+
+            # 每次对话前重置推理历史，避免 /t 命令跨会话显示旧的思考内容
+            cli_print.reset_reasoning()
 
             self.query_loop.run(user_input,
                                 cli_print.show_status,

@@ -8,7 +8,7 @@ from src.llm_tool import tool_executor
 from src.utility.config_loader import global_cfg
 from src.utility.normal_utility import strip_thinking
 from src.query.session_log import SessionLog
-from src.memory.memory_interface import create_memory_backend
+from src.memory_ex.factory import create_memory_backend
 import logging
 
 logger = logging.getLogger(__name__)

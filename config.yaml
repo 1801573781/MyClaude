@@ -14,16 +14,31 @@ model_chat:
 memory:
   enabled: true                                       # 是否启用记忆模块
   use_new: false                                      # true=src/memory2（Embedding+LLM双路召回），false=src/memory（TF-IDF检索）
-  storage_path: "D:/AI/MyClaude/.memdir"              # 记忆文件存放路径
+  # 统一 Memory 扩展模块选择器（新增，供 src/memory_ex 使用）
+  active_module: "memory5"                            # 选择 memory 模块：memory5 / memory6
+  config_dir: "config/memory"                         # 模块配置文件目录（相对于项目根）
+  storage_path: "D:/AI/MyClaude/.memdir"              # 记忆文件存放路径（两套模块共用）
   max_inject_tokens: 2000                             # 注入上下文的记忆最大 token 数
   similarity_threshold: 0.15                          # 检索相似度阈值
-  short_term_max_entries: 50                          # 短期记忆条目数上限
-  short_term_max_tokens: 8000                         # 短期记忆 token 总量上限
-  compress_batch_size: 20                             # 每批压缩条目数
+  short_term_max_entries: 50                          # 短期记忆条目数上限（memory1 用）
+  short_term_max_tokens: 8000                         # 短期记忆 token 总量上限（memory1 用）
+  compress_batch_size: 20                             # 每批压缩条目数（memory1 用）
   working_memory_max_tokens: 2000                     # 工作记忆 token 上限
   long_term_max_inject: 5                             # 注入长期记忆最大条数
   forget_older_than_days: 30                          # 遗忘时间阈值（天）
   forget_importance_below: 0.2                        # 遗忘重要性阈值
+  long_term_max_entries: 200                          # 长期记忆条目上限（memory2用，memory1忽略）
+  working_memory_max_entries: 20                      # 工作记忆条目上限
+  memory_recall_limit: 5                                # 单次记忆召回最大条数（memory5/memory6 共用）
+  embedding_top_k: 10                                 # Embedding 粗筛返回数
+  llm_top_k: 5                                        # LLM 精排最终返回数
+  context_token_budget: 1500                          # 注入上下文 token 预算
+  chars_per_token: 2.0                                # 中文字符/token 估算比例
+  forgetting_slope: 0.5                               # 遗忘斜率（越大忘得越快）
+  forgetting_min: 0.01                                # 最低保留权重
+  decay_check_interval: 3600                          # 衰减检查间隔（秒）
+  compress_trigger_count: 12                          # 触发压缩的短期记忆阈值
+  max_compressed_per_batch: 6                         # 单次压缩最大条数
 
 # 项目基本目录结构
 base_path:

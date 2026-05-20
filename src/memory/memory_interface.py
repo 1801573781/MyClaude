@@ -16,6 +16,7 @@ MyClaude 其余代码（query_loop、mycli）无需任何改动。
 """
 
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Optional
 
 
@@ -86,7 +87,12 @@ class MemoryBackend(ABC):
 
 def create_memory_backend() -> Optional[MemoryBackend]:
     """
-    工厂函数：根据 config.yaml → memory.use_new 字段，自动选择记忆后端。
+    工厂函数：根据 config.yaml → memory 配置，自动选择记忆后端。
+
+    优先级：
+        1. memory.active_module（如 "memory5" / "memory6"）→ 加载对应的适配器
+        2. memory.use_new（向后兼容）→ true 用 Memory2Adapter，false 用 Memory1Adapter
+        3. 默认：Memory1Adapter
 
     Returns:
         MemoryBackend 实例，若 memory.enabled 为 false 则返回 None。
@@ -97,6 +103,28 @@ def create_memory_backend() -> Optional[MemoryBackend]:
     if not mem_enabled:
         return None
 
+    active_module = getattr(global_cfg.memory, 'active_module', None)
+    if active_module:
+        config_dir = getattr(global_cfg.memory, 'config_dir', 'config/memory')
+        project_root = getattr(global_cfg.base_path, 'project_root', '.')
+        config_path = Path(project_root) / config_dir / f"{active_module}.yaml"
+        module_config = {}
+        if config_path.exists():
+            import yaml
+            with open(config_path, "r", encoding="utf-8") as f:
+                module_config = yaml.safe_load(f) or {}
+
+        if active_module == "memory5":
+            from src.memory_ex.memory5.adapter import Memory5Adapter
+            return Memory5Adapter(config=module_config)
+        elif active_module == "memory6":
+            from src.memory_ex.memory6.adapter import Memory6Adapter
+            return Memory6Adapter(config=module_config)
+        else:
+            # 未知 active_module，回退到旧逻辑
+            pass
+
+    # ---------- 向后兼容：use_new 标志 ----------
     use_new = getattr(global_cfg.memory, 'use_new', False)
 
     if use_new:

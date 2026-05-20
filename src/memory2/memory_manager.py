@@ -220,8 +220,8 @@ class MemoryManager:
         entry = MemoryEntry(
             content="\n".join(content_parts),
             importance=importance,
-            memory_type="working",
-            created_at=time.time(),
+            type="working",
+            timestamp=time.time(),
         )
 
         self._working_memories.append(entry)
@@ -229,7 +229,7 @@ class MemoryManager:
         # 超出容量时，将旧的移入短期存储
         while len(self._working_memories) > self.cfg.max_working_memories:
             oldest = self._working_memories.pop(0)
-            oldest.memory_type = "short_term"
+            oldest.type = "short"
             self._short_store.add(oldest)
 
         # 短期存储超出阈值，触发压缩
@@ -245,7 +245,7 @@ class MemoryManager:
         """
         # 工作记忆 → 短期
         for entry in self._working_memories:
-            entry.memory_type = "short_term"
+            entry.type = "short"
             self._short_store.add(entry)
         self._working_memories.clear()
 
@@ -356,7 +356,7 @@ class MemoryManager:
             # 构建记忆条目行
             ts_str = time.strftime(
                 "%Y-%m-%d %H:%M:%S",
-                time.localtime(r.entry.created_at),
+                time.localtime(r.entry.timestamp),
             )
             summary = r.entry.summary or r.entry.content[:100].replace("\n", " ").strip()
             content_preview = r.entry.content[:300].replace("\n", " ").strip()
@@ -390,12 +390,12 @@ class MemoryManager:
             return
 
         # 按创建时间排序，取最老的 N 条进行压缩
-        short_entries.sort(key=lambda e: e.created_at)
+        short_entries.sort(key=lambda e: e.timestamp)
         to_compress = short_entries[:self.cfg.max_compressed_per_batch]
 
         # 构建压缩 prompt
         combined = "\n\n---\n\n".join(
-            f"[{time.strftime('%H:%M:%S', time.localtime(e.created_at))}] "
+            f"[{time.strftime('%H:%M:%S', time.localtime(e.timestamp))}] "
             f"{e.content[:400]}"
             for e in to_compress
         )

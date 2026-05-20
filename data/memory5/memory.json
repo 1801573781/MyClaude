@@ -1,0 +1,46 @@
+{
+  "5af48bcd7def": {
+    "id": "5af48bcd7def",
+    "content": "测试网页爬虫：使用 requests 库抓取网页标题和 h1 标签",
+    "layer": "short",
+    "created_at": "2026-05-20 14:41:33",
+    "accessed_at": "2026-05-20 14:41:33",
+    "access_count": 0,
+    "importance": 0.8,
+    "tags": [],
+    "metadata": {}
+  },
+  "3239160cdbe2": {
+    "id": "3239160cdbe2",
+    "content": "日志记录修复：记忆召回的相关性分数没有显示，显示为？而不是数值",
+    "layer": "short",
+    "created_at": "2026-05-20 14:41:33",
+    "accessed_at": "2026-05-20 14:41:33",
+    "access_count": 0,
+    "importance": 0.9,
+    "tags": [],
+    "metadata": {}
+  },
+  "7dbfbcb2545e": {
+    "id": "7dbfbcb2545e",
+    "content": "Python 函数编写：计算斐波那契数列第 n 项",
+    "layer": "short",
+    "created_at": "2026-05-20 14:41:33",
+    "accessed_at": "2026-05-20 14:41:33",
+    "access_count": 0,
+    "importance": 0.5,
+    "tags": [],
+    "metadata": {}
+  },
+  "e2b510f46a79": {
+    "id": "e2b510f46a79",
+    "content": "[Turn 99]\n用户输入: hello\nLLM推理过程: 这是简单问候\nLLM应答: Hello world\nLLM工具调用: 无",
+    "layer": "working",
+    "created_at": "2026-05-20 14:41:33",
+    "accessed_at": "2026-05-20 14:41:33",
+    "access_count": 0,
+    "importance": 0.5,
+    "tags": [],
+    "metadata": {}
+  }
+}

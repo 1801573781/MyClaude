@@ -858,15 +858,22 @@ class SessionLog:
             lines.append(f"### 🔧 Tool: `{tool}`")
             lines.append("")
             if "tool_paras" in item:
-                # lines.append(f"**参数:** `{item['tool_paras']}`")
                 paras = item["tool_paras"]
                 if isinstance(paras, dict):
                     lines.append("**参数:**")
-                    if "path" in paras:
-                        lines.append(f"- 路径: `{paras['path']}`")
-                    if "command" in paras:
-                        lines.append(f"- 命令: `{paras['command']}`")
-                    # content 不再重复打印，因为 assistant 消息里已经有了完整代码
+                    for k, v in paras.items():
+                        if k == "content":
+                            # content 可能很长（代码内容），截断显示
+                            v_str = str(v)
+                            if len(v_str) > 100:
+                                v_str = v_str[:100] + "…[已截断]"
+                            lines.append(f"- {k}: `{v_str}`")
+                        elif isinstance(v, bool) or v is None:
+                            lines.append(f"- {k}: `{v}`")
+                        elif isinstance(v, (int, float)):
+                            lines.append(f"- {k}: `{v}`")
+                        else:
+                            lines.append(f"- {k}: `{v}`")
                 else:
                     lines.append(f"**参数:** `{paras}`")
             if "exec_result" in item:

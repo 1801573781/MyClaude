@@ -272,10 +272,8 @@ class MemoryManager:
         返回:
             被删除的记忆条目总数。
         """
-        # 删除所有持久化记忆（含备份文件）
-        all_mems = self._store.get_all()
-        ids = [mem["id"] for mem in all_mems]
-        persisted_count = self._store.delete_batch(ids)
+        # 记录持久化记忆数量，然后清空（含备份文件）
+        persisted_count = self._store.count()
         self._store.clear_all()
 
         # 清空工作记忆
