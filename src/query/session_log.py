@@ -437,8 +437,8 @@ class SessionLog:
                 prefix = ""
                 body = content.strip()
 
-        # 按记忆条目开头拆分（以 "[id=" 或以 "- [Turn" 开头）
-        parts = re.split(r'(\n(?=- \[(?:id=|Turn\s)))', body)
+        # 按记忆条目开头拆分（以 "- [id=" 或 "- [Turn" 或 "- []" 开头）
+        parts = re.split(r'(\n(?=- \[(?:id=|Turn\s|\])))', body)
         memories = []
         # 节标题模式：如 "[相关历史记忆]"、"[检索结果 - 查询: ...]"等纯标题行
         section_header_re = re.compile(r'^\[(?:相关历史记忆|检索结果\s*[-–—].*?|长期记忆|记忆搜索.*?)\]$')
@@ -451,12 +451,30 @@ class SessionLog:
                 if part and not section_header_re.match(part):
                     memories.append(part)
 
+        # 兜底：正则分割失败但内容中明显包含多条记忆（通过 "(相关性: " 出现次数判断）
+        if len(memories) <= 1 and body.count('(相关性: ') > 1:
+            # 按 \n- [] 再次尝试，用 lookbehind 确保 "- []" 前有换行
+            alt_parts = re.split(r'\n(?=- \[\])', body)
+            memories = []
+            for p in alt_parts:
+                p_stripped = p.strip()
+                if p_stripped and not section_header_re.match(p_stripped):
+                    memories.append(p_stripped)
+
+        # 转义 prefix（提前计算，单条/多条分支均可能用到）
+        prefix_escaped = prefix.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
         if len(memories) <= 1:
-            # 单条记忆，直接显示
+            # 单条记忆，也需要展示 prefix 提示行
+            if prefix_escaped:
+                return (
+                    f'<div style="padding:8px 12px; color:#666; font-size:14px; '
+                    f'border-bottom:1px solid #e8e8e8;">{prefix_escaped}</div>\n'
+                    f'<pre style="margin:4px 12px; font-size:15px;">{escaped}</pre>'
+                )
             return f'<pre>{escaped}</pre>'
 
         # 多条记忆：每条构建为子折叠块
-        prefix_escaped = prefix.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
         sub_html_parts = []
         if prefix_escaped:
             sub_html_parts.append(
@@ -465,12 +483,16 @@ class SessionLog:
             )
 
         for idx, mem in enumerate(memories):
-            # 提取 Turn 编号和相关性得分，生成摘要
-            turn_match = re.search(r'\[Turn\s*(\d+)\]', mem)
+            # 区分工作记忆（- [Turn N] 开头，无评分）与检索结果（- [id=...] 开头，有评分）
+            is_working_memory = bool(re.match(r'- \[Turn\s+\d+\]', mem))
             score_match = re.search(r'\(相关性:\s*([\d.]+)\)', mem)
-            turn_num = turn_match.group(1) if turn_match else str(idx + 1)
-            score = score_match.group(1) if score_match else "?"
-            summary_text = f"📌 - 记忆{idx + 1}（相关性: {score}）"
+            score = score_match.group(1) if score_match else None
+
+            if is_working_memory:
+                summary_text = f"📌 - 工作记忆{idx + 1}"
+            else:
+                score_str = f"{float(score):.2f}" if score is not None else "?"
+                summary_text = f"📌 - 记忆{idx + 1}（相关性: {score_str}）"
 
             # 移除记忆内容末尾的 "(相关性: X.XX)" 标注
             mem_clean = re.sub(r'\s*\(相关性:\s*[\d.]+\)\s*$', '', mem)

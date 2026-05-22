@@ -45,6 +45,9 @@ class MemoryInjector:
     ) -> str:
         """格式化完整的记忆上下文。
 
+        将工作记忆与检索结果合并为统一列表，按相关性降序排列。
+        工作记忆条目视为最高相关性（score=1.0），避免两个区块重复展示。
+
         Args:
             working_memory_items: 工作记忆条目列表（本次会话的历史轮次）
             retrieved_items: 检索到的记忆条目列表（来自 search()）
@@ -53,32 +56,86 @@ class MemoryInjector:
         Returns:
             格式化后的 Markdown 字符串，可直接注入 api_messages
         """
-        parts = []
+        # 合并去重
+        merged = self._merge_working_and_retrieved(
+            working_memory_items, retrieved_items or []
+        )
 
-        # 1. 系统提醒头
-        parts.append(_INJECTION_PREFIX)
+        if not merged:
+            return ""
 
-        # 2. 工作记忆区域
-        if working_memory_items:
-            parts.append("")
-            parts.append("[当前任务上下文]")
-            parts.append(self._format_working_memory(working_memory_items))
-
-        # 3. 检索记忆区域
-        if retrieved_items:
-            parts.append("")
-            parts.append("[相关历史记忆]")
-            parts.append(self._format_retrieved_items(retrieved_items, include_scores))
-
-        # 如果没有任何记忆，返回空字符串
-        if len(parts) == 1:
-            return ""  # 只有前缀，无实际内容
-
+        parts = [_INJECTION_PREFIX, "", self._format_unified_list(merged, include_scores)]
         full_text = "\n".join(parts)
+        return self._truncate_by_tokens(full_text)
 
-        # 4. 按 token 预算截断
-        truncated = self._truncate_by_tokens(full_text)
-        return truncated
+    def _merge_working_and_retrieved(
+        self,
+        working: List[Dict[str, Any]],
+        retrieved: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """合并工作记忆与检索结果，工作记忆给 score=1.0，按内容去重。"""
+        merged = list(retrieved)
+
+        # 收集检索结果内容前缀用于去重
+        retrieved_prefixes = set()
+        for mem in merged:
+            content = mem.get("content", "")
+            if content:
+                retrieved_prefixes.add(content[:80])
+
+        for item in working[-10:]:
+            content = item.get("content", "")
+            if not content:
+                continue
+
+            prefix = content[:80]
+            if prefix in retrieved_prefixes:
+                continue
+
+            merged.append({
+                "id": "",
+                "content": content,
+                "score": 1.0,
+                "timestamp": "",
+                "turn": "?",
+                "role": item.get("role", ""),
+                "_is_working": True,
+            })
+            retrieved_prefixes.add(prefix)
+
+        # 按 score 降序
+        merged.sort(key=lambda x: x.get("score", 0), reverse=True)
+        return merged
+
+    def _format_unified_list(
+        self,
+        items: List[Dict[str, Any]],
+        include_scores: bool = True,
+    ) -> str:
+        """格式化统一排名列表。"""
+        lines = []
+        for item in items:
+            # 完整 UUID，不再截断
+            mem_id = item.get("id", "")
+            content = item.get("content", "")
+            score = item.get("score")
+            if not isinstance(score, (int, float)):
+                score = 0.0
+
+            if len(content) > 400:
+                content = content[:400] + "..."
+
+            wm_tag = " [工作记忆]" if item.get("_is_working") else ""
+            id_part = f"id={mem_id} " if mem_id else ""
+
+            parts = [content]
+            if include_scores and score is not None:
+                parts.append(f"(相关性: {score:.2f})")
+
+            line = f"- [{id_part}]\n\n" + " ".join(parts) + wm_tag
+            lines.append(line)
+
+        return "[相关历史记忆]\n" + "\n".join(lines)
 
     def format_working_memory_only(self, working_memory_items: List[Dict[str, Any]]) -> str:
         """仅格式化工作记忆（get_working_memory() 使用）。"""
@@ -156,7 +213,7 @@ class MemoryInjector:
             if include_scores and score is not None:
                 parts.append(f"(相关性: {score:.2f})")
 
-            line = f"- [id={mem_id[:8]}...] " + " ".join(parts)
+            line = f"- [id={mem_id}]\n  " + " ".join(parts)
             lines.append(line)
 
         return "\n".join(lines)

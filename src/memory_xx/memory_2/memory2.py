@@ -182,7 +182,17 @@ class Memory2Backend(MemoryInterface):
             tag_filter=tag_filter if tag_filter else None,
             time_window_days=time_window,
         )
-        return results
+
+        # Backend 层二次过滤：按 LLM 纯评分过滤，阻止不相关记忆注入
+        # 阈值与 MemoryRetriever 保持一致
+        min_relevance = getattr(self._retriever, "_min_relevance", 0.50)
+        filtered = [r for r in results if r.get("llm_score", 0) >= min_relevance]
+        if len(filtered) < len(results):
+            logger.info(
+                f"Memory2Backend.search: 过滤 {len(results) - len(filtered)} 条低相关性记忆 "
+                f"(阈值={min_relevance})"
+            )
+        return filtered
 
     def get_working_memory(self) -> str:
         """获取格式化的记忆上下文。"""

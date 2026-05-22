@@ -34,6 +34,18 @@ class MemoryRetriever:
     - 多因子混合打分（语义 + 时间 + 重要性）
     """
 
+    # 无实质内容的闲聊短语集合，命中则跳过检索，直接返回空
+    _TRIVIAL_QUERIES = frozenset({
+        "hello", "hi", "hey", "yo", "hola",
+        "ok", "okay", "k", "kk",
+        "thanks", "thank you", "thx", "ty",
+        "bye", "goodbye", "see you", "cya",
+        "yes", "yeah", "yep", "yup",
+        "no", "nope", "nah",
+        "good", "nice", "cool", "great",
+        "好", "好的", "嗯", "哦", "谢谢", "再见",
+    })
+
     def __init__(
         self,
         dim: int = 1536,
@@ -44,6 +56,7 @@ class MemoryRetriever:
         importance_weight: float = 0.15,
         forgetting_strategy: str = "exponential",
         half_life_hours: float = 72.0,
+        min_relevance: float = 0.50,
     ):
         """
         Args:
@@ -55,6 +68,7 @@ class MemoryRetriever:
             importance_weight: 重要性权重
             forgetting_strategy: 遗忘曲线策略（exponential / linear / static）
             half_life_hours: 半衰期（小时），仅 exponential 模式
+            min_relevance: 最低相关性阈值，低于此值的记忆将被过滤
         """
         if faiss is None:
             raise RuntimeError("FAISS 未安装，无法创建 MemoryRetriever。请执行 pip install faiss-cpu")
@@ -68,6 +82,7 @@ class MemoryRetriever:
         self._forgetting_strategy = forgetting_strategy
         self._half_life_hours = half_life_hours
         self._half_life_seconds = half_life_hours * 3600
+        self._min_relevance = min_relevance
 
         # FAISS 索引
         self._index: Optional[faiss.Index] = None
@@ -207,6 +222,11 @@ class MemoryRetriever:
         Returns:
             list[dict]，每项含 id、content、score、timestamp 及原始字段
         """
+        # 短路：无实质内容的闲聊直接返回空，不走 Embedding + FAISS
+        if self._is_trivial_query(query):
+            logger.info(f"MemoryRetriever.search: 闲聊短路，query='{query[:50]}'")
+            return []
+
         embed_unavailable = self._embed_fn is None
         index_empty = self._index is None or self._index.ntotal == 0
 
@@ -247,10 +267,13 @@ class MemoryRetriever:
                 now=now,
             )
 
-        # 6. 排序
+        # 6. 过滤低于阈值的结果
+        candidates = [c for c in candidates if c["score"] >= self._min_relevance]
+
+        # 7. 排序
         candidates.sort(key=lambda x: x["score"], reverse=True)
 
-        # 7. 截断
+        # 8. 截断
         result = candidates[:top_k]
 
         # 清理内部字段
@@ -388,6 +411,27 @@ class MemoryRetriever:
         else:
             # static：不衰减
             return 1.0
+
+    @classmethod
+    def _is_trivial_query(cls, query: str) -> bool:
+        """判断是否为无实质内容的闲聊，命中预定义短语集合则短路跳过检索。
+
+        Args:
+            query: 用户输入的查询文本
+
+        Returns:
+            True 表示无实质内容，应跳过检索
+        """
+        if not query or not query.strip():
+            return True
+        stripped = query.strip().lower()
+        # 仅含单字母或单汉字
+        if len(stripped) <= 1:
+            return True
+        # 命中预定义闲聊短语
+        if stripped in cls._TRIVIAL_QUERIES:
+            return True
+        return False
 
     def _keyword_search(
         self,

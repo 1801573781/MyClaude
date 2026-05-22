@@ -43,6 +43,9 @@ _RETRIEVAL_SYSTEM_PROMPT = """你是一个记忆相关性评分助手。你需�
    - 7 天内 → 0.5~0.7
    - 今天/昨天 → 0.8~1.0
 
+## 关键规则：无实质内容查询
+如果当前查询是**简单问候、闲聊、确认语、或无实质语义的短文本**（如 "hello"、"hi"、"你好"、"嗯"、"好的"、"ok"、"在吗"），则**所有记忆的评分均不得超过 0.30**。这类查询不包含任何任务目标、技术需求或文件引用，历史记忆不可能与之相关。只有查询明确提及具体实体（文件名、函数名、路径、技术栈名词）或表达明确任务意图时，才允许给出 0.30 以上的评分。
+
 ## 综合评分
 综合以上 4 个维度，给出最终的相关性评分（0~1），精确到小数点后两位。
 
@@ -100,6 +103,7 @@ class MemoryRetriever:
         max_top_k: int = 20,
         forgetting_strategy: str = "exponential",
         half_life_hours: float = 72.0,
+        min_relevance: float = 0.50,
     ):
         """
         Args:
@@ -117,6 +121,7 @@ class MemoryRetriever:
             max_top_k: 最大允许返回条数
             forgetting_strategy: 遗忘策略
             half_life_hours: 半衰期（小时）
+            min_relevance: 最低相关性阈值，低于此值的记忆将被过滤
         """
         self._llm_chat_fn = llm_chat_fn
         self._system_prompt = system_prompt or _RETRIEVAL_SYSTEM_PROMPT
@@ -131,6 +136,7 @@ class MemoryRetriever:
         self._max_top_k = max_top_k
         self._forgetting_strategy = forgetting_strategy
         self._half_life_seconds = half_life_hours * 3600
+        self._min_relevance = min_relevance
 
     def set_llm_chat_fn(self, chat_fn: Callable[..., str]) -> None:
         """注入 LLM 对话函数。"""
@@ -139,6 +145,36 @@ class MemoryRetriever:
     # ------------------------------------------------------------------ #
     #  检索主流程
     # ------------------------------------------------------------------ #
+
+    # 无实质内容查询词集合（完全匹配，不区分大小写）
+    _TRIVIAL_QUERIES = {
+        "hello", "hi", "hey", "你好", "您好", "嗨", "在吗", "在不在",
+        "好的", "ok", "okay", "嗯", "哦", "啊", "哈哈", "谢谢", "thanks",
+        "bye", "再见", "88", "拜拜", "收到", "明白", "知道了",
+    }
+
+    def _is_trivial_query(self, query: str) -> bool:
+        """判断查询是否为无实质内容的闲聊或确认语。
+
+        满足任一条件即视为 trivial：
+        1. 完全匹配预定义的闲聊短语集合（不区分大小写）
+        2. 去除标点后长度 <= 2 个字符（如 "嗯"、"啊"、"?"）
+        3. 不含任何中文/英文/数字之外的字符（纯符号），且长度 <= 10
+        """
+        if not query:
+            return True
+        stripped = query.strip().lower()
+        # 条件1：匹配已知闲聊短语
+        if stripped in self._TRIVIAL_QUERIES:
+            return True
+        # 条件2：去除常见标点后极短（<= 2 字符）
+        cleaned = re.sub(r"[^\w\u4e00-\u9fff]", "", stripped)
+        if len(cleaned) <= 2:
+            return True
+        # 条件3：纯标点/emoji（无任何字母数字汉字），长度 <= 10
+        if not re.search(r"[\w\u4e00-\u9fff]", stripped) and len(stripped) <= 10:
+            return True
+        return False
 
     def search(
         self,
@@ -167,6 +203,11 @@ class MemoryRetriever:
         if top_k is None:
             top_k = self._default_top_k
         top_k = min(top_k, self._max_top_k)
+
+        # 0. 无实质内容查询短路：直接返回空列表，不浪费 LLM 调用
+        if self._is_trivial_query(query):
+            logger.info(f"MemoryRetriever.search: trivial query='{query[:30]}', 跳过检索")
+            return []
 
         if self._llm_chat_fn is None:
             logger.warning("MemoryRetriever: LLM 函数未注入，返回空列表")
@@ -207,11 +248,20 @@ class MemoryRetriever:
         # 4. 分数回写
         self._writeback_scores(store, all_scores)
 
-        # 5. 排序 + 截断
-        scored.sort(key=lambda x: x["score"], reverse=True)
-        results = scored[:top_k]
+        # 5. 按最低相关性阈值过滤 + 排序 + 截断
+        # 注：必须按 llm_score（LLM 纯评分）过滤，而非综合分。
+        # 综合分掺入了时间/重要性权重，会导致LLM判定为"无关"的近期记忆仍被召回。
+        min_relevance = getattr(self, "_min_relevance", 0.40)
+        filtered = [s for s in scored if s.get("llm_score", 0) >= min_relevance]
+        filtered.sort(key=lambda x: x["score"], reverse=True)
 
-        logger.info(f"MemoryRetriever.search: 返回 {len(results)} 条，最高分 {results[0]['score']:.2f}" if results else "MemoryRetriever.search: 无结果")
+        if not filtered:
+            logger.info(f"MemoryRetriever.search: 所有 {len(scored)} 条记忆均低于阈值 {min_relevance}，返回空列表")
+            return []
+
+        results = filtered[:top_k]
+
+        logger.info(f"MemoryRetriever.search: 候选 {len(scored)} 条，过滤后 {len(filtered)} 条，返回 {len(results)} 条，最高分 {results[0]['score']:.2f}" if results else "MemoryRetriever.search: 无结果")
         return results
 
     # ------------------------------------------------------------------ #

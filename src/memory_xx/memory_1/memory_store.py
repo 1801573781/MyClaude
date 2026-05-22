@@ -55,7 +55,6 @@ class MemoryStore:
         """添加一条记忆，返回 ID。"""
         entry = {
             "id": str(uuid.uuid4()),
-            "role": role,
             "content": content,
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"),
             "turn": metadata.get("turn") if metadata else None,

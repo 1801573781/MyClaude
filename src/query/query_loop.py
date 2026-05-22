@@ -330,23 +330,23 @@ class QueryLoop:
     def _save_turn_memory(self, turn: int, user_input: str,
                           reasoning_content: str, remaining_text: str,
                           tool_exec_info: list) -> None:
-        """将整轮对话打包为一条完整记忆（用户问题 + LLM思考 + 应答 + 工具执行）。
+        """将整轮对话打包为一条完整记忆（用户输入 + LLM 思考 + 应答 + 工具执行）。
 
         解决原有分开存储导致召回不完整的问题。
         """
         try:
             parts = []
 
-            # 1. 用户问题
-            parts.append(f"[用户问题] {user_input}")
+            # 1. 用户输入
+            parts.append(f"[用户输入] {user_input}")
 
             # 2. LLM 思考过程
             if reasoning_content:
-                parts.append(f"[LLM思考] {reasoning_content}")
+                parts.append(f"[LLM 思考] {reasoning_content}")
 
             # 3. LLM 应答
             if remaining_text:
-                parts.append(f"[LLM应答] {remaining_text}")
+                parts.append(f"[LLM 应答] {remaining_text}")
 
             # 4. 工具执行
             if tool_exec_info:
@@ -356,7 +356,7 @@ class QueryLoop:
                     parts.append(f"[工具结果{i+1}] {info['result']}")
 
             content = "\n\n".join(parts)
-            self._memory.add("system", content, metadata={
+            self._memory.add("", content, metadata={
                 "turn": turn,
                 "has_tools": bool(tool_exec_info),
                 "has_reasoning": bool(reasoning_content),
@@ -370,23 +370,13 @@ class QueryLoop:
     def _count_recalled(mem_context: str) -> int:
         """从记忆注入上下文中统计召回的记忆条目数。
 
-        扫描 ``[相关历史记忆]`` 区块，统计 ``- [id=`` 开头的行。
-        若不存在检索结果区块（仅有工作记忆），返回 0。
+        统计所有以 ``- [`` 开头的行（包括工作记忆和检索记忆）。
+        不依赖区块边界判断，不因记忆内容内部换行（如 [LLM思考]）而提前终止。
         """
         count = 0
-        in_retrieval = False
         for line in mem_context.split("\n"):
-            if "[相关历史记忆]" in line:
-                in_retrieval = True
-                continue
-            if in_retrieval:
-                if line.strip().startswith("- [id="):
-                    count += 1
-                elif line.strip() == "":
-                    continue
-                elif line.strip().startswith("["):
-                    # 进入下一个区块，停止计数
-                    break
+            if line.strip().startswith("- ["):
+                count += 1
         return count
 
 
