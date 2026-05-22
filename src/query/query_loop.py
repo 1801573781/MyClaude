@@ -125,10 +125,16 @@ class QueryLoop:
                 ai_response, is_truncated, reasoning_content = chat_llm.chat_with_retry(self.api_messages.get_msg())
 
             """2. 解构 LLM response"""
-            tools = self._on_llm_rsp(turn, user_input, thinking_begin, ai_response, reasoning_content)
+            tools, remaining_text = self._on_llm_rsp(turn, user_input, thinking_begin,
+                                                      ai_response, reasoning_content)
 
             """3. 开始处理工具"""
-            quit_chat = self._handle_tools(tools)
+            quit_chat, tool_exec_info = self._handle_tools(tools)
+
+            # 每轮对话后，存储完整轮次记忆（用户问题 + LLM思考 + 应答 + 工具执行）
+            if self._memory_used and user_input:
+                self._save_turn_memory(turn, user_input, reasoning_content,
+                                       remaining_text, tool_exec_info)
 
             if not quit_chat == ChatOrNot.Continue:  # 如果不是继续chat，那就break循环
                 break
@@ -259,19 +265,15 @@ class QueryLoop:
         if remaining_text:
             self._print_llm_rsp(remaining_text)
 
-        # 每轮对话后，存储用户消息和助手消息到记忆
-        if self._memory_used:
-            try:
-                self._memory.add("user", user_input, metadata={"turn": turn})
-                if remaining_text:
-                    self._memory.add("assistant", remaining_text, metadata={"turn": turn})
-            except Exception as e:
-                logger.warning(f"记忆存储失败: {e}")
+        # 记忆存储已移至 run() 中的 _save_turn_memory()，统一打包整轮对话
 
-        return tools
+        return tools, remaining_text
 
 
     def _handle_tools(self, tools):
+        """执行工具并返回 (quit_chat, tool_exec_info)。
+        tool_exec_info 为列表，每个元素是 {"tool": 工具名, "params": 参数, "result": 结果文本}。
+        """
         # 1. 如果 LLM response 中没有工具，那么直接会话结束
         if not tools:
             # 如果是非聊天模式（那就是编码模式），须提示用户一句：流程结束了；如果是聊天模式，那就直接结束
@@ -279,7 +281,7 @@ class QueryLoop:
                 self._print_info("LLM 未调用 done 工具，但已无后续操作，自动结束")
                 self.session.log_dict_info({"role": "system", "content": "LLM 未调用 done 工具，但已无后续操作，自动结束"})
 
-            return ChatOrNot.QuitByNoneTool
+            return ChatOrNot.QuitByNoneTool, []
 
         # 如果 LLM response 中有工具，那就不是单纯的聊天
         self.is_chat_mode = False
@@ -287,6 +289,8 @@ class QueryLoop:
         # 既然有工具，那就执行工具'''
         done_tools = [t for t in tools if t["llm_tool"] == "done"]
         exec_tools = [t for t in tools if t["llm_tool"] != "done"]
+
+        tool_exec_info = []
 
         # 执行普通工具
         if exec_tools:
@@ -304,16 +308,62 @@ class QueryLoop:
                 # 将 tool 的执行结果，append 到 api_messages
                 self.api_messages.append_tool_exec_result(result_msg)
 
+                # 收集工具执行信息（用于记忆存储）
+                tool_exec_info.append({
+                    "tool": t["llm_tool"],
+                    "params": t["params"],
+                    "result": result_msg.get("content", "")[:500],  # 截断过长结果
+                })
+
         # 处理 done
         if done_tools:
             msg = done_tools[0]["params"].get("message", "任务完成")
             self._print_info(msg)
             self.session.log_dict_info({"role": "assistant", "content": msg})
 
-            return ChatOrNot.QuitByDone
+            return ChatOrNot.QuitByDone, tool_exec_info
 
         # self._print_info("no tools")
-        return ChatOrNot.Continue
+        return ChatOrNot.Continue, tool_exec_info
+
+
+    def _save_turn_memory(self, turn: int, user_input: str,
+                          reasoning_content: str, remaining_text: str,
+                          tool_exec_info: list) -> None:
+        """将整轮对话打包为一条完整记忆（用户问题 + LLM思考 + 应答 + 工具执行）。
+
+        解决原有分开存储导致召回不完整的问题。
+        """
+        try:
+            parts = []
+
+            # 1. 用户问题
+            parts.append(f"[用户问题] {user_input}")
+
+            # 2. LLM 思考过程
+            if reasoning_content:
+                parts.append(f"[LLM思考] {reasoning_content}")
+
+            # 3. LLM 应答
+            if remaining_text:
+                parts.append(f"[LLM应答] {remaining_text}")
+
+            # 4. 工具执行
+            if tool_exec_info:
+                for i, info in enumerate(tool_exec_info):
+                    parts.append(f"[工具执行{i+1}] 工具: {info['tool']}")
+                    parts.append(f"[工具参数{i+1}] {info['params']}")
+                    parts.append(f"[工具结果{i+1}] {info['result']}")
+
+            content = "\n\n".join(parts)
+            self._memory.add("system", content, metadata={
+                "turn": turn,
+                "has_tools": bool(tool_exec_info),
+                "has_reasoning": bool(reasoning_content),
+            })
+            logger.debug(f"Turn {turn} 完整记忆已存储，长度: {len(content)}")
+        except Exception as e:
+            logger.warning(f"完整轮次记忆存储失败: {e}")
 
 
     @staticmethod
