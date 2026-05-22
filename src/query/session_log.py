@@ -196,13 +196,16 @@ class SessionLog:
             "tool": "🔧 工具执行",
         }
 
-        # 检查是否有记忆召唤 section，如果没有则添加占位
-        # 记忆召唤应放在"用户输入"之前、"项目目录树"等固定上下文之后
+        # 检查是否有记忆召回 section，如果没有则添加占位
+        # 记忆召回应放在"用户输入"之后（先有用户输入才能召回记忆）
         has_memory_section = any(sec_name == "memory_context" for sec_name, _ in sections)
         if not has_memory_section:
-            # 找到"用户输入" section 的位置，插在它前面
-            insert_idx = next((i for i, (name, _) in enumerate(sections) if name == "user"), len(sections))
-            sections.insert(insert_idx, ("memory_context", [{"role": "user", "content": "没有召唤到相关记忆"}]))
+            # 找到"用户输入" section 的位置，插在它后面
+            insert_idx = next((i for i, (name, _) in enumerate(sections) if name == "user"), -1)
+            if insert_idx >= 0:
+                sections.insert(insert_idx + 1, ("memory_context", [{"role": "user", "content": "没有召回到相关记忆"}]))
+            else:
+                sections.append(("memory_context", [{"role": "user", "content": "没有召回到相关记忆"}]))
 
         for section_name, items in sections:
             if section_name == "reasoning":
@@ -437,13 +440,15 @@ class SessionLog:
         # 按记忆条目开头拆分（以 "[id=" 或以 "- [Turn" 开头）
         parts = re.split(r'(\n(?=- \[(?:id=|Turn\s)))', body)
         memories = []
+        # 节标题模式：如 "[相关历史记忆]"、"[检索结果 - 查询: ...]"等纯标题行
+        section_header_re = re.compile(r'^\[(?:相关历史记忆|检索结果\s*[-–—].*?|长期记忆|记忆搜索.*?)\]$')
         if parts:
             first = parts[0].strip()
-            if first:
+            if first and not section_header_re.match(first):
                 memories.append(first)
             for i in range(1, len(parts)):
                 part = parts[i].strip()
-                if part:
+                if part and not section_header_re.match(part):
                     memories.append(part)
 
         if len(memories) <= 1:

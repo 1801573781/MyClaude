@@ -1,6 +1,25 @@
 from pathlib import Path
 from src.utility.config_loader import global_cfg
 
+# 读取文件时优先尝试的编码顺序
+_FALLBACK_ENCODINGS = ["utf-8", "gbk", "gb2312", "latin-1"]
+
+
+def _read_text_safe(file_path: Path) -> str:
+    """尝试多种编码读取文件内容，避免因非 UTF-8 文件导致崩溃"""
+    for enc in _FALLBACK_ENCODINGS:
+        try:
+            return file_path.read_text(encoding=enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    raise UnicodeDecodeError(
+        "utf-8",
+        b"",
+        0,
+        1,
+        f"无法用任何已知编码读取文件：{file_path}"
+    )
+
 
 def add_root_path(root: str, path: str) -> str:
     """
@@ -32,7 +51,7 @@ def file_view(root: str, path: str, limit: int = None, offset: int = None) -> st
             items.append(f"{prefix} {f.name}")
         return "\n".join(items) if items else "（空目录）"
     try:
-        lines = p.read_text(encoding="utf-8").splitlines()
+        lines = _read_text_safe(p).splitlines()
         # offset: 从第几行开始（1-based，默认从第1行）
         start = 0 if offset is None else max(0, offset - 1)
 
@@ -55,7 +74,7 @@ def file_create(root: str, path: str, content: str) -> str:
 
         # 如果文件已存在且内容非空，拒绝覆盖，强制要求改用 str_replace
         if p.exists() and p.stat().st_size > 0:
-            existing_len = len(p.read_text(encoding="utf-8"))
+            existing_len = len(_read_text_safe(p))
             return (
                 f"[BLOCKED] 文件已存在：{path}（{existing_len} 字符）。\n"
                 f"下一步：\n"
@@ -93,7 +112,7 @@ def file_str_replace(root: str, path: str, old: str, new: str) -> str:
         p = Path(full_path)
         if not p.exists():
             return f"[BLOCKED] 错误：文件不存在 {full_path}。请先用 <create> 创建文件。"
-        text = p.read_text(encoding="utf-8")
+        text = _read_text_safe(p)
         if old not in text:
             return f"[BLOCKED] 错误：未找到精确匹配片段，请重新查看文件内容。\n---待匹配片段---\n{old}\n---"
         text = text.replace(old, new, 1)

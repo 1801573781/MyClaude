@@ -1,0 +1,59 @@
+# memory_2 专用配置
+memory_2:
+  # --- 分层容量 ---
+  working_memory:
+    max_turns: 20           # 工作记忆保留最近 N 轮对话
+
+  short_term:
+    max_items: 200          # 短期记忆最多 N 条
+    ttl_seconds: 86400      # 短期记忆存活时间（秒），超期自动遗忘
+
+  long_term:
+    max_items: 2000         # 长期记忆最多 N 条
+    compression_threshold: 0.8  # 短期记忆占用率达此比例时触发压缩
+
+  # --- LLM 召回配置 ---
+  llm_retrieval:
+    model: "default"            # 使用全局配置的模型，或指定 "deepseek" / "minimax"
+    system_prompt_file: "src/memory_xx/memory_2/retrieval_prompt.md"  # LLM 精排系统提示词文件
+    max_candidates_per_batch: 50    # 单批最多候选记忆数（受 LLM token 窗口限制）
+    temperature: 0.1            # 评分时温度，低温度保证一致性
+    max_tokens: 4096            # 评分响应的最大 token
+    score_field: "relevance"    # 解析响应时提取的评分字段名
+
+  # --- 候选集预过滤 ---
+  prefilter:
+    max_candidates: 200         # 送入 LLM 前的最大候选数（超量时按时间排序截断）
+    time_window_days: 30        # 仅取最近 N 天的记忆（0 = 不限）
+    filter_by_tags: []          # 按标签过滤（空 = 不限），如 ["coding", "debug"]
+
+  # --- 混合打分权重（可选，用于与 LLM 评分综合） ---
+  scoring:
+    llm_score_weight: 0.7       # LLM 相关性评分权重
+    recency_weight: 0.2         # 时间新近度权重
+    importance_weight: 0.1      # 重要性权重
+
+  # --- 遗忘曲线 ---
+  forgetting:
+    strategy: "exponential"     # exponential / linear / static
+    half_life_hours: 72         # 半衰期（小时），仅 exponential 模式
+
+  # --- 存储 ---
+  storage:
+    path: "D:/AI/MyClaude/memory_storage/memory2/memory2.json"
+    backup_count: 3             # 滚动备份数量
+
+  # --- 检索配置 ---
+  retrieval:
+    default_top_k: 5            # search() 默认召回条数
+    max_top_k: 20               # search() 允许的最大召回条数（防止滥用）
+
+  # --- 压缩器 ---
+  compressor:
+    enabled: true
+    model: "default"            # 使用全局配置的模型
+    max_tokens_per_batch: 4000
+
+  # --- 注入配置 ---
+  injection:
+    max_tokens: 2000            # 记忆注入的 token 预算

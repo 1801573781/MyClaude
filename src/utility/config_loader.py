@@ -12,6 +12,11 @@ def _dict_to_namespace(obj):
     return obj
 
 
+def get_project_root() -> Path:
+    """返回项目根目录（从 config_loader.py 所在位置向上查找）。"""
+    return find_project_root(Path(__file__).resolve().parent)
+
+
 def find_project_root(start: Path, marker: str = "config.yaml") -> Path:
     """
     从 start 目录出发，逐级向上查找包含 marker 文件/目录的目录。
@@ -52,6 +57,9 @@ def load_config(config_yaml="config.yaml", model_key_yaml="model_key.yaml"):
     读取 model_key.yaml 和 config.yaml 两个配置文件，合并后返回支持点号访问的命名空间对象。
     配置文件默认放在项目根目录（入口脚本的上级目录）。
     config.yaml 中的字段优先级高于 model_key.yaml（即 config.yaml 可以覆盖 model_key.yaml 的同名字段）。
+
+    额外规则：根据 config.yaml 中 memory.backend 的值，自动加载 config/memory/<backend>.yaml，
+    挂载到顶层键名（如 memory_1、memory_2）。若 config.yaml 中已直接包含该键，则后者优先。
     """
     # 从本文件所在目录开始找项目根目录
     start_dir = Path(__file__).resolve().parent
@@ -77,6 +85,32 @@ def load_config(config_yaml="config.yaml", model_key_yaml="model_key.yaml"):
 
     # 合并：config.yaml 覆盖 model_key.yaml
     merged = _deep_merge(model_key_raw, config_raw)
+
+    # ---------- 自动加载记忆配置文件 ----------
+    memory_backend = merged.get("memory", {}).get("backend", None) if isinstance(merged, dict) else None
+    if memory_backend and memory_backend not in ("none", None):
+        # 查找记忆配置文件：优先精确匹配 backend 名称（如 memory_1.yaml），
+        # 若不存在则去掉下划线回退（如 memory1.yaml）
+        memory_yaml_path = base_dir / "config" / "memory" / f"{memory_backend}.yaml"
+        if not memory_yaml_path.exists():
+            alt_name = memory_backend.replace("_", "") + ".yaml"
+            alt_path = base_dir / "config" / "memory" / alt_name
+            if alt_path.exists():
+                memory_yaml_path = alt_path
+        if memory_yaml_path.exists():
+            with open(memory_yaml_path, "r", encoding="utf-8") as f:
+                memory_raw = yaml.safe_load(f)
+                if memory_raw:
+                    # 记忆配置文件可能以 <backend> 作为顶层键（如 memory_1: ...），
+                    # 也可能直接就是配置内容。两种情况都支持，挂到 merged 顶层
+                    top_key = memory_backend  # 如 "memory_1"
+                    if top_key in memory_raw and isinstance(memory_raw, dict):
+                        # 配置文件有明确顶层键，直接合并
+                        memory_config = {top_key: memory_raw[top_key]}
+                    else:
+                        # 配置文件没有顶层键，整体作为该后端的配置
+                        memory_config = {top_key: memory_raw}
+                    merged = _deep_merge(memory_config, merged)
 
     return _dict_to_namespace(merged)
 

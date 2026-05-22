@@ -8,7 +8,8 @@ from src.llm_tool import tool_executor
 from src.utility.config_loader import global_cfg
 from src.utility.normal_utility import strip_thinking
 from src.query.session_log import SessionLog
-from src.memory_ex.factory import create_memory_backend
+from src.memory_xx.factory import create_memory
+from src.memory_xx.memory_interface import MemoryInterface
 import logging
 
 logger = logging.getLogger(__name__)
@@ -35,8 +36,8 @@ class QueryLoop:
         self.max_turns = 0
         self.is_chat_mode = True
 
-        self._memory_manager = self._init_memory_manager()
-        self.memory_manager = self._memory_manager  # 公开引用，供 CLI 使用 /r memory 等
+        # 通过工厂函数创建记忆实例（根据 config.yaml memory.backend 选择后端）
+        self._init_memory()
         self._memory_used = False
 
         self._print_info = None
@@ -49,10 +50,26 @@ class QueryLoop:
         self.rsp_tokens = 0
 
 
-    @staticmethod
-    def _init_memory_manager():
-        """根据全局配置（memory.enabled + memory.use_new）自动选择记忆后端。"""
-        return create_memory_backend()
+    def _init_memory(self):
+        """通过工厂函数创建记忆实例，容错降级为 NoopMemory。"""
+        try:
+            self._memory = create_memory(global_cfg)
+            logger.info(f"记忆模块初始化成功: {type(self._memory).__name__}")
+        except Exception as e:
+            logger.warning(f"记忆模块初始化失败，降级为 NoopMemory: {e}")
+            from src.memory_xx.memory_interface import NoopMemory
+            self._memory = NoopMemory()
+
+
+    def clear_memory(self) -> int:
+        """清除所有记忆（封装调用，CLI 不直接接触记忆模块细节）。
+
+        Returns:
+            清除的记忆条数；若记忆模块未启用，返回 0
+        """
+        if self._memory is None:
+            return 0
+        return self._memory.clear_all()
 
 
     def get_tokens(self):
@@ -89,12 +106,11 @@ class QueryLoop:
         self.max_turns = global_cfg.cli.max_turns
         self.is_chat_mode = True
 
-        # 新任务开始，清空上一轮的工作记忆
-        if self._memory_manager is not None:
-            try:
-                self._memory_manager.clear_working_memory()
-            except Exception as e:
-                self._print_info(f"[清空工作记忆失败] {e}")
+        # 新任务开始，执行记忆维护（遗忘过期记忆，不删除持久化数据）
+        try:
+            self._memory.maintain()
+        except Exception as e:
+            logger.warning(f"记忆维护失败: {e}")
 
         # 开始跟LLM多次循环交互，目的是为了完成用户任务（user_input）
         while turn < self.max_turns:
@@ -130,10 +146,12 @@ class QueryLoop:
         self.req_tokens += req_tokens
         self.rsp_tokens += rsp_tokens
 
-        # 会话结束时：持久化工作记忆 → 压缩 → 遗忘
-        if self._memory_manager is not None and self._memory_used:
+        # 会话结束时：执行记忆维护（压缩 + 遗忘）
+        if self._memory_used:
             try:
-                self._memory_manager.persist_and_maintain()
+                self._memory.compact()
+                self._memory.maintain()
+                logger.info("记忆生命周期维护完成")
             except Exception as e:
                 logger.error(f"记忆生命周期处理失败: {e}")
 
@@ -154,19 +172,22 @@ class QueryLoop:
 
             self.api_messages.init_api_msg(user_input)
 
-            # 注入记忆上下文（如果启用了记忆模块）
-            if self._memory_manager is not None:
-                self._memory_used = True  # 只要启用记忆，就需要走生命周期流程
-                try:
-                    mem_context = self._memory_manager.inject_context(current_query=user_input)
-                    if mem_context:
-                        self.api_messages.append_micro_info("user", mem_context)
-                        mem_count = mem_context.count("- [id=")
-                        self._print_info(f"[记忆召回] 已召回{mem_count}条相关记忆")
-                    else:
-                        self._print_info("[记忆召回] 未找到相关记忆，可能原因：跨会话数据尚未积累，或短期/长期记忆存储为空")
-                except Exception as e:
-                    self._print_info(f"[记忆注入失败] {e}")
+            # 注入记忆上下文（通过 MemoryInterface 统一接口）
+            # 先用 user_input 触发检索，再注入检索结果 + 工作记忆
+            try:
+                mem_context = self._memory.get_context_for_query(user_input)
+                self._memory_used = True
+
+                # 解析检索结果数量，打印 [记忆召回] 信息（即使0条也打印）
+                recall_count = self._count_recalled(mem_context)
+                self._print_info(f"[记忆召回] 已召回 {recall_count} 条相关记忆")
+
+                if mem_context:
+                    self.api_messages.append_micro_info("user", mem_context)
+                    self.session.log_dict_info({"role": "user", "content": mem_context})
+                    logger.debug(f"记忆上下文已注入，长度: {len(mem_context)}")
+            except Exception as e:
+                logger.warning(f"记忆上下文注入失败: {e}")
 
         # 倒数最后一轮，命令式提醒
         if turn == self.max_turns and not self.is_chat_mode:
@@ -238,18 +259,14 @@ class QueryLoop:
         if remaining_text:
             self._print_llm_rsp(remaining_text)
 
-        # 每轮对话后，将摘要存入工作记忆（适配器内部处理摘要逻辑）
-        if self._memory_manager is not None:
+        # 每轮对话后，存储用户消息和助手消息到记忆
+        if self._memory_used:
             try:
-                self._memory_manager.add_turn_memory(
-                    user_input=user_input,
-                    turn=turn,
-                    reasoning_content=reasoning_content,
-                    remaining_text=remaining_text,
-                    tools=tools,
-                )
+                self._memory.add("user", user_input, metadata={"turn": turn})
+                if remaining_text:
+                    self._memory.add("assistant", remaining_text, metadata={"turn": turn})
             except Exception as e:
-                self._print_info(f"[记忆存储失败] {e}")
+                logger.warning(f"记忆存储失败: {e}")
 
         return tools
 
@@ -297,6 +314,30 @@ class QueryLoop:
 
         # self._print_info("no tools")
         return ChatOrNot.Continue
+
+
+    @staticmethod
+    def _count_recalled(mem_context: str) -> int:
+        """从记忆注入上下文中统计召回的记忆条目数。
+
+        扫描 ``[相关历史记忆]`` 区块，统计 ``- [id=`` 开头的行。
+        若不存在检索结果区块（仅有工作记忆），返回 0。
+        """
+        count = 0
+        in_retrieval = False
+        for line in mem_context.split("\n"):
+            if "[相关历史记忆]" in line:
+                in_retrieval = True
+                continue
+            if in_retrieval:
+                if line.strip().startswith("- [id="):
+                    count += 1
+                elif line.strip() == "":
+                    continue
+                elif line.strip().startswith("["):
+                    # 进入下一个区块，停止计数
+                    break
+        return count
 
 
     @staticmethod

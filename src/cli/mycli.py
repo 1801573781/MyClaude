@@ -49,12 +49,11 @@ class MyClaudeCLI:
 
         elif cmd == '/r mem':
             # /r mem — 清除所有记忆（短期 + 长期 + 工作记忆）
-            mm = self.query_loop.memory_manager
-            if mm is None:
+            total = self.query_loop.clear_memory()
+            if total == 0:
                 cli_print.print_error("记忆模块未启用，无法执行此操作。")
-                return True
-            total = mm.clear_all_memories()
-            cli_print.print_info(f"已清除所有记忆（共 {total} 条）。")
+            else:
+                cli_print.print_info(f"已清除所有记忆（共 {total} 条）。")
             return True
 
         elif cmd.startswith('/save'):
