@@ -111,7 +111,7 @@ class MemoryInjector:
                 continue
 
             merged.append({
-                "id": "",
+                "id": item.get("id", ""),
                 "content": content,
                 "score": 1.0,
                 "timestamp": "",
@@ -142,12 +142,8 @@ class MemoryInjector:
             if len(content) > 400:
                 content = content[:400] + "..."
 
-            wm_tag = " [工作记忆]" if item.get("_is_working") else ""
-
-            # 构建 ID 显示：检索记忆用完整 UUID，工作记忆用标注
-            if item.get("_is_working"):
-                id_display = "(工作记忆)"
-            elif mem_id:
+            # 统一使用 UUID 显示 ID（工作记忆也有持久化 UUID，不再用字面量 "(工作记忆)"）
+            if mem_id:
                 id_display = f"id={mem_id}"
             else:
                 id_display = "(未知)"
@@ -156,7 +152,7 @@ class MemoryInjector:
             if include_scores and score is not None:
                 parts.append(f"(相关性: {score:.2f})")
 
-            line = f"- [{id_display}]\n\n" + " ".join(parts) + wm_tag
+            line = f"- [{id_display}]\n\n" + " ".join(parts)
             lines.append(line)
 
         return "[相关历史记忆]\n" + "\n".join(lines)

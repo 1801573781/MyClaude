@@ -197,21 +197,16 @@ class MemoryInjector:
                 if len(content) > 400:
                     content = content[:400] + "..."
 
-                # 工作记忆条目标注 "(工作记忆)"
-                wm_tag = " [工作记忆]" if mem.get("_is_working", False) else ""
-
-                # 构建 ID 显示：检索记忆用完整 UUID，工作记忆用标注
-                if mem_id and not mem.get("_is_working", False):
+                # 统一使用 UUID 显示 ID（工作记忆也应有持久化 UUID）
+                if mem_id:
                     id_display = f"id={mem_id}"
-                elif mem.get("_is_working", False):
-                    id_display = "(工作记忆)"
                 else:
-                    id_display = f"id={mem_id}" if mem_id else "(未知)"
+                    id_display = "(未知)"
 
                 parts.append(f"- [{id_display}]")
                 parts.append("")
                 parts.append(
-                    f"[用户输入] {content} (相关性: {score:.2f}){wm_tag}"
+                    f"[用户输入] {content} (相关性: {score:.2f})"
                 )
 
         full_text = "\n".join(parts)
@@ -257,7 +252,7 @@ class MemoryInjector:
                 continue
 
             merged.append({
-                "id": "",
+                "id": item.get("id", ""),
                 "content": content,
                 "score": 1.0,
                 "timestamp": _time.strftime("%Y-%m-%d %H:%M:%S"),
