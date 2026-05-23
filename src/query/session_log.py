@@ -292,7 +292,8 @@ class SessionLog:
                 return "project_context"
             if content.startswith("[项目目录树]"):
                 return "directory_tree"
-            if content.startswith("[系统提醒] 以下是与当前任务相关的历史记忆"):
+            if content.startswith("[系统提醒] 以下是与当前任务相关的历史记忆") or \
+               content.startswith("[系统提醒] 以下是与你当前任务可能相关的历史记忆"):
                 return "memory_context"
             return "user"
 
@@ -400,8 +401,7 @@ class SessionLog:
 
     def _build_memory_section_html(self, items) -> str:
         """为记忆召唤小节构建 HTML。
-        如果只有一条记忆（或"没有召唤到相关记忆"），直接以 <pre> 显示；
-        如果有多条记忆，每条拆分为独立的子折叠块。"""
+        将系统提醒前缀与各条记忆拆分，每条记忆生成带 📌 父节点的独立折叠块。"""
         # 提取记忆内容
         content = ""
         for item in items:
@@ -415,119 +415,110 @@ class SessionLog:
         # 移除 "[记忆上下文 - 由 Memory 模块自动生成]" 行
         content = re.sub(r'\n?\[记忆上下文 - 由 Memory 模块自动生成\]\n?', '\n', content).strip()
 
-        # 转义 HTML
-        escaped = content.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-
-        # 如果只有一条记忆或"没有召唤到相关记忆"，直接展示
-        if "没有召回到相关记忆" in content:
+        # 占位文本：明确的"没有记忆"标记
+        if content.strip() == "没有召回到相关记忆":
+            escaped = content.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
             return f'<pre style="color:#999; font-style:italic;">{escaped}</pre>'
 
-        # 以 "[当前任务上下文]" 作为前缀/正文分割点
-        ctx_marker = re.search(r'\[当前任务上下文\]', content)
-        if ctx_marker:
-            prefix = content[:ctx_marker.end()].strip()
-            body = content[ctx_marker.end():].strip()
+        # ---- 前缀/正文分离（不使用正则，直接用字符串查找） ----
+        # 查找第一个 "\n- [id=" 或 "\n- [Turn " 或 "\n- [(" 的位置
+        # 注意：注入器输出中，前缀与正文之间可能有一个或两个换行符
+        prefix = content
+        body = ""
+
+        # 先尝试找 "\n- [id="
+        idx = content.find("\n- [id=")
+        if idx == -1:
+            idx = content.find("\n- [Turn ")
+        if idx == -1:
+            idx = content.find("\n- [(")
+
+        if idx >= 0:
+            prefix = content[:idx].strip()
+            body = content[idx:].strip()
+
+        # ---- 在 body 中拆分各条记忆 ----
+        # 每条记忆以 "\n- [id=" 或 "\n- [Turn " 或 "\n- [(" 开头
+        # 先收集所有分割点
+        split_positions = []
+        for marker in ["\n- [id=", "\n- [Turn ", "\n- [("]:
+            pos = 0
+            while True:
+                pos = body.find(marker, pos)
+                if pos == -1:
+                    break
+                # 分割点是 marker 前面的那个 \n
+                split_positions.append(pos)
+                pos += 1  # 继续向后查找
+
+        split_positions = sorted(set(split_positions))
+
+        # 如果没找到分割点（只有一条记忆），整个 body 就是一条
+        if not split_positions:
+            memories = [body] if body else []
         else:
-            # 无工作记忆，用系统提醒作为分割点
-            sys_marker = re.search(r'\[系统提醒\][^\n]*\n\n', content)
-            if sys_marker:
-                prefix = content[:sys_marker.end()].strip()
-                body = content[sys_marker.end():].strip()
-            else:
-                prefix = ""
-                body = content.strip()
-
-        # 按记忆条目开头拆分：
-        # - [id=...] → 检索记忆（完整 UUID）
-        # - [(工作记忆)] 或 - [(未知)] → 无 ID 的临时条目
-        # - [Turn N] → 旧格式工作记忆
-        parts = re.split(r'(\n(?=- \[(?:id=|Turn\s|[(\]])))', body)
-        memories = []
-        # 节标题模式：如 "[相关历史记忆]"、"[检索结果 - 查询: ...]"等纯标题行
-        section_header_re = re.compile(r'^\[(?:相关历史记忆|检索结果\s*[-–—].*?|长期记忆|记忆搜索.*?)\]$')
-        if parts:
-            first = parts[0].strip()
-            if first and not section_header_re.match(first):
-                memories.append(first)
-            for i in range(1, len(parts)):
-                part = parts[i].strip()
-                if part and not section_header_re.match(part):
-                    memories.append(part)
-
-        # 兜底：正则分割失败但内容中明显包含多条记忆（通过 "(相关性: " 出现次数判断）
-        if len(memories) <= 1 and body.count('(相关性: ') > 1:
-            # 按 \n- [] 再次尝试，用 lookbehind 确保 "- []" 前有换行
-            alt_parts = re.split(r'\n(?=- \[\])', body)
             memories = []
-            for p in alt_parts:
-                p_stripped = p.strip()
-                if p_stripped and not section_header_re.match(p_stripped):
-                    memories.append(p_stripped)
+            prev_pos = 0
+            for pos in split_positions:
+                if pos > prev_pos:
+                    mem = body[prev_pos:pos].strip()
+                    if mem:
+                        memories.append(mem)
+                prev_pos = pos
+            # 最后一条
+            last = body[prev_pos:].strip()
+            if last:
+                memories.append(last)
 
-        # 转义 prefix（提前计算，单条/多条分支均可能用到）
-        prefix_escaped = prefix.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        # 节标题模式（排除纯节标题行，不作为记忆条目）
+        section_header_re = re.compile(
+            r'^\[(?:相关历史记忆|检索结果\s*[-–—].*?|长期记忆|记忆搜索.*?)\]$'
+        )
+        memories = [m for m in memories if not section_header_re.match(m)]
 
-        if len(memories) <= 1:
-            # 单条记忆也使用折叠格式，避免系统提醒前缀在 <pre> 中重复出现
-            mem_body = memories[0] if memories else body
-            mem_body_escaped = mem_body.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        # ---- 构建 HTML ----
+        def _escape(s: str) -> str:
+            return s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 
-            # 提取相关性评分
-            score_match = re.search(r'\(相关性:\s*([\d.]+)\)', mem_body)
-            score = score_match.group(1) if score_match else None
-            score_str = f"{float(score):.2f}" if score is not None else "?"
+        def _extract_score(mem: str):
+            m = re.search(r'\(相关性:\s*([\d.]+)\)', mem)
+            return m.group(1) if m else None
 
-            # 移除记忆内容末尾的 "(相关性: X.XX)" 标注
-            mem_body_clean = re.sub(r'\s*\(相关性:\s*[\d.]+\)\s*$', '', mem_body)
-            mem_body_clean_escaped = mem_body_clean.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        def _clean_mem_body(mem: str) -> str:
+            return re.sub(r'\s*\(相关性:\s*[\d.]+\)\s*$', '', mem).strip()
 
-            summary_text = f"📌 - 记忆1（相关性: {score_str}）"
-            summary_escaped = summary_text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        prefix_html = _escape(prefix) if prefix else ""
 
-            parts = []
-            if prefix_escaped:
-                parts.append(
-                    f'<div style="padding:8px 12px; color:#666; font-size:14px; '
-                    f'border-bottom:1px solid #e8e8e8;">{prefix_escaped}</div>'
-                )
-            parts.append(
-                f'<details class="memory-fold" style="margin:4px 0;">\n'
-                f'<summary class="memory-summary">{summary_escaped}</summary>\n'
-                f'<pre style="margin:4px 12px; font-size:15px;">{mem_body_clean_escaped}</pre>\n'
-                f'</details>'
-            )
-            return '\n'.join(parts)
+        if not memories:
+            # 没有记忆条目 → 整个内容作为前缀展示
+            return f'<pre style="color:#666;">{prefix_html}</pre>'
 
-        # 多条记忆：每条构建为子折叠块
         sub_html_parts = []
-        if prefix_escaped:
+        if prefix_html:
             sub_html_parts.append(
                 f'<div style="padding:8px 12px; color:#666; font-size:14px; '
-                f'border-bottom:1px solid #e8e8e8;">{prefix_escaped}</div>'
+                f'border-bottom:1px solid #e8e8e8;">{prefix_html}</div>'
             )
 
-        for idx, mem in enumerate(memories):
-            # 区分工作记忆（- [Turn N] 开头，无评分）与检索结果（- [id=...] 开头，有评分）
-            is_working_memory = bool(re.match(r'- \[Turn\s+\d+\]', mem))
-            score_match = re.search(r'\(相关性:\s*([\d.]+)\)', mem)
-            score = score_match.group(1) if score_match else None
+        for i, mem in enumerate(memories):
+            is_working = bool(re.match(r'- \[Turn\s+\d+\]', mem))
+            score = _extract_score(mem)
+            mem_clean = _clean_mem_body(mem)
 
-            if is_working_memory:
-                summary_text = f"📌 - 工作记忆{idx + 1}"
+            if is_working:
+                summary = f"📌 - 工作记忆{i + 1}"
+            elif score is not None:
+                summary = f"📌 - 记忆{i + 1}（相关性: {float(score):.2f}）"
             else:
-                score_str = f"{float(score):.2f}" if score is not None else "?"
-                summary_text = f"📌 - 记忆{idx + 1}（相关性: {score_str}）"
+                summary = f"📌 - 记忆{i + 1}（相关性: ?）"
 
-            # 移除记忆内容末尾的 "(相关性: X.XX)" 标注
-            mem_clean = re.sub(r'\s*\(相关性:\s*[\d.]+\)\s*$', '', mem)
-
-            mem_escaped = mem_clean.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-            summary_escaped = summary_text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+            mem_html = _escape(mem_clean)
+            summary_html = _escape(summary)
 
             sub_html_parts.append(
                 f'<details class="memory-fold" style="margin:4px 0;">\n'
-                f'<summary class="memory-summary">{summary_escaped}</summary>\n'
-                f'<pre style="margin:4px 12px; font-size:15px;">{mem_escaped}</pre>\n'
+                f'<summary class="memory-summary">{summary_html}</summary>\n'
+                f'<pre style="margin:4px 12px; font-size:15px;">{mem_html}</pre>\n'
                 f'</details>'
             )
 
