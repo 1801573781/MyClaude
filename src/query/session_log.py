@@ -437,8 +437,11 @@ class SessionLog:
                 prefix = ""
                 body = content.strip()
 
-        # 按记忆条目开头拆分（以 "- [id=" 或 "- [Turn" 或 "- []" 开头）
-        parts = re.split(r'(\n(?=- \[(?:id=|Turn\s|\])))', body)
+        # 按记忆条目开头拆分：
+        # - [id=...] → 检索记忆（完整 UUID）
+        # - [(工作记忆)] 或 - [(未知)] → 无 ID 的临时条目
+        # - [Turn N] → 旧格式工作记忆
+        parts = re.split(r'(\n(?=- \[(?:id=|Turn\s|[(\]])))', body)
         memories = []
         # 节标题模式：如 "[相关历史记忆]"、"[检索结果 - 查询: ...]"等纯标题行
         section_header_re = re.compile(r'^\[(?:相关历史记忆|检索结果\s*[-–—].*?|长期记忆|记忆搜索.*?)\]$')

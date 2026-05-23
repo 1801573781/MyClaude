@@ -49,9 +49,19 @@ class MemoryInjector:
     #  工作记忆管理
     # ------------------------------------------------------------------ #
 
-    def add(self, role: str, content: str) -> None:
-        """添加一条到工作记忆。"""
-        self._working_memory.append({"role": role, "content": content})
+    def add(self, role: str, content: str, memory_id: str = "") -> None:
+        """添加一条到工作记忆。
+
+        Args:
+            role: 角色（user/assistant/system）
+            content: 记忆内容
+            memory_id: 持久化存储中的记忆 ID（用于日志展示完整 UUID）
+        """
+        self._working_memory.append({
+            "role": role,
+            "content": content,
+            "id": memory_id,
+        })
 
         # 按轮次截断（一轮 = user + assistant，即 2 条）
         max_items = self._max_turns * 2
@@ -136,7 +146,7 @@ class MemoryInjector:
         """格式化 search() 结果为注入文本。
 
         将工作记忆与检索结果合并为统一列表，按相关性降序排列。
-        工作记忆条目视为最高相关性（score=1.0），避免与检索结果重复展示。
+        仅当检索结果非空时才注入工作记忆（避免不相关记忆污染上下文）。
 
         Args:
             query: 原始查询
@@ -145,27 +155,21 @@ class MemoryInjector:
         Returns:
             格式化的 Markdown 文本
         """
+        # 关键规则：仅当检索结果非空时才合并工作记忆。
+        # 若 LLM 判定查询与所有长期/短期记忆无关（search 返回空），
+        # 说明当前查询是全新话题，历史记忆不应污染上下文，
+        # 工作记忆（当前会话）已在 api_messages 中，无需额外注入。
+        if not results:
+            return "没有召唤到相关记忆"
+
         # 合并工作记忆与检索结果，去重并统一排名
         merged = self._merge_working_and_retrieved(results)
-
-        if not merged and not self._working_memory:
-            return "没有召唤到相关记忆"
 
         parts = [f"{self.MEMORY_PREFIX}\n"]
 
         # 如果没有任何记忆（极端情况）
         if not merged:
-            # 只有工作记忆但无检索结果，且合并后为空
-            if self._working_memory:
-                parts.append(self.WORKING_HEADER)
-                for item in self._working_memory[-4:]:
-                    role = item.get("role", "unknown")
-                    content = item.get("content", "")
-                    if len(content) > 200:
-                        content = content[:200] + "..."
-                    parts.append(f"[{role}]: {content}")
-            else:
-                return "没有召唤到相关记忆"
+            return "没有召唤到相关记忆"
         else:
             # 统一展示，按得分降序
             parts.append("[相关历史记忆]")
@@ -182,7 +186,7 @@ class MemoryInjector:
                 deduped.append(mem)
 
             for i, mem in enumerate(deduped):
-                mem_id = mem.get("id", "") if mem.get("id") else ""
+                mem_id = mem.get("id", "")
                 content = mem.get("content", "")
                 score = mem.get("score", 0)
                 if not isinstance(score, (int, float)):
@@ -196,10 +200,13 @@ class MemoryInjector:
                 # 工作记忆条目标注 "(工作记忆)"
                 wm_tag = " [工作记忆]" if mem.get("_is_working", False) else ""
 
-                if mem_id:
+                # 构建 ID 显示：检索记忆用完整 UUID，工作记忆用标注
+                if mem_id and not mem.get("_is_working", False):
                     id_display = f"id={mem_id}"
-                else:
+                elif mem.get("_is_working", False):
                     id_display = "(工作记忆)"
+                else:
+                    id_display = f"id={mem_id}" if mem_id else "(未知)"
 
                 parts.append(f"- [{id_display}]")
                 parts.append("")

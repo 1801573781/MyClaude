@@ -71,7 +71,11 @@ class Memory1Adapter(MemoryInterface):
     # ------------------------------------------------------------------ #
 
     def add(self, role: str, content: str, metadata: Optional[Dict[str, Any]] = None) -> str:
-        return self._backend.add(role, content, metadata)
+        """添加记忆并同步更新注入器的工作记忆缓存。"""
+        mem_id = self._backend.add(role, content, metadata)
+        if self._injector:
+            self._injector.add(role, content, memory_id=mem_id)
+        return mem_id
 
     def get(self, memory_id: str) -> Optional[Dict[str, Any]]:
         return self._backend.get(memory_id)
@@ -89,7 +93,12 @@ class Memory1Adapter(MemoryInterface):
         return self.get_context_for_injection()
 
     def get_context_for_injection(self) -> str:
-        """获取完整的记忆注入上下文（工作记忆 + 检索）。"""
+        """获取完整的记忆注入上下文（工作记忆 + 检索）。
+
+        关键规则：仅当 LLM 检索到相关长期/短期记忆时，
+        才会注入上下文。若检索结果为空，说明当前查询与历史上下文无关，
+        直接返回空字符串，避免不相关记忆污染 LLM 上下文。
+        """
         working = self._backend._working_memory
         # 用最近一条用户消息作为检索 query
         recent_user_msg = ""
@@ -101,6 +110,10 @@ class Memory1Adapter(MemoryInterface):
         retrieved = []
         if recent_user_msg:
             retrieved = self._backend.search(recent_user_msg, top_k=self._backend._default_top_k)
+
+        # 仅当检索到相关记忆时才注入上下文
+        if not retrieved:
+            return ""
 
         return self._injector.format_context(working, retrieved)
 

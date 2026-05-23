@@ -34,6 +34,24 @@ class MemoryInjector:
         self._max_chars = int(max_tokens * approx_chars_per_token)
 
     # ------------------------------------------------------------------ #
+    #  工作记忆管理
+    # ------------------------------------------------------------------ #
+
+    def add(self, role: str, content: str, memory_id: str = "") -> None:
+        """添加一条到工作记忆缓存。
+
+        供 adapter 在持久化后调用，确保工作记忆副本持有持久化 UUID。
+
+        Args:
+            role: 角色（user/assistant/system）
+            content: 记忆内容
+            memory_id: 持久化存储中的记忆 ID
+        """
+        # 工作记忆条目由 adapter 管理的列表持有，这里仅提供占位。
+        # memory_1 的格式化为无状态函数，不加实例状态。
+        pass
+
+    # ------------------------------------------------------------------ #
     #  格式化
     # ------------------------------------------------------------------ #
 
@@ -115,7 +133,6 @@ class MemoryInjector:
         """格式化统一排名列表。"""
         lines = []
         for item in items:
-            # 完整 UUID，不再截断
             mem_id = item.get("id", "")
             content = item.get("content", "")
             score = item.get("score")
@@ -126,13 +143,20 @@ class MemoryInjector:
                 content = content[:400] + "..."
 
             wm_tag = " [工作记忆]" if item.get("_is_working") else ""
-            id_part = f"id={mem_id} " if mem_id else ""
+
+            # 构建 ID 显示：检索记忆用完整 UUID，工作记忆用标注
+            if item.get("_is_working"):
+                id_display = "(工作记忆)"
+            elif mem_id:
+                id_display = f"id={mem_id}"
+            else:
+                id_display = "(未知)"
 
             parts = [content]
             if include_scores and score is not None:
                 parts.append(f"(相关性: {score:.2f})")
 
-            line = f"- [{id_part}]\n\n" + " ".join(parts) + wm_tag
+            line = f"- [{id_display}]\n\n" + " ".join(parts) + wm_tag
             lines.append(line)
 
         return "[相关历史记忆]\n" + "\n".join(lines)
@@ -148,6 +172,9 @@ class MemoryInjector:
     ) -> str:
         """格式化检索结果（关键词触发搜索时使用）。
 
+        仅当检索结果非空时才展示记忆上下文。
+        若结果为空，直接返回空字符串，避免不相关内容污染 LLM 上下文。
+
         Args:
             query: 用户搜索查询
             results: search() 返回的结果列表
@@ -156,7 +183,7 @@ class MemoryInjector:
             格式化后的文本
         """
         if not results:
-            return f"[记忆搜索] 查询 '{query[:50]}' 未找到相关记忆。"
+            return ""
 
         parts = [
             _INJECTION_PREFIX,

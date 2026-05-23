@@ -10,6 +10,7 @@ memory_1 语义检索器：Embedding + FAISS
 
 import logging
 import math
+import re
 import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -45,6 +46,16 @@ class MemoryRetriever:
         "good", "nice", "cool", "great",
         "好", "好的", "嗯", "哦", "谢谢", "再见",
     })
+
+    # 无实质内容的通用问题模式（正则，不区分大小写）
+    # 这些查询与任何历史编程任务无关，无需检索记忆
+    _TRIVIAL_PATTERNS = [
+        r"^(今天|昨天|明天|现在|当前)\s*(是\s*)?(星期|周)(几|一|二|三|四|五|六|日|天)?[?？]?$",
+        r"^(今天|昨天|明天|现在|当前)\s*(是\s*)?(几|什么|啥)\s*(号|日|天)[?？]?$",
+        r"^(现在|当前)\s*(是\s*)?(几点|什么时间|啥时间|几点了)[?？]?$",
+        r"^(今天|现在)\s*(的\s*)?(日期|年月日|日子)[?？]?$",
+        r"^(what|what'?s)\s+(day|date|time)\s+(is\s+)?(it|today|now)[?]?$",
+    ]
 
     def __init__(
         self,
@@ -414,22 +425,30 @@ class MemoryRetriever:
 
     @classmethod
     def _is_trivial_query(cls, query: str) -> bool:
-        """判断是否为无实质内容的闲聊，命中预定义短语集合则短路跳过检索。
+        """判断是否为无实质内容的闲聊或确认语。
 
-        Args:
-            query: 用户输入的查询文本
-
-        Returns:
-            True 表示无实质内容，应跳过检索
+        满足任一条件即视为 trivial：
+        1. 完全匹配预定义的闲聊短语集合（不区分大小写）
+        2. 匹配无实质通用问题模式（日期、星期、时间等）
+        3. 去除标点后长度 <= 2 个字符（如 "嗯"、"啊"、"?"）
+        4. 不含任何中文/英文/数字之外的字符（纯符号），且长度 <= 10
         """
-        if not query or not query.strip():
+        if not query:
             return True
         stripped = query.strip().lower()
-        # 仅含单字母或单汉字
-        if len(stripped) <= 1:
-            return True
-        # 命中预定义闲聊短语
+        # 条件1：匹配已知闲聊短语
         if stripped in cls._TRIVIAL_QUERIES:
+            return True
+        # 条件2：匹配无实质通用问题模式
+        for pattern in cls._TRIVIAL_PATTERNS:
+            if re.match(pattern, query.strip()):
+                return True
+        # 条件3：去除常见标点后极短（<= 2 字符）
+        cleaned = re.sub(r"[^\w\u4e00-\u9fff]", "", stripped)
+        if len(cleaned) <= 2:
+            return True
+        # 条件4：纯标点/emoji（无任何字母数字汉字），长度 <= 10
+        if not re.search(r"[\w\u4e00-\u9fff]", stripped) and len(stripped) <= 10:
             return True
         return False
 

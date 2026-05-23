@@ -83,10 +83,11 @@ class Memory2Adapter(MemoryInterface):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
         """添加记忆到短期存储，同时写入工作记忆。"""
-        # 写入工作记忆（通过 injector 管理）
-        self._injector.add(role, content)
-        # 持久化存储
-        return self._backend.add(role, content, metadata=metadata)
+        # 持久化存储（先获取 ID）
+        mem_id = self._backend.add(role, content, metadata=metadata)
+        # 写入工作记忆（通过 injector 管理，传入记忆 ID）
+        self._injector.add(role, content, memory_id=mem_id)
+        return mem_id
 
     def get(self, memory_id: str) -> Optional[Dict[str, Any]]:
         return self._backend.get(memory_id)
@@ -116,9 +117,12 @@ class Memory2Adapter(MemoryInterface):
         此方法可供 query_loop 在构造 api_messages 时直接调用，
         返回的文本包含：
         - ``[系统提醒]`` 前缀（触发 session_log 分类）
-        - ``[当前任务上下文]`` 区块（工作记忆）
-        - ``[检索结果]`` 区块（从长期/短期记忆召回的条目）
+        - ``[相关历史记忆]`` 区块（从长期/短期记忆召回 + 相关的工作记忆）
         - 每条记忆末尾标注 ``(相关性: X.XX)``
+
+        关键规则：仅当 LLM 检索到相关长期/短期记忆时，
+        才会注入上下文（format_search_results 内部只合并相关的工作记忆）。
+        若检索结果为空，说明当前查询与历史上下文无关，直接返回空字符串。
         """
         working = self._injector.get_all()
         # 用最近一条用户消息作为检索 query
@@ -138,6 +142,8 @@ class Memory2Adapter(MemoryInterface):
         if not retrieved and not working:
             return ""
 
+        # format_search_results 内部仅在检索结果非空时合并工作记忆，
+        # 若 merged 为空则返回 "没有召唤到相关记忆"
         return self._injector.format_search_results(
             query=recent_user_msg,
             results=retrieved,

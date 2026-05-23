@@ -153,13 +153,24 @@ class MemoryRetriever:
         "bye", "再见", "88", "拜拜", "收到", "明白", "知道了",
     }
 
+    # 无实质内容的通用问题模式（正则，不区分大小写）
+    # 这些查询与任何历史编程任务无关，无需检索记忆
+    _TRIVIAL_PATTERNS = [
+        r"^(今天|昨天|明天|现在|当前)\s*(是\s*)?(星期|周)(几|一|二|三|四|五|六|日|天)?[?？]?$",
+        r"^(今天|昨天|明天|现在|当前)\s*(是\s*)?(几|什么|啥)\s*(号|日|天)[?？]?$",
+        r"^(现在|当前)\s*(是\s*)?(几点|什么时间|啥时间|几点了)[?？]?$",
+        r"^(今天|现在)\s*(的\s*)?(日期|年月日|日子)[?？]?$",
+        r"^(what|what'?s)\s+(day|date|time)\s+(is\s+)?(it|today|now)[?]?$",
+    ]
+
     def _is_trivial_query(self, query: str) -> bool:
         """判断查询是否为无实质内容的闲聊或确认语。
 
         满足任一条件即视为 trivial：
         1. 完全匹配预定义的闲聊短语集合（不区分大小写）
-        2. 去除标点后长度 <= 2 个字符（如 "嗯"、"啊"、"?"）
-        3. 不含任何中文/英文/数字之外的字符（纯符号），且长度 <= 10
+        2. 匹配无实质通用问题模式（日期、星期、时间等）
+        3. 去除标点后长度 <= 2 个字符（如 "嗯"、"啊"、"?"）
+        4. 不含任何中文/英文/数字之外的字符（纯符号），且长度 <= 10
         """
         if not query:
             return True
@@ -167,11 +178,15 @@ class MemoryRetriever:
         # 条件1：匹配已知闲聊短语
         if stripped in self._TRIVIAL_QUERIES:
             return True
-        # 条件2：去除常见标点后极短（<= 2 字符）
+        # 条件2：匹配无实质通用问题模式
+        for pattern in self._TRIVIAL_PATTERNS:
+            if re.match(pattern, query.strip()):
+                return True
+        # 条件3：去除常见标点后极短（<= 2 字符）
         cleaned = re.sub(r"[^\w\u4e00-\u9fff]", "", stripped)
         if len(cleaned) <= 2:
             return True
-        # 条件3：纯标点/emoji（无任何字母数字汉字），长度 <= 10
+        # 条件4：纯标点/emoji（无任何字母数字汉字），长度 <= 10
         if not re.search(r"[\w\u4e00-\u9fff]", stripped) and len(stripped) <= 10:
             return True
         return False
