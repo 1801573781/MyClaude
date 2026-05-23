@@ -468,14 +468,35 @@ class SessionLog:
         prefix_escaped = prefix.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 
         if len(memories) <= 1:
-            # 单条记忆，也需要展示 prefix 提示行
+            # 单条记忆也使用折叠格式，避免系统提醒前缀在 <pre> 中重复出现
+            mem_body = memories[0] if memories else body
+            mem_body_escaped = mem_body.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
+            # 提取相关性评分
+            score_match = re.search(r'\(相关性:\s*([\d.]+)\)', mem_body)
+            score = score_match.group(1) if score_match else None
+            score_str = f"{float(score):.2f}" if score is not None else "?"
+
+            # 移除记忆内容末尾的 "(相关性: X.XX)" 标注
+            mem_body_clean = re.sub(r'\s*\(相关性:\s*[\d.]+\)\s*$', '', mem_body)
+            mem_body_clean_escaped = mem_body_clean.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
+            summary_text = f"📌 - 记忆1（相关性: {score_str}）"
+            summary_escaped = summary_text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
+            parts = []
             if prefix_escaped:
-                return (
+                parts.append(
                     f'<div style="padding:8px 12px; color:#666; font-size:14px; '
-                    f'border-bottom:1px solid #e8e8e8;">{prefix_escaped}</div>\n'
-                    f'<pre style="margin:4px 12px; font-size:15px;">{escaped}</pre>'
+                    f'border-bottom:1px solid #e8e8e8;">{prefix_escaped}</div>'
                 )
-            return f'<pre>{escaped}</pre>'
+            parts.append(
+                f'<details class="memory-fold" style="margin:4px 0;">\n'
+                f'<summary class="memory-summary">{summary_escaped}</summary>\n'
+                f'<pre style="margin:4px 12px; font-size:15px;">{mem_body_clean_escaped}</pre>\n'
+                f'</details>'
+            )
+            return '\n'.join(parts)
 
         # 多条记忆：每条构建为子折叠块
         sub_html_parts = []
