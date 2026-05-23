@@ -60,7 +60,7 @@ class MemoryStore:
             "id": str(uuid.uuid4()),
             "role": role,
             "content": content,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f"),
             "turn": metadata.get("turn") if metadata else None,
             "importance": metadata.get("importance", 0.5) if metadata else 0.5,
             "tags": metadata.get("tags", []) if metadata else [],

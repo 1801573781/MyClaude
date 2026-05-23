@@ -419,7 +419,7 @@ class SessionLog:
         escaped = content.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 
         # 如果只有一条记忆或"没有召唤到相关记忆"，直接展示
-        if "没有召唤到相关记忆" in content:
+        if "没有召回到相关记忆" in content:
             return f'<pre style="color:#999; font-style:italic;">{escaped}</pre>'
 
         # 以 "[当前任务上下文]" 作为前缀/正文分割点

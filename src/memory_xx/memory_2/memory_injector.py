@@ -142,7 +142,7 @@ class MemoryInjector:
         merged.sort(key=lambda x: x.get("score", 0), reverse=True)
 
         for mem in merged:
-            mem_id = mem.get("id", "")[:8]
+            mem_id = mem.get("id", "")
             content = mem.get("content", "")
             score = mem.get("score", 0)
             if not isinstance(score, (int, float)):
@@ -151,7 +151,12 @@ class MemoryInjector:
             if len(content) > 400:
                 content = content[:400] + "..."
 
-            parts.append(f"- [id={mem_id}]\n  {content} (相关性: {score:.2f})")
+            # 将多行内容统一缩进 2 格，并在 id 行后加空行
+            indented_content = "\n".join(
+                ("  " + line) if line.strip() else ""
+                for line in content.split("\n")
+            )
+            parts.append(f"- [id={mem_id}] (相关性: {score:.2f})\n\n{indented_content}")
 
         parts.append("")
         return self._truncate_by_tokens("\n".join(parts))
