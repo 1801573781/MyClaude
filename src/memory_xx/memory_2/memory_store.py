@@ -118,6 +118,64 @@ class MemoryStore:
             self._save()
         return deleted
 
+    def decay_importance(self, factor: float = 0.95) -> int:
+        """重要性自动衰减：所有记忆的 importance 乘以衰减因子。
+
+        让旧记忆自然降权，每次 maintain() 时调用。
+        注意：仅衰减已压缩的记忆，工作记忆不受影响。
+
+        Args:
+            factor: 衰减因子（0~1），默认 0.95
+
+        Returns:
+            实际衰减的条目数
+        """
+        count = 0
+        for entry in self._data:
+            if entry.get("compressed", False):
+                old = entry.get("importance", 0.5)
+                entry["importance"] = round(old * factor, 4)
+                count += 1
+        if count > 0:
+            self._save()
+            logger.debug(f"Memory2Store.decay_importance: 衰减 {count} 条 (factor={factor})")
+        return count
+
+    def get_stats(self) -> dict:
+        """返回存储统计信息。
+
+        Returns:
+            包含 total、by_role、by_tag、file_size_bytes、earliest_ts、latest_ts 的字典
+        """
+        total = len(self._data)
+        # 按 role 分布
+        by_role = {}
+        # 按 tag 分布
+        by_tag = {}
+        earliest = None
+        latest = None
+
+        for entry in self._data:
+            role = entry.get("role", "unknown")
+            by_role[role] = by_role.get(role, 0) + 1
+            for tag in entry.get("tags", []):
+                by_tag[tag] = by_tag.get(tag, 0) + 1
+            ts = self._parse_timestamp(entry.get("timestamp"))
+            if ts != datetime.min.replace(tzinfo=timezone.utc):
+                if earliest is None or ts < earliest:
+                    earliest = ts
+                if latest is None or ts > latest:
+                    latest = ts
+
+        return {
+            "total": total,
+            "by_role": by_role,
+            "by_tag": by_tag,
+            "file_size_bytes": self.get_file_size(),
+            "earliest_ts": earliest.isoformat() if earliest else None,
+            "latest_ts": latest.isoformat() if latest else None,
+        }
+
     def clear_all(self) -> int:
         """清空所有内存数据并删除持久化文件及备份。
 
@@ -339,16 +397,29 @@ class MemoryStore:
 
     @staticmethod
     def _parse_timestamp(ts_str: Optional[str]) -> datetime:
-        """解析 ISO 时间戳。"""
+        """解析时间戳，兼容多种格式。
+
+        支持格式：
+        - ISO 8601（如 2026-05-20T22:50:11.123456+00:00 / 2026-05-20T22:50:11）
+        - 数据库惯用格式（如 2026-05-20 22:50:11.123456）
+        """
         if not ts_str:
             return datetime.min.replace(tzinfo=timezone.utc)
+        # 尝试 ISO 8601（优先）
         try:
             ts = datetime.fromisoformat(ts_str)
             if ts.tzinfo is None:
                 ts = ts.replace(tzinfo=timezone.utc)
             return ts
         except (ValueError, TypeError):
-            return datetime.min.replace(tzinfo=timezone.utc)
+            pass
+        # 回退：尝试 "%Y-%m-%d %H:%M:%S.%f"
+        try:
+            ts = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S.%f")
+            return ts.replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError):
+            pass
+        return datetime.min.replace(tzinfo=timezone.utc)
 
     def get_storage_path(self) -> Path:
         """返回数据文件路径。"""

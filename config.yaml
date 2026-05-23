@@ -12,10 +12,7 @@ model_chat:
 
 # 记忆系统存储配置
 memory:
-  backend: "memory_1"                                 # 记忆后端: memory_1 / memory_2 / none
-  storage:                                            # 记忆文件全局存储路径（各后端优先使用自身配置）
-    path: "memory_storage/memory1/"                   # 记忆文件根目录
-    backup_count: 3                                   # 滚动备份数量
+  backend: "memory_2"                                 # 记忆后端: memory_1 / memory_2 / none
 
 # 项目基本目录结构
 base_path:

@@ -56,15 +56,12 @@ class Memory2Adapter(MemoryInterface):
             config=cfg_dict,
         )
 
-        # 压缩器
-        self._compressor = MemoryCompressor(
-            memory_store=self._backend._store,
-            config=cfg_dict,
-            llm_chat=llm_chat_fn if llm_chat_fn else (lambda msg, mt, t: ""),
-        )
-        # 同步 enabled 状态
+        # 压缩器（复用 backend 已创建的实例，避免构造函数签名不匹配）
+        self._compressor = self._backend._compressor
+        # 同步 enabled 状态（仅当配置中明确指定时覆盖）
         compressor_cfg = cfg_dict.get("compressor", {})
-        self._compressor._enabled = compressor_cfg.get("enabled", True)
+        if "enabled" in compressor_cfg:
+            self._compressor._enabled = compressor_cfg["enabled"]
 
         # 将 injector / compressor 注入到 backend，供内部调用
         self._backend._injector = self._injector
@@ -184,11 +181,8 @@ class Memory2Adapter(MemoryInterface):
         return count
 
     def compact(self) -> int:
-        if self._compressor and self._compressor._enabled:
-            # 获取待压缩的短期记忆
-            short_mem = self._backend._store.get_all()
-            if len(short_mem) > self._backend._short_term_max:
-                return self._compressor.compress(short_mem)
+        # 委托给后端，后端内部已通过 self._compressor 处理 LLM 压缩
+        # 与 fallback 逻辑
         return self._backend.compact()
 
     def stats(self) -> Dict[str, Any]:
@@ -293,11 +287,12 @@ class Memory2Adapter(MemoryInterface):
 
     @staticmethod
     def _cfg_to_dict(cfg: Any) -> Dict[str, Any]:
-        """将 SimpleNamespace 配置转为 dict，供 Injector / Compressor 使用。"""
+        """将 SimpleNamespace 配置递归转为 dict，供 Injector / Compressor 使用。"""
         if cfg is None:
             return {}
         if isinstance(cfg, dict):
             return cfg
+        from types import SimpleNamespace
         result: Dict[str, Any] = {}
         for attr in dir(cfg):
             if attr.startswith("_"):
@@ -305,5 +300,8 @@ class Memory2Adapter(MemoryInterface):
             value = getattr(cfg, attr, None)
             if callable(value):
                 continue
-            result[attr] = value
+            if isinstance(value, SimpleNamespace):
+                result[attr] = Memory2Adapter._cfg_to_dict(value)
+            else:
+                result[attr] = value
         return result

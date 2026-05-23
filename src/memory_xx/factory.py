@@ -171,6 +171,7 @@ def _load_backend_instance(
     factory_func = getattr(module, "create_memory", None)
     if factory_func and callable(factory_func):
         instance = factory_func(config)
+        _inject_llm_fn_if_needed(instance, backend, config)
         return instance
 
     # 尝试直接类实例化
@@ -184,12 +185,36 @@ def _load_backend_instance(
                     instance = cls()
                 except Exception:
                     continue
+            _inject_llm_fn_if_needed(instance, backend, config)
             return instance
 
     raise ImportError(
         f"记忆后端 '{backend}' 模块中未找到可用的工厂函数或构造类。"
         f"模块应提供 create_memory(config) 函数或 MemoryBackend 类。"
     )
+
+
+def _inject_llm_fn_if_needed(instance: Any, backend: str, config: Any) -> None:
+    """为 fallback 路径创建的实例注入 llm_chat_fn。
+
+    适配器内部自行从 model_key.yaml 构建 llm_chat_fn，
+    fallback 路径（直接实例化后端类）缺少此步骤，
+    导致 MemoryRetriever 的 LLM 函数为 None。
+    """
+    if not hasattr(instance, "set_llm_chat_fn"):
+        return
+
+    # 复用 Memory2Adapter._build_models 的 LLM 构建逻辑
+    try:
+        from src.memory_xx.memory_2.adapter import Memory2Adapter
+        chat_fn = Memory2Adapter._build_models(config)
+        if chat_fn is not None:
+            instance.set_llm_chat_fn(chat_fn)
+            logger.info(f"fallback 路径: 已为 {backend} 注入 llm_chat_fn")
+        else:
+            logger.warning(f"fallback 路径: {backend} 未能构建 llm_chat_fn（检查 model_key.yaml 的 memory_2 节）")
+    except Exception as e:
+        logger.warning(f"fallback 路径: 注入 llm_chat_fn 失败: {e}")
 
 
 def _check_directory_exists(backend: str, module_path: str) -> None:

@@ -6,81 +6,145 @@ memory_2 LLM 记忆压缩器
 
 核心理念：调用对话 LLM，将多条短期记忆总结为精炼摘要，
 保留关键信息（主题、决策、结论），丢弃冗余对话细节。
+
+接口与 memory_1.MemoryCompressor 对齐：
+- __init__(enabled, model, max_tokens_per_batch, llm_chat_fn)
+- set_llm_chat_fn(fn)  允许外部注入/更新 LLM 函数
+- should_compress(count, max_items, threshold) -> bool  判断是否需要压缩
+- compress(items, target_count) -> Optional[str]  返回摘要字符串
+- mark_compressed(store, item_ids) -> int  标记原始记忆为已压缩
 """
 
-import json
 import logging
-import uuid
-from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
 
 class MemoryCompressor:
-    """LLM 记忆压缩器。
+    """LLM 记忆压缩器（与 memory_1 对等接口）。
 
     将多条短期记忆合并压缩为一条长期记忆摘要。
 
     所需回调：
-        llm_chat(api_messages, max_tokens, temperature) -> str
+        llm_chat_fn(api_messages, max_tokens, temperature) -> str
     """
 
     def __init__(
         self,
-        memory_store,                   # MemoryStore 实例
-        config: Dict[str, Any],         # memory_2 配置
-        llm_chat: Callable,             # LLM 对话回调
+        enabled: bool = True,
+        model: str = "",
+        max_tokens_per_batch: int = 4000,
+        llm_chat_fn: Optional[Callable] = None,
     ):
         """
         Args:
-            memory_store: MemoryStore 持久化存储实例
-            config: memory_2 配置字典
-            llm_chat: LLM 对话函数
+            enabled: 是否启用 LLM 压缩
+            model: LLM 模型名（用于日志）
+            max_tokens_per_batch: 每批最大 token 估算值
+            llm_chat_fn: LLM 对话回调 (api_messages, max_tokens, temperature) -> str
         """
-        self._store = memory_store
-        self._llm_chat = llm_chat
-
-        comp_cfg = config.get("compressor", {})
-        self._enabled = comp_cfg.get("enabled", True)
-        self._max_tokens_per_batch = comp_cfg.get("max_tokens_per_batch", 4000)
+        self._enabled = enabled
+        self._model = model
+        self._max_tokens_per_batch = max_tokens_per_batch
+        self._llm_chat = llm_chat_fn
 
     # ------------------------------------------------------------------ #
-    #  压缩主入口
+    #  接口方法
     # ------------------------------------------------------------------ #
 
-    def compress(self, short_memories: List[Dict[str, Any]]) -> int:
-        """压缩多条短期记忆为长期摘要。
+    def set_llm_chat_fn(self, fn: Callable) -> None:
+        """外部注入/更新 LLM 对话函数。"""
+        self._llm_chat = fn
+
+    @property
+    def enabled(self) -> bool:
+        """返回压缩器是否启用。"""
+        return self._enabled
+
+    def should_compress(self, count: int, max_items: int, threshold: float) -> bool:
+        """判断是否需要执行压缩。
 
         Args:
-            short_memories: 待压缩的短期记忆列表
+            count: 当前待压缩条目数
+            max_items: 最大允许条目数
+            threshold: 触发压缩的比例阈值（如 0.9 表示达到 90% 时触发）
 
         Returns:
-            压缩生成的长期记忆条数
+            是否需要压缩
+        """
+        if not self._enabled:
+            return False
+        if count <= 0:
+            return False
+        return count >= int(max_items * threshold)
+
+    def compress(
+        self,
+        items: List[Dict[str, Any]],
+        target_count: int,
+    ) -> Optional[str]:
+        """压缩多条记忆为一条摘要字符串。
+
+        Args:
+            items: 待压缩的记忆列表（每个元素含 id/content/role/timestamp 等）
+            target_count: 目标保留条数（供 LLM 参考）
+
+        Returns:
+            压缩后的摘要文本；若 LLM 调用失败或压缩器禁用则返回 None
         """
         if not self._enabled:
             logger.info("MemoryCompressor: 压缩器已禁用")
-            return 0
+            return None
 
-        if not short_memories:
+        if not items:
             logger.info("MemoryCompressor: 无待压缩记忆")
-            return 0
+            return None
 
-        # 分批处理（每批最多 max_tokens_per_batch 对应的记忆数）
-        batches = self._split_into_batches(short_memories)
+        if not self._llm_chat:
+            logger.warning("MemoryCompressor.compress: llm_chat_fn 未设置，无法压缩")
+            return None
 
-        compressed_count = 0
-        for batch in batches:
-            try:
-                summary = self._compress_batch(batch)
-                if summary:
-                    self._save_summary(summary, batch)
-                    compressed_count += 1
-            except Exception as e:
-                logger.error(f"MemoryCompressor.compress: 压缩失败 ({e})")
+        try:
+            # 分批处理
+            batches = self._split_into_batches(items)
+            summaries = []
+            for batch in batches:
+                s = self._compress_batch(batch)
+                if s:
+                    summaries.append(s)
 
-        logger.info(f"MemoryCompressor: 已压缩 {compressed_count} 批，生成 {compressed_count} 条长期记忆")
-        return compressed_count
+            if not summaries:
+                return None
+
+            # 如果只有一批，直接返回
+            if len(summaries) == 1:
+                return summaries[0]
+
+            # 多批时再合并压缩一次
+            merged = self._merge_summaries(summaries, target_count)
+            return merged if merged else "\n".join(summaries)
+
+        except Exception as e:
+            logger.error(f"MemoryCompressor.compress: 压缩失败 ({e})")
+            return None
+
+    def mark_compressed(self, store, item_ids: List[str]) -> int:
+        """将已压缩的原始记忆标记为 compressed=True。
+
+        Args:
+            store: MemoryStore 实例（需支持 update 方法）
+            item_ids: 要标记的记忆 ID 列表
+
+        Returns:
+            成功标记的条数
+        """
+        marked = 0
+        for mem_id in item_ids:
+            if store.update(mem_id, compressed=True):
+                marked += 1
+        logger.info(f"MemoryCompressor.mark_compressed: 标记 {marked}/{len(item_ids)} 条")
+        return marked
 
     # ------------------------------------------------------------------ #
     #  分批
@@ -119,7 +183,6 @@ class MemoryCompressor:
 
     def _compress_batch(self, batch: List[Dict[str, Any]]) -> Optional[str]:
         """调用 LLM 压缩一批记忆为摘要文本。"""
-        # 构造记忆文本
         memory_text = self._format_batch_for_compression(batch)
 
         system_prompt = self._compression_system_prompt()
@@ -146,6 +209,47 @@ class MemoryCompressor:
             summary = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
 
         return summary
+
+    # ------------------------------------------------------------------ #
+    #  多批摘要合并
+    # ------------------------------------------------------------------ #
+
+    def _merge_summaries(
+        self,
+        summaries: List[str],
+        target_count: int,
+    ) -> Optional[str]:
+        """将多个批次的摘要再合并压缩为一条。"""
+        if not self._llm_chat:
+            return None
+
+        combined = "\n\n---\n\n".join(
+            f"批次 {i + 1}: {s}" for i, s in enumerate(summaries)
+        )
+
+        system_prompt = self._compression_system_prompt()
+        user_prompt = (
+            f"以下是从不同批次记忆生成的 {len(summaries)} 段摘要，"
+            f"请将它们合并为一条统一的摘要（目标保留 {target_count} 条记忆的核心信息）：\n\n"
+            f"{combined}\n\n"
+            f"请输出合并后的摘要文本（纯文本，不要 JSON，不要 markdown 标记）。"
+        )
+
+        api_messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+
+        response = self._llm_chat(api_messages, 2048, 0.3)
+        if not response or not response.strip():
+            logger.warning("MemoryCompressor._merge_summaries: LLM 返回空响应")
+            return None
+
+        return response.strip()
+
+    # ------------------------------------------------------------------ #
+    #  格式化 & 提示词
+    # ------------------------------------------------------------------ #
 
     def _format_batch_for_compression(self, batch: List[Dict[str, Any]]) -> str:
         """格式化记忆为压缩候选文本。"""
@@ -180,59 +284,6 @@ class MemoryCompressor:
 3. **丢弃冗余细节**：问候语、确认重复、中间纠错过程、情绪表达
 4. **合并相似信息**：多条记忆讨论同一主题时合并描述
 5. **保持客观**：不添加推断、评价、建议
+6. **代码记忆特殊处理**：若记忆涉及代码修改，保留修改前后的关键差异；若涉及错误修复，保留错误现象和修复方法
 
 摘要格式：简洁段落，100-300 字，中文优先。"""
-
-    # ------------------------------------------------------------------ #
-    #  保存摘要
-    # ------------------------------------------------------------------ #
-
-    def _save_summary(
-        self,
-        summary: str,
-        source_batch: List[Dict[str, Any]],
-    ) -> None:
-        """将压缩摘要保存为长期记忆。"""
-        # 提取来源记忆的相关信息
-        source_ids = [m.get("id", "") for m in source_batch]
-        source_roles = list(set(m.get("role", "") for m in source_batch))
-        source_tags = list(set(
-            tag for m in source_batch
-            for tag in (m.get("tags") or [])
-        ))
-
-        # 取最高重要性作为摘要的重要性
-        max_importance = max(
-            (float(m.get("importance", 0.5)) for m in source_batch),
-            default=0.5,
-        )
-
-        # 取最早时间戳作为摘要的时间
-        timestamps = [m.get("timestamp", "") for m in source_batch]
-        earliest_ts = min(ts for ts in timestamps if ts) if timestamps else datetime.now().isoformat()
-
-        metadata = {
-            "importance": max_importance,
-            "tags": source_tags[:5],  # 最多保留 5 个标签
-            "turn": None,
-            "compressed": True,
-        }
-
-        # 增强摘要内容：附加压缩元信息
-        enhanced_content = (
-            f"[压缩摘要 - {len(source_batch)} 条记忆]\n"
-            f"涉及角色: {', '.join(source_roles) if source_roles else 'N/A'}\n"
-            f"时间范围: {earliest_ts}\n\n"
-            f"{summary}"
-        )
-
-        mem_id = self._store.add(
-            role="system",
-            content=enhanced_content,
-            metadata=metadata,
-        )
-
-        logger.info(
-            f"MemoryCompressor._save_summary: 已生成长期记忆 id={mem_id}，"
-            f"来源 {len(source_ids)} 条短期记忆"
-        )

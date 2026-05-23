@@ -1,3 +1,4 @@
+
 """
 memory_2 LLM 召回检索器
 
@@ -12,10 +13,12 @@ memory_2 LLM 召回检索器
 5. 分数回写：将 LLM 评分回写到记忆条目的 last_score
 """
 
+import hashlib
 import json
 import logging
 import re
-from typing import Any, Callable, Dict, List, Optional
+import time
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -38,23 +41,26 @@ _RETRIEVAL_SYSTEM_PROMPT = """你是一个记忆相关性评分助手。你需�
    - 部分重叠 → 0.4~0.6
    - 高度重叠 → 0.8~1.0
 
-4. **时间新近度**（0~1）：记忆的时间戳越新，得分越高。
-   - 超过 30 天 → 0.0~0.2
-   - 7 天内 → 0.5~0.7
-   - 今天/昨天 → 0.8~1.0
+## 关键规则：无实质内容查询 —— 最高优先级
+如果当前查询属于以下任一类别，则**所有记忆的评分均不得超过 0.30**，因为这类查询不可能与任何历史编程记忆相关：
 
-## 关键规则：无实质内容查询
-如果当前查询是**简单问候、闲聊、确认语、或无实质语义的短文本**（如 "hello"、"hi"、"你好"、"嗯"、"好的"、"ok"、"在吗"），则**所有记忆的评分均不得超过 0.30**。这类查询不包含任何任务目标、技术需求或文件引用，历史记忆不可能与之相关。只有查询明确提及具体实体（文件名、函数名、路径、技术栈名词）或表达明确任务意图时，才允许给出 0.30 以上的评分。
+- **问候/告别**：如 "hello"、"hi"、"你好"、"再见"、"bye"
+- **确认/回应**：如 "好的"、"ok"、"嗯"、"知道了"、"收到"、"谢谢"
+- **日期/时间/天气询问**：如 "今天星期几"、"现在几点"、"今天下雨了吗"、"明天多少度"
+- **纯闲聊/无技术意图**：不包含文件名、函数名、代码片段、路径、技术名词、任务描述的普通对话
+- **无实质语义**：纯标点、emoji、单字确认语
+
+只有查询明确提及具体技术实体（文件名、函数名、路径、技术栈名词、报错信息、代码片段）或表达明确编码/开发任务意图时，才允许给出 0.30 以上的评分。
 
 ## 综合评分
-综合以上 4 个维度，给出最终的相关性评分（0~1），精确到小数点后两位。
+综合以上 3 个维度（主题相关性、任务连续性、实体重叠），给出最终的相关性评分（0~1），精确到小数点后两位。
 
 ## 输出格式（严格遵守）
 你必须输出一个 JSON 数组，每个元素对应一条记忆，格式如下：
 ```json
 [
   {
-    "id": "记忆ID",
+    "memory_index": "记忆ID",
     "score": 0.85,
     "reason": "简短判断理由（20字以内）"
   }
@@ -96,14 +102,10 @@ class MemoryRetriever:
         temperature: float = 0.1,
         max_tokens: int = 4096,
         score_field: str = "relevance",
-        llm_score_weight: float = 0.7,
-        recency_weight: float = 0.2,
-        importance_weight: float = 0.1,
         default_top_k: int = 5,
         max_top_k: int = 20,
-        forgetting_strategy: str = "exponential",
-        half_life_hours: float = 72.0,
         min_relevance: float = 0.50,
+        cache_ttl_seconds: int = 60,
     ):
         """
         Args:
@@ -114,14 +116,10 @@ class MemoryRetriever:
             temperature: LLM 评分温度
             max_tokens: LLM 响应最大 token 数
             score_field: 解析响应时的评分字段名
-            llm_score_weight: LLM 评分权重
-            recency_weight: 时间新近度权重
-            importance_weight: 重要性权重
             default_top_k: 默认返回条数
             max_top_k: 最大允许返回条数
-            forgetting_strategy: 遗忘策略
-            half_life_hours: 半衰期（小时）
             min_relevance: 最低相关性阈值，低于此值的记忆将被过滤
+            cache_ttl_seconds: LLM 评分缓存 TTL（秒）
         """
         self._llm_chat_fn = llm_chat_fn
         self._system_prompt = system_prompt or _RETRIEVAL_SYSTEM_PROMPT
@@ -129,14 +127,13 @@ class MemoryRetriever:
         self._temperature = temperature
         self._max_tokens = max_tokens
         self._score_field = score_field
-        self._llm_score_weight = llm_score_weight
-        self._recency_weight = recency_weight
-        self._importance_weight = importance_weight
         self._default_top_k = default_top_k
         self._max_top_k = max_top_k
-        self._forgetting_strategy = forgetting_strategy
-        self._half_life_seconds = half_life_hours * 3600
         self._min_relevance = min_relevance
+        self._cache_ttl_seconds = cache_ttl_seconds
+
+        # LLM 评分缓存：{cache_key: (scores_dict, expiry_timestamp)}
+        self._score_cache: Dict[str, Tuple[Dict[str, float], float]] = {}
 
     def set_llm_chat_fn(self, chat_fn: Callable[..., str]) -> None:
         """注入 LLM 对话函数。"""
@@ -146,50 +143,6 @@ class MemoryRetriever:
     #  检索主流程
     # ------------------------------------------------------------------ #
 
-    # 无实质内容查询词集合（完全匹配，不区分大小写）
-    _TRIVIAL_QUERIES = {
-        "hello", "hi", "hey", "你好", "您好", "嗨", "在吗", "在不在",
-        "好的", "ok", "okay", "嗯", "哦", "啊", "哈哈", "谢谢", "thanks",
-        "bye", "再见", "88", "拜拜", "收到", "明白", "知道了",
-    }
-
-    # 无实质内容的通用问题模式（正则，不区分大小写）
-    # 这些查询与任何历史编程任务无关，无需检索记忆
-    _TRIVIAL_PATTERNS = [
-        r"^(今天|昨天|明天|现在|当前)\s*(是\s*)?(星期|周)(几|一|二|三|四|五|六|日|天)?[?？]?$",
-        r"^(今天|昨天|明天|现在|当前)\s*(是\s*)?(几|什么|啥)\s*(号|日|天)[?？]?$",
-        r"^(现在|当前)\s*(是\s*)?(几点|什么时间|啥时间|几点了)[?？]?$",
-        r"^(今天|现在)\s*(的\s*)?(日期|年月日|日子)[?？]?$",
-        r"^(what|what'?s)\s+(day|date|time)\s+(is\s+)?(it|today|now)[?]?$",
-    ]
-
-    def _is_trivial_query(self, query: str) -> bool:
-        """判断查询是否为无实质内容的闲聊或确认语。
-
-        满足任一条件即视为 trivial：
-        1. 完全匹配预定义的闲聊短语集合（不区分大小写）
-        2. 匹配无实质通用问题模式（日期、星期、时间等）
-        3. 去除标点后长度 <= 2 个字符（如 "嗯"、"啊"、"?"）
-        4. 不含任何中文/英文/数字之外的字符（纯符号），且长度 <= 10
-        """
-        if not query:
-            return True
-        stripped = query.strip().lower()
-        # 条件1：匹配已知闲聊短语
-        if stripped in self._TRIVIAL_QUERIES:
-            return True
-        # 条件2：匹配无实质通用问题模式
-        for pattern in self._TRIVIAL_PATTERNS:
-            if re.match(pattern, query.strip()):
-                return True
-        # 条件3：去除常见标点后极短（<= 2 字符）
-        cleaned = re.sub(r"[^\w\u4e00-\u9fff]", "", stripped)
-        if len(cleaned) <= 2:
-            return True
-        # 条件4：纯标点/emoji（无任何字母数字汉字），长度 <= 10
-        if not re.search(r"[\w\u4e00-\u9fff]", stripped) and len(stripped) <= 10:
-            return True
-        return False
 
     def search(
         self,
@@ -201,7 +154,7 @@ class MemoryRetriever:
         tag_filter: Optional[List[str]] = None,
         time_window_days: int = 0,
     ) -> List[Dict[str, Any]]:
-        """执行 LLM 召回检索。
+        """执行 LLM 召回检索。所有评分完全由 LLM 判断，不依赖任何代码层面的算法。
 
         Args:
             query: 用户查询文本
@@ -213,60 +166,70 @@ class MemoryRetriever:
             time_window_days: 时间窗口过滤（天）
 
         Returns:
-            list[dict]，每项含 id、content、score、timestamp 等字段
+            list[dict]，每项含 id、content、score、llm_score、reason、timestamp 等字段
         """
         if top_k is None:
             top_k = self._default_top_k
         top_k = min(top_k, self._max_top_k)
 
-        # 0. 无实质内容查询短路：直接返回空列表，不浪费 LLM 调用
-        if self._is_trivial_query(query):
-            logger.info(f"MemoryRetriever.search: trivial query='{query[:30]}', 跳过检索")
-            return []
-
-        if self._llm_chat_fn is None:
-            logger.warning("MemoryRetriever: LLM 函数未注入，返回空列表")
-            return []
-
-        # 1. 候选召回（预过滤）
-        candidates = store.query(
-            tag_filter=tag_filter,
-            time_window_days=time_window_days,
-            role_filter=role_filter,
-            exclude_compressed=True,
-            limit=self._max_candidates_per_batch * 3,  # 预过滤多拿一些，LLM 评分时再截断
-        )
+        # 1. 候选召回（阶梯式预过滤）
+        candidates = self._get_candidates(store, tag_filter, role_filter, time_window_days)
 
         if not candidates:
             logger.debug("MemoryRetriever.search: 候选集为空")
             return []
 
+        candidate_ids = [c["id"] for c in candidates]
         logger.info(f"MemoryRetriever.search: query='{query[:50]}...', 候选 {len(candidates)} 条")
 
-        # 2. LLM 精排（分批处理）
+        if self._llm_chat_fn is None:
+            logger.warning("MemoryRetriever: LLM 函数未注入，无法评分")
+            return []
+
+        # 2. LLM 评分（带缓存）
         all_scores: Dict[str, float] = {}
-        batches = self._split_into_batches(candidates)
+        all_reasons: Dict[str, str] = {}
+        cache_key = self._compute_cache_key(query, candidate_ids)
+        cached = self._get_cached_scores(cache_key)
+        if cached:
+            all_scores = cached
+            logger.info("MemoryRetriever.search: 命中 LLM 评分缓存")
+        else:
+            # 冷启动检测：所有 last_score 均为 None → 提高温度
+            is_cold = all(c.get("last_score") is None for c in candidates)
+            effective_temp = 0.3 if is_cold else self._temperature
+            if is_cold:
+                logger.info("MemoryRetriever.search: 检测到冷启动，使用 temperature=0.3")
 
-        for batch_idx, batch in enumerate(batches):
-            try:
-                batch_scores = self._score_batch(query, context, batch)
-                all_scores.update(batch_scores)
-            except Exception as e:
-                logger.error(f"MemoryRetriever: 批次 {batch_idx} LLM 评分失败: {e}")
-                # 失败批次使用默认分数
-                for item in batch:
-                    all_scores[item["id"]] = 0.0
+            # LLM 精排（分批处理）
+            batches = self._split_into_batches(candidates)
 
-        # 3. 综合打分
-        scored = self._compute_final_scores(candidates, all_scores)
+            for batch_idx, batch in enumerate(batches):
+                try:
+                    batch_scores, batch_reasons = self._score_batch(query, context, batch, temperature=effective_temp)
+                    all_scores.update(batch_scores)
+                    all_reasons.update(batch_reasons)
+                except Exception as e:
+                    logger.error(f"MemoryRetriever: 批次 {batch_idx} LLM 评分失败: {e}")
+                    for item in batch:
+                        all_scores[item["id"]] = 0.0
 
-        # 4. 分数回写
+            # 多批次交叉校准
+            if len(batches) > 1:
+                all_scores = self._cross_batch_normalize(batches, all_scores, query, context,
+                                                          temperature=effective_temp)
+
+            # 写入缓存
+            self._set_cached_scores(cache_key, all_scores)
+
+        # 3. 分数回写
         self._writeback_scores(store, all_scores)
 
+        # 4. 构建结果：score 直接使用 LLM 评分
+        scored = self._compute_final_scores(candidates, all_scores, all_reasons)
+
         # 5. 按最低相关性阈值过滤 + 排序 + 截断
-        # 注：必须按 llm_score（LLM 纯评分）过滤，而非综合分。
-        # 综合分掺入了时间/重要性权重，会导致LLM判定为"无关"的近期记忆仍被召回。
-        min_relevance = getattr(self, "_min_relevance", 0.40)
+        min_relevance = getattr(self, "_min_relevance", 0.50)
         filtered = [s for s in scored if s.get("llm_score", 0) >= min_relevance]
         filtered.sort(key=lambda x: x["score"], reverse=True)
 
@@ -276,8 +239,56 @@ class MemoryRetriever:
 
         results = filtered[:top_k]
 
-        logger.info(f"MemoryRetriever.search: 候选 {len(scored)} 条，过滤后 {len(filtered)} 条，返回 {len(results)} 条，最高分 {results[0]['score']:.2f}" if results else "MemoryRetriever.search: 无结果")
+        if results:
+            logger.info(
+                f"MemoryRetriever.search: 候选 {len(scored)} 条，过滤后 {len(filtered)} 条，"
+                f"返回 {len(results)} 条，最高分 {results[0]['score']:.2f}"
+            )
+        else:
+            logger.info("MemoryRetriever.search: 无结果")
         return results
+
+    # ------------------------------------------------------------------ #
+    #  阶梯式预过滤
+    # ------------------------------------------------------------------ #
+
+    def _get_candidates(
+        self,
+        store: Any,
+        tag_filter: Optional[List[str]],
+        role_filter: Optional[str],
+        time_window_days: int,
+    ) -> List[Dict[str, Any]]:
+        """阶梯式预过滤：时间窗口 → 重要性 → last_score 逐步削减候选量。
+
+        确保送入 LLM 评分的候选不超过 max_candidates_per_batch * 2。
+        """
+        max_ideal = self._max_candidates_per_batch * 2
+
+        # Step 1: 时间窗口预过滤
+        candidates = store.query(
+            tag_filter=tag_filter,
+            time_window_days=time_window_days or 30,
+            role_filter=role_filter,
+            exclude_compressed=True,
+            limit=max_ideal + 50,
+        )
+
+        if len(candidates) <= max_ideal:
+            return candidates
+
+        # Step 2: 按重要性粗筛（删除 importance < 0.3 的低重要性条目）
+        important = [c for c in candidates if c.get("importance", 0.5) >= 0.3]
+        if len(important) <= max_ideal:
+            return important
+
+        # Step 3: 按 last_score 粗筛（优先保留有评分且评分高的）
+        scored = [c for c in important if c.get("last_score") is not None]
+        unscored = [c for c in important if c.get("last_score") is None]
+        scored.sort(key=lambda x: x.get("last_score", 0), reverse=True)
+
+        result = scored[:max_ideal] + unscored
+        return result[:max_ideal]
 
     # ------------------------------------------------------------------ #
     #  分批处理
@@ -295,6 +306,110 @@ class MemoryRetriever:
         return batches
 
     # ------------------------------------------------------------------ #
+    #  多批次交叉校准
+    # ------------------------------------------------------------------ #
+
+    def _cross_batch_normalize(
+        self,
+        batches: List[List[Dict[str, Any]]],
+        all_scores: Dict[str, float],
+        query: str,
+        context: str,
+        temperature: float = 0.1,
+    ) -> Dict[str, float]:
+        """多批次交叉校准：取每批 top-3 汇总送 LLM 二次评分。
+
+        Args:
+            batches: 各批次候选列表
+            all_scores: 原始评分 {id: score}
+            query: 查询文本
+            context: 上下文
+
+        Returns:
+            校准后的评分字典
+        """
+        # 收集每批 top-3
+        top_ids = []
+        for batch in batches:
+            sorted_batch = sorted(batch, key=lambda x: all_scores.get(x["id"], 0), reverse=True)
+            top_ids.extend([m["id"] for m in sorted_batch[:3]])
+
+        # 去重
+        top_ids = list(dict.fromkeys(top_ids))
+
+        if not top_ids or not self._llm_chat_fn:
+            return all_scores
+
+        # 获取 top-3 记忆完整内容
+        top_memories = []
+        for batch in batches:
+            for m in batch:
+                if m["id"] in top_ids:
+                    top_memories.append(m)
+                    break
+
+        if not top_memories:
+            return all_scores
+
+        # 构造校准 Prompt
+        memory_texts = []
+        for i, item in enumerate(top_memories):
+            ts = item.get("timestamp", "未知")[:19]
+            content = item.get("content", "")[:400]
+            memory_texts.append(f"[{i}] id={item['id']}\n    时间: {ts}\n    内容: {content}")
+
+        memory_list = "\n\n".join(memory_texts)
+
+        calibrate_prompt = (
+            f"请对以下 {len(top_memories)} 条高优先级记忆进行交叉校准评分。\n\n"
+            f"当前查询: {query}\n\n"
+            f"对话上下文: {context or '（无）'}\n\n"
+            f"{memory_list}\n\n"
+            f"请输出 JSON 数组，格式同前，校准所有记忆的相对分数。"
+        )
+
+        messages = [
+            {"role": "system", "content": self._system_prompt},
+            {"role": "user", "content": calibrate_prompt},
+        ]
+
+        try:
+            response = self._llm_chat_fn(messages, temperature=temperature, max_tokens=self._max_tokens)
+            if response:
+                cal_scores, _ = self._parse_scores(response, top_memories)
+                # 更新评分
+                for mid, score in cal_scores.items():
+                    all_scores[mid] = score
+                logger.debug(f"MemoryRetriever: 交叉校准 {len(cal_scores)} 条")
+        except Exception as e:
+            logger.warning(f"MemoryRetriever._cross_batch_normalize: 校准失败 ({e})")
+
+        return all_scores
+
+    # ------------------------------------------------------------------ #
+    #  LLM 评分缓存
+    # ------------------------------------------------------------------ #
+
+    def _get_cached_scores(self, cache_key: str) -> Optional[Dict[str, float]]:
+        """获取缓存的评分。过期则删除并返回 None。"""
+        if cache_key in self._score_cache:
+            scores, expiry = self._score_cache[cache_key]
+            if time.time() < expiry:
+                return dict(scores)
+            else:
+                del self._score_cache[cache_key]
+        return None
+
+    def _set_cached_scores(self, cache_key: str, scores: Dict[str, float]) -> None:
+        """写入缓存。"""
+        expiry = time.time() + self._cache_ttl_seconds
+        self._score_cache[cache_key] = (dict(scores), expiry)
+        # 限制缓存大小
+        if len(self._score_cache) > 100:
+            oldest = min(self._score_cache, key=lambda k: self._score_cache[k][1])
+            del self._score_cache[oldest]
+
+    # ------------------------------------------------------------------ #
     #  LLM 评分
     # ------------------------------------------------------------------ #
 
@@ -303,18 +418,22 @@ class MemoryRetriever:
         query: str,
         context: str,
         batch: List[Dict[str, Any]],
-    ) -> Dict[str, float]:
+        temperature: float = None,
+    ) -> Tuple[Dict[str, float], Dict[str, str]]:
         """对一个批次的候选记忆调用 LLM 评分。
 
         Returns:
-            {memory_id: score} 映射
+            ({memory_id: score}, {memory_id: reason}) 映射
         """
+        if temperature is None:
+            temperature = self._temperature
+
         # 构造记忆列表文本
         memory_texts = []
         for i, item in enumerate(batch):
             ts = item.get("timestamp", "未知")[:19]
             role = item.get("role", "unknown")
-            content = item.get("content", "")[:400]  # 截断长文本
+            content = item.get("content", "")[:400]
             tags = ", ".join(item.get("tags", []))
             memory_texts.append(
                 f"[{i}] id={item['id']}\n"
@@ -326,7 +445,6 @@ class MemoryRetriever:
 
         memory_list = "\n\n".join(memory_texts)
 
-        # 构造 Prompt
         user_prompt = _RETRIEVAL_USER_PROMPT_TEMPLATE.format(
             query=query,
             context=context or "（无上下文）",
@@ -339,68 +457,180 @@ class MemoryRetriever:
             {"role": "user", "content": user_prompt},
         ]
 
-        # 调用 LLM
-        response = self._llm_chat_fn(messages, temperature=self._temperature, max_tokens=self._max_tokens)
+        response = self._llm_chat_fn(messages, temperature=temperature, max_tokens=self._max_tokens)
         if not response:
             logger.warning("MemoryRetriever._score_batch: LLM 返回空响应")
-            return {}
+            return {}, {}
 
-        # 解析响应
         return self._parse_scores(response, batch)
 
     # ------------------------------------------------------------------ #
     #  解析 LLM 响应
     # ------------------------------------------------------------------ #
 
-    def _parse_scores(self, response: str, batch: List[Dict[str, Any]]) -> Dict[str, float]:
+    def _parse_scores(
+        self,
+        response: str,
+        batch: List[Dict[str, Any]],
+    ) -> Tuple[Dict[str, float], Dict[str, str]]:
         """解析 LLM 的结构化评分响应。
 
-        期望格式：JSON 数组，每项含 id 和 score。
-        容错处理：提取 JSON 代码块、兼容 markdown 包裹。
+        期望格式：JSON 数组，每项含 memory_index、score 和可选的 reason。
+        容错处理：提取 JSON 代码块、兼容 markdown 包裹、修复常见格式问题、
+        逐条正则回退。
+
+        Returns:
+            ({memory_id: score}, {memory_id: reason})
         """
         scores: Dict[str, float] = {}
+        reasons: Dict[str, str] = {}
 
         # 1. 尝试提取 JSON 代码块
         json_match = re.search(r"```(?:json)?\s*(.*?)\s*```", response, re.DOTALL)
         if json_match:
             json_str = json_match.group(1)
         else:
-            # 尝试直接解析整个响应
             json_str = response
 
-        try:
-            parsed = json.loads(json_str)
-        except json.JSONDecodeError:
-            # 尝试修复常见格式问题
-            logger.warning("MemoryRetriever: JSON 解析失败，尝试修复")
-            try:
-                # 去除首尾无关字符
-                trimmed = json_str.strip()
-                if not trimmed.startswith("["):
-                    trimmed = "[" + trimmed.split("[", 1)[-1] if "[" in trimmed else ""
-                if trimmed and not trimmed.endswith("]"):
-                    trimmed = trimmed.rsplit("]", 1)[0] + "]" if "]" in trimmed else ""
-                parsed = json.loads(trimmed)
-            except json.JSONDecodeError:
-                logger.error(f"MemoryRetriever: 无法解析 LLM 响应: {response[:200]}")
-                return {}
+        # 2. 尝试直接解析
+        parsed = self._try_parse_json_array(json_str)
 
-        if not isinstance(parsed, list):
-            logger.warning("MemoryRetriever: LLM 响应不是数组格式")
-            return {}
+        # 3. 如果失败，尝试截取 JSON 数组片段再解析
+        if parsed is None:
+            logger.warning("MemoryRetriever: JSON 解析失败，尝试修复")
+            # 找到最外层 [ ... ]
+            start = json_str.find("[")
+            end = json_str.rfind("]")
+            if start != -1 and end != -1 and end > start:
+                trimmed = json_str[start:end + 1]
+                parsed = self._try_parse_json_array(trimmed)
+
+        if not isinstance(parsed, list) or len(parsed) == 0:
+            # 逐条正则回退
+            logger.warning("MemoryRetriever: JSON 解析失败，使用逐条正则回退")
+            fallback_scores = self._fallback_parse_scores(response, batch)
+            return fallback_scores, {}
+
+        # 建立序号→UUID映射，兼容LLM返回序号或UUID两种情况
+        seq_to_uuid = {str(i): item["id"] for i, item in enumerate(batch)}
 
         for item in parsed:
             if not isinstance(item, dict):
                 continue
-            mid = item.get("id")
+            mid = item.get("memory_index")
             score = item.get(self._score_field, item.get("score"))
-            if mid and score is not None:
+            reason = item.get("reason", "")
+            if mid is not None and score is not None:
                 try:
-                    scores[str(mid)] = float(score)
+                    # 若LLM返回的是序号（纯数字），映射为实际UUID
+                    actual_id = seq_to_uuid.get(str(mid), str(mid))
+                    scores[actual_id] = float(score)
+                    if reason:
+                        reasons[actual_id] = str(reason)[:100]
                 except (ValueError, TypeError):
                     pass
 
         logger.debug(f"MemoryRetriever._parse_scores: 解析到 {len(scores)} 个评分")
+        return scores, reasons
+
+    @staticmethod
+    def _try_parse_json_array(text: str) -> Optional[List[Any]]:
+        """尝试解析 JSON 数组，自动修复常见 LLM 输出问题。
+
+        修复项：
+        - 尾逗号（trailing comma）
+        - 无引号的简单键名
+        - 前导点数字（.85 → 0.85）
+        """
+        if not text or not text.strip():
+            return None
+
+        cleaned = text.strip()
+
+        # 尝试 1：直接解析
+        try:
+            result = json.loads(cleaned)
+            if isinstance(result, list):
+                return result
+        except json.JSONDecodeError:
+            pass
+
+        # 尝试 2：修复尾逗号（最常见的 LLM JSON 错误）
+        try:
+            fixed = re.sub(r",\s*([]}])", r"\1", cleaned)
+            result = json.loads(fixed)
+            if isinstance(result, list):
+                return result
+        except json.JSONDecodeError:
+            pass
+
+        # 尝试 3：修复前导点数字
+        try:
+            # .85 → 0.85（但只替换值位置的点，不替换键名中的点）
+            fixed = re.sub(r':\s*\.(\d+)', r': 0.\1', cleaned)
+            result = json.loads(fixed)
+            if isinstance(result, list):
+                return result
+        except json.JSONDecodeError:
+            pass
+
+        # 尝试 4：组合修复（尾逗号 + 前导点数字）
+        try:
+            fixed = re.sub(r",\s*([]}])", r"\1", cleaned)
+            fixed = re.sub(r':\s*\.(\d+)', r': 0.\1', fixed)
+            result = json.loads(fixed)
+            if isinstance(result, list):
+                return result
+        except json.JSONDecodeError:
+            pass
+
+        return None
+
+    def _fallback_parse_scores(
+        self,
+        response: str,
+        batch: List[Dict[str, Any]],
+    ) -> Dict[str, float]:
+        """逐条正则回退解析评分（JSON 完全无法解析时使用）。"""
+        scores: Dict[str, float] = {}
+
+        # 先尝试逐对象提取：匹配一对 { ... } 内的 memory_index 和 score
+        # 使用 re.DOTALL 支持跨行匹配
+        obj_pattern = r'\{\s*"memory_index"\s*:\s*"(\S+?)".*?"(?:score|{})"\s*:\s*([\d.]+)\s*[,\}]'
+        for match in re.finditer(
+            obj_pattern.format(re.escape(self._score_field)),
+            response,
+            re.DOTALL | re.IGNORECASE,
+        ):
+            mid = match.group(1)
+            try:
+                score = float(match.group(2))
+                scores[mid] = score
+            except ValueError:
+                pass
+
+        if not scores:
+            # 回退方案：分别匹配 memory_index 和 score，按顺序配对
+            ids = re.findall(r'"memory_index"\s*:\s*"(\S+?)"', response)
+            scores_raw = re.findall(
+                r'"(?:score|{})"\s*:\s*([\d.]+)'.format(re.escape(self._score_field)),
+                response,
+            )
+            for i, mid in enumerate(ids):
+                if i < len(scores_raw):
+                    try:
+                        scores[mid] = float(scores_raw[i])
+                    except ValueError:
+                        pass
+
+        # 如果仍然为空，记录原始响应片段方便调试
+        if not scores:
+            logger.warning(
+                f"MemoryRetriever._fallback_parse_scores: 回退解析失败，"
+                f"无法从响应中提取评分。响应前200字符: {response[:200]}"
+            )
+
+        logger.debug(f"MemoryRetriever._fallback_parse_scores: 回退解析到 {len(scores)} 个评分")
         return scores
 
     # ------------------------------------------------------------------ #
@@ -411,71 +641,37 @@ class MemoryRetriever:
         self,
         candidates: List[Dict[str, Any]],
         llm_scores: Dict[str, float],
+        reasons: Optional[Dict[str, str]] = None,
     ) -> List[Dict[str, Any]]:
-        """综合 LLM 评分 + 时间衰减 + 重要性。
+        """构建结果：score 直接等于 LLM 评分，不做任何代码层面的加权。
 
         Args:
             candidates: 候选记忆列表
             llm_scores: LLM 返回的 {id: score} 映射
+            reasons: LLM 返回的 {id: reason} 映射（可选）
 
         Returns:
-            带 final_score 的记忆列表
+            带 score 和 llm_score 的记忆列表
         """
-        import math
-        from datetime import datetime, timezone
-
-        now = datetime.now(timezone.utc)
         results = []
 
         for item in candidates:
             mid = item["id"]
             llm_score = llm_scores.get(mid, 0.0)
 
-            # 时间衰减
-            recency = self._compute_recency(item.get("timestamp"), now)
-
-            # 重要性
-            importance = item.get("importance", 0.5)
-
-            # 综合
-            final = (
-                self._llm_score_weight * llm_score
-                + self._recency_weight * recency
-                + self._importance_weight * importance
-            )
-
             result = dict(item)
-            result["score"] = round(final, 4)
+            result["score"] = round(llm_score, 4)
             result["llm_score"] = round(llm_score, 4)
+            if reasons:
+                result["reason"] = reasons.get(mid, "")
             results.append(result)
 
         return results
 
-    def _compute_recency(self, timestamp: Optional[str], now) -> float:
-        """计算时间新近度得分（0~1）。"""
-        if timestamp is None:
-            return 0.0
-        try:
-            ts = datetime.fromisoformat(timestamp)
-            if ts.tzinfo is None:
-                ts = ts.replace(tzinfo=timezone.utc)
-            age_seconds = (now - ts).total_seconds()
-            if age_seconds < 0:
-                return 1.0
-        except (ValueError, TypeError):
-            return 0.0
-
-        if self._forgetting_strategy == "exponential":
-            if self._half_life_seconds <= 0:
-                return 1.0
-            return math.pow(2, -age_seconds / self._half_life_seconds)
-        elif self._forgetting_strategy == "linear":
-            decay_days = 7 * 86400
-            if age_seconds >= decay_days:
-                return 0.0
-            return 1.0 - age_seconds / decay_days
-        else:
-            return 1.0
+    def _compute_cache_key(self, query: str, candidate_ids: List[str]) -> str:
+        """生成 LLM 评分缓存键（基于 query + candidate ID 集合哈希）。"""
+        raw = query + "|" + ",".join(sorted(candidate_ids))
+        return hashlib.md5(raw.encode("utf-8")).hexdigest()
 
     # ------------------------------------------------------------------ #
     #  分数回写

@@ -14,6 +14,8 @@ from typing import Any, Callable, Dict, List, Optional
 
 from src.memory_xx.memory_2.memory_store import MemoryStore
 from src.memory_xx.memory_2.memory_retriever import MemoryRetriever
+from src.memory_xx.memory_2.memory_compressor import MemoryCompressor
+from src.memory_xx.memory_2.memory_injector import MemoryInjector
 from src.memory_xx.memory_interface import MemoryInterface
 
 logger = logging.getLogger(__name__)
@@ -109,13 +111,10 @@ class Memory2Backend(MemoryInterface):
             temperature=getattr(llm_retrieval_cfg, "temperature", 0.1) if llm_retrieval_cfg else 0.1,
             max_tokens=getattr(llm_retrieval_cfg, "max_tokens", 4096) if llm_retrieval_cfg else 4096,
             score_field=getattr(llm_retrieval_cfg, "score_field", "relevance") if llm_retrieval_cfg else "relevance",
-            llm_score_weight=getattr(scoring_cfg, "llm_score_weight", 0.7) if scoring_cfg else 0.7,
-            recency_weight=getattr(scoring_cfg, "recency_weight", 0.2) if scoring_cfg else 0.2,
-            importance_weight=getattr(scoring_cfg, "importance_weight", 0.1) if scoring_cfg else 0.1,
             default_top_k=self._default_top_k,
             max_top_k=self._max_top_k,
-            forgetting_strategy=getattr(forgetting_cfg, "strategy", "exponential") if forgetting_cfg else "exponential",
-            half_life_hours=getattr(forgetting_cfg, "half_life_hours", 72.0) if forgetting_cfg else 72.0,
+            min_relevance=getattr(scoring_cfg, "min_relevance", 0.50) if scoring_cfg else 0.50,
+            cache_ttl_seconds=getattr(retrieval_cfg, "cache_ttl_seconds", 60) if retrieval_cfg else 60,
         )
 
         # 预过滤配置
@@ -123,9 +122,23 @@ class Memory2Backend(MemoryInterface):
         self._prefilter_tags = getattr(prefilter_cfg, "filter_by_tags", []) if prefilter_cfg else []
         self._prefilter_max_candidates = getattr(prefilter_cfg, "max_candidates", 200) if prefilter_cfg else 200
 
-        # 压缩器与注入器（延迟初始化）
-        self._compressor: Any = None
-        self._injector: Any = None
+        # 压缩器
+        compressor_cfg = getattr(self._cfg, "compressor", None)
+        self._compressor = MemoryCompressor(
+            enabled=getattr(compressor_cfg, "enabled", True) if compressor_cfg else True,
+            model=getattr(compressor_cfg, "model", "default") if compressor_cfg else "default",
+            max_tokens_per_batch=getattr(compressor_cfg, "max_tokens_per_batch", 4000) if compressor_cfg else 4000,
+            llm_chat_fn=llm_chat_fn,
+        )
+
+        # 注入器
+        injection_cfg = getattr(self._cfg, "injection", None)
+        self._injector = MemoryInjector(
+            max_tokens=getattr(injection_cfg, "max_tokens", 2048) if injection_cfg else 2048,
+            user_query_role=getattr(injection_cfg, "user_query_role", "user") if injection_cfg else "user",
+            include_working=getattr(injection_cfg, "include_working", True) if injection_cfg else True,
+            include_long_term=getattr(injection_cfg, "include_long_term", True) if injection_cfg else True,
+        )
 
         logger.info(
             f"Memory2Backend 初始化完成: store={self._store.count()}"
@@ -137,6 +150,12 @@ class Memory2Backend(MemoryInterface):
 
     def add(self, role: str, content: str, metadata: Optional[Dict[str, Any]] = None) -> str:
         """添加记忆到短期记忆并持久化。严禁存储 Embedding。"""
+        # 自动计算 turn 字段
+        if metadata is None:
+            metadata = {}
+        if "turn" not in metadata:
+            metadata["turn"] = len(self._working_memory) + 1
+
         mem_id = self._store.add(role, content, metadata=metadata)
 
         self._working_memory.append({
@@ -144,6 +163,7 @@ class Memory2Backend(MemoryInterface):
             "role": role,
             "content": content,
             "timestamp": datetime.now(timezone.utc).isoformat(),
+            "turn": metadata["turn"],
         })
         # 裁剪工作记忆
         if len(self._working_memory) > self._max_working_turns:
@@ -195,17 +215,44 @@ class Memory2Backend(MemoryInterface):
         return filtered
 
     def get_working_memory(self) -> str:
-        """获取格式化的记忆上下文。"""
+        """获取工作记忆的格式化上下文。
+
+        委托给 injector 的 format_working_memory()，
+        确保与 session_log 分类兼容。
+        """
+        if not self._injector:
+            return ""
         if not self._working_memory:
             return ""
 
-        lines = ["[系统提醒] 以下是与当前任务相关的历史记忆，仅供参考："]
-        for mem in self._working_memory[-self._max_working_turns:]:
-            role_tag = {"user": "👤 用户", "assistant": "🤖 助手", "system": "⚙️ 系统"}.get(
-                mem["role"], mem["role"]
-            )
-            lines.append(f"- [{role_tag}] {mem['content'][:200]}")
-        return "\n".join(lines)
+        # 将工作记忆传给 injector 格式化
+        return self._injector.format_working_memory(
+            working_memory_items=self._working_memory,
+        )
+
+    def get_context_for_query(self, query: str) -> str:
+        """根据用户查询返回格式化记忆上下文。
+
+        流程：search → injector 格式化 → 返回注入文本。
+        与 memory_1.get_context_for_query() 对齐。
+
+        Args:
+            query: 用户当前查询
+
+        Returns:
+            格式化的记忆上下文字符串（可直接注入 api_messages）
+        """
+        if not self._injector:
+            return ""
+
+        # 检索相关记忆
+        results = self.search(query, top_k=self._default_top_k)
+
+        # 格式化注入上下文
+        return self._injector.format_context(
+            working_memory_items=self._working_memory,
+            retrieved_items=results,
+        )
 
     def update(self, memory_id: str, **fields: Any) -> bool:
         return self._store.update(memory_id, **fields)
@@ -220,18 +267,80 @@ class Memory2Backend(MemoryInterface):
         return count
 
     def compact(self) -> int:
-        """手动触发压缩。"""
+        """压缩短期记忆为长期摘要。
+
+        完整流程：
+        1. 判断是否需要压缩（should_compress）
+        2. 从 store 获取所有未压缩记忆，按时间排序
+        3. 调用 compressor 获取摘要
+        4. 摘要非空时写入长期记忆并标记原始记忆为已压缩
+        5. LLM 压缩失败时 fallback 到简单删除
+        """
         total = self._store.count()
         if total <= self._short_term_max:
             return 0
 
-        # 简化实现：按时间排序，删除最旧的超量条目
+        # 使用 compressor 判断是否需要压缩
+        if self._compressor and self._compressor.enabled:
+            if not self._compressor.should_compress(total, self._short_term_max, self._compression_threshold):
+                return 0
+
+            # 获取未压缩记忆
+            uncompressed = self._store.query(exclude_compressed=True)
+            if not uncompressed:
+                return 0
+
+            # 按时间升序排列（最旧的在前）
+            uncompressed.sort(key=lambda x: x.get("timestamp", ""))
+
+            # 计算需压缩的条目数
+            excess = total - self._short_term_max
+            to_compress = uncompressed[:excess]
+
+            if not to_compress:
+                return 0
+
+            # 尝试 LLM 压缩
+            try:
+                summary = self._compressor.compress(
+                    items=to_compress,
+                    target_count=self._short_term_max,
+                )
+                if summary:
+                    # 写入长期记忆
+                    import uuid
+                    source_ids = [m["id"] for m in to_compress]
+                    enriched = (
+                        f"[压缩摘要 - {len(to_compress)} 条记忆]\n"
+                        f"时间范围: {to_compress[0].get('timestamp', '')} ~ {to_compress[-1].get('timestamp', '')}\n\n"
+                        f"{summary}"
+                    )
+                    self._store.add(
+                        role="system",
+                        content=enriched,
+                        metadata={
+                            "importance": 0.7,
+                            "tags": ["compressed"],
+                            "compressed": True,
+                        },
+                    )
+                    # 标记原始记忆为已压缩
+                    marked = self._compressor.mark_compressed(self._store, source_ids)
+                    logger.info(
+                        f"Memory2Backend.compact: LLM 压缩成功，"
+                        f"生成 1 条长期摘要，标记 {marked} 条原始记忆为已压缩"
+                    )
+                    return marked
+            except Exception as e:
+                logger.warning(f"Memory2Backend.compact: LLM 压缩失败 ({e})，fallback 到简单删除")
+
+        # Fallback：简单删除最旧的超量条目
         all_items = self._store.get_all()
         all_items.sort(key=lambda x: x.get("timestamp", ""))
         to_delete = all_items[: total - self._short_term_max]
         ids_to_del = [item["id"] for item in to_delete]
         deleted = self._store.delete_by_ids(ids_to_del)
-        logger.info(f"Memory2Backend.compact: 清理 {deleted} 条超量短期记忆")
+        logger.info(f"Memory2Backend.compact: (fallback) 清理 {deleted} 条超量短期记忆")
         return deleted
 
     def stats(self) -> Dict[str, Any]:
@@ -277,22 +386,44 @@ class Memory2Backend(MemoryInterface):
         now = datetime.now(timezone.utc)
         expired_ids = []
         for item in all_items:
-            ts_str = item.get("timestamp")
-            if ts_str:
-                try:
-                    ts = datetime.fromisoformat(ts_str)
-                    if ts.tzinfo is None:
-                        ts = ts.replace(tzinfo=timezone.utc)
-                    if (now - ts).total_seconds() > self._short_term_ttl:
-                        expired_ids.append(item["id"])
-                except (ValueError, TypeError):
-                    pass
+            ts = self._parse_timestamp(item.get("timestamp"))
+            if ts and (now - ts).total_seconds() > self._short_term_ttl:
+                expired_ids.append(item["id"])
 
         if expired_ids:
             deleted = self._store.delete_by_ids(expired_ids)
             logger.info(f"Memory2Backend._forget_expired: 遗忘 {deleted} 条过期记忆")
             return deleted
         return 0
+
+    @staticmethod
+    def _parse_timestamp(ts_str: Optional[str]) -> Optional[datetime]:
+        """解析时间戳，兼容多种格式。
+
+        支持格式：
+        - ISO 8601（如 2026-05-20T22:50:11.123456+00:00）
+        - 数据库惯用格式（如 2026-05-20 22:50:11.123456）
+
+        Returns:
+            datetime 对象，解析失败返回 None
+        """
+        if not ts_str:
+            return None
+        # 尝试 ISO 8601
+        try:
+            ts = datetime.fromisoformat(ts_str)
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            return ts
+        except (ValueError, TypeError):
+            pass
+        # 回退：尝试 "%Y-%m-%d %H:%M:%S.%f"
+        try:
+            ts = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S.%f")
+            return ts.replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError):
+            pass
+        return None
 
     @staticmethod
     def _default_config() -> Any:
