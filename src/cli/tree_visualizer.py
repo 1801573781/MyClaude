@@ -2,10 +2,9 @@
 """
 MyClaude 目录地图可视化生成器
 递归扫描项目目录，调用 DeepSeek LLM 生成文件概述，输出标准树形目录。
-运行方式：python -m src.utility.tree_visualizer [项目根目录路径]
+通过 CLI 命令 /pt 调用 create_project_tree()。
 """
 
-import argparse
 import fnmatch
 import os
 import re
@@ -14,11 +13,11 @@ import sys
 from pathlib import Path
 
 from openai import OpenAI
-from rich.console import Console
 from rich.tree import Tree
 from datetime import datetime
 
 from src.utility.config_loader import global_cfg
+from src.cli.cli_print import console
 
 
 api_key = global_cfg.DeepSeek.api_key
@@ -64,8 +63,6 @@ def parse_gitignore(root_path: Path) -> list[dict]:
         if is_dir_only:
             line = line[:-1]
 
-        # 去掉开头的 / （表示从根目录匹配）
-        # 保留用于后续匹配判断
         rules.append({
             "pattern": line,
             "is_negate": is_negate,
@@ -127,29 +124,6 @@ def _match_pattern(path: str, pattern: str) -> bool:
 
 def _match_globstar(path: str, pattern: str) -> bool:
     """支持 ** 的简单 glob 匹配。"""
-    parts = pattern.split("**")
-    if len(parts) == 1:
-        return fnmatch.fnmatch(path, pattern)
-    # 将 ** 替换为 * 进行宽松匹配
-    regex_pattern = re.escape(pattern).replace(r"\*\*", ".*")
-    # 同时也要处理原有的 * 通配符
-    regex_pattern = regex_pattern.replace(r"\*", "[^/]*")
-    # 修正：** 应该匹配任意路径（包含 /）
-    regex_pattern = pattern
-    # 构建正则
-    regex = fnmatch.translate(pattern)
-    # fnmatch.translate 不原生支持 **，手动调整
-    # 简化处理：将 ** 视为匹配任意字符（包括路径分隔符）
-    if "**" in pattern:
-        # 手动构建正则
-        escaped = re.escape(pattern)
-        # ** → 匹配任意字符包括 /
-        escaped = escaped.replace(r"\*\*", ".*")
-        # * → 匹配除 / 外的任意字符
-        # 注意：re.escape 已将 * 转义，需要区分处理
-        # 更简单的做法：先替换 **，再替换单独的 *
-        pass
-
     # 使用更简单的方法：将 ** 替换为占位符，构建正则
     temp_pattern = pattern
     # 先保护 **
@@ -194,7 +168,7 @@ def is_binary_extension(file_path: Path) -> bool:
 
 def load_cache(cache_path: Path) -> dict[str, tuple[int, str]]:
     """
-    从 .tree_cache.md 加载缓存。
+    从缓存表格文件加载缓存。
     返回 dict：key = 文件绝对路径，value = (mtime, overview)
     """
     cache: dict[str, tuple[int, str]] = {}
@@ -238,7 +212,7 @@ def load_cache(cache_path: Path) -> dict[str, tuple[int, str]]:
 
 
 def save_cache(cache_path: Path, cache: dict[str, tuple[int, str]], root_path: Path) -> None:
-    """保存缓存到 .tree_cache.md。"""
+    """保存缓存表格到独立文件（不影响树形结构文件）。"""
     lines = [
         f"# 项目文件概述，目录地图 for {root_path}\n",
         "| 文件路径 | 修改时间 | 概述 |",
@@ -247,8 +221,6 @@ def save_cache(cache_path: Path, cache: dict[str, tuple[int, str]], root_path: P
     for file_path, (mtime, overview) in sorted(cache.items()):
         dt_str = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S")
         lines.append(f"| {file_path} | {dt_str} | {overview} |")
-    cache_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
     try:
         cache_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     except OSError:
@@ -261,25 +233,17 @@ def save_cache(cache_path: Path, cache: dict[str, tuple[int, str]], root_path: P
 
 MAX_FILE_SIZE = 50 * 1024  # 50KB
 
-# Prompt 模板
-"""
-PROMPT_TEMPLATE = (
-    '请为文件 "{file_name}" 生成一句不超过{summary_len}字的核心功能总结。\n'
-    "文件内容片段：\n{content_snippet}\n"
-    "要求：直接说明文件的作用，不要加“文件用于”等废话，可以使用标点。"
-)
-"""
-PROMPT_TEMPLATE = (
-    '请为文件 "{file_name}" 生成一句不超过{summary_len}字的“核心功能总结”。\n'
-    "文件内容片段：\n{content_snippet}\n"
-    "规则：\n"
-    "1. 必须输出总结，不能为空。\n"
-    "2. 总结应直接描述该文件在整个项目中的作用（例如“实现斐波那契数列计算”）。\n"
-    "3. 禁止使用“文件用于”、“此文件”、“本文件”等废话，直接说功能。\n"
-    "4. 如果文件内容极少或全是注释，输出“辅助模块”或“配置文件”。\n"
-    "5. 输出总结可以使用自然标点（句号/逗号等），但不要添加无关的解释或引号。\n"
-    "只输出总结文本。"
-)
+PROMPT_TEMPLATE = """\
+请为文件 "{file_name}" 生成一句不超过{summary_len}字的"核心功能总结"。
+文件内容片段：
+{content_snippet}
+规则：
+1. 必须输出总结，不能为空。
+2. 总结应直接描述该文件在整个项目中的作用（例如"实现斐波那契数列计算"）。
+3. 禁止使用"文件用于"、"此文件"、"本文件"等废话，直接说功能。
+4. 如果文件内容极少或全是注释，输出"辅助模块"或"配置文件"。
+5. 输出总结可以使用自然标点（句号/逗号等），但不要添加无关的解释或引号。
+只输出总结文本。"""
 
 
 def get_file_overview(
@@ -292,7 +256,7 @@ def get_file_overview(
 ) -> str:
     """
     获取文件概述。优先使用缓存，缓存未命中则调用 LLM。
-    返回概述文本。
+    返回概述文本。每次获取概述后打印到 CLI 终端（原 save_cache 逻辑改为打印）。
     """
     abs_path = str(file_path.resolve())
     mtime = int(file_path.stat().st_mtime)
@@ -301,6 +265,8 @@ def get_file_overview(
     if not no_cache and abs_path in cache:
         cached_mtime, cached_overview = cache[abs_path]
         if cached_mtime == mtime:
+            # 命中缓存，打印到终端
+            console.print(f"  [dim]📄 {file_path.name} → {cached_overview} [缓存][/dim]")
             return cached_overview
 
     # 读取文件内容
@@ -310,7 +276,6 @@ def get_file_overview(
         if is_truncated:
             with open(file_path, "rb") as f:
                 raw = f.read(MAX_FILE_SIZE)
-            # 尝试以 UTF-8 解码截断内容
             try:
                 content = raw.decode("utf-8", errors="replace")
             except UnicodeDecodeError:
@@ -320,6 +285,7 @@ def get_file_overview(
     except (OSError, UnicodeDecodeError, PermissionError):
         overview = "(无法读取)"
         cache[abs_path] = (mtime, overview)
+        console.print(f"  [red]📄 {file_path.name} → {overview}[/red]")
         return overview
 
     # 调用 LLM 生成概述
@@ -339,13 +305,7 @@ def get_file_overview(
                 temperature=0.3,
             )
             overview = response.choices[0].message.content.strip()
-            # 清理可能的引号和多余空白
             overview = overview.strip('"\'').strip()
-            # 这里不截断，多一点，也没关系
-            '''
-            if len(overview) > summary_len:
-                overview = overview[:summary_len]
-            '''
         except Exception as e:
             overview = f"(API错误: {str(e)})"
 
@@ -354,8 +314,8 @@ def get_file_overview(
 
     # 更新缓存
     cache[abs_path] = (mtime, overview)
-    # 每次更新后保存缓存
-    save_cache(cache_path, cache, root_path)
+    # 原来 save_cache 在这里，现在改为打印到终端
+    console.print(f"  [green]📄 {file_path.name} → {overview}[/green]")
 
     return overview
 
@@ -372,7 +332,6 @@ def build_tree(
         cache_path: Path,
         client: OpenAI | None,
         no_cache: bool,
-        console: Console,
 ) -> Tree | None:
     """
     递归构建 rich Tree 结构。
@@ -403,7 +362,7 @@ def build_tree(
     for entry in entries:
         entry_name = entry.name
 
-        # 跳过所有以点开头的隐藏文件和目录（如 .git, .idea, .tree_cache.md 等）
+        # 跳过所有以点开头的隐藏文件和目录
         if entry_name.startswith('.'):
             continue
 
@@ -429,7 +388,7 @@ def build_tree(
             # 递归构建子树
             sub_tree = build_tree(
                 root_path, entry, gitignore_rules, cache,
-                cache_path, client, no_cache, console,
+                cache_path, client, no_cache,
             )
             if sub_tree is not None:
                 tree.add(sub_tree)
@@ -460,7 +419,6 @@ def build_tree(
 
 def _format_label(file_name: str, overview: str) -> str:
     """格式化树节点标签，使概述对齐。"""
-    # 目标：概述从第 45 列开始
     target_col = 45
     current_len = len(file_name)
     padding = max(2, target_col - current_len)
@@ -468,10 +426,105 @@ def _format_label(file_name: str, overview: str) -> str:
 
 
 # ============================================================
-# 主入口
+# 保存树形结构到文件
 # ============================================================
 
+def _save_tree_to_file(tree: Tree, cache_path: Path, root_path: Path) -> None:
+    """
+    将 rich Tree 渲染为纯文本并保存到 .tree_cache.md。
+    原来 console.print(tree) 的打印逻辑改为 save 到文件。
+    """
+    from io import StringIO
+    from rich.console import Console
+
+    # 使用临时 Console 捕获 rich Tree 的文本输出
+    capture_console = Console(file=StringIO(), force_terminal=True, width=120)
+    capture_console.print(tree)
+    tree_text = capture_console.file.getvalue()
+
+    lines = [
+        f"# 项目目录树 for {root_path}\n",
+        f"# 生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n",
+        "",
+        "```",
+        tree_text.strip(),
+        "```",
+    ]
+    try:
+        cache_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except OSError:
+        pass  # 写入失败不阻塞主流程
+
+
+# ============================================================
+# 主函数 create_project_tree（原 main）
+# ============================================================
+
+def create_project_tree(root_path: Path | None = None) -> bool:
+    """
+    创建 MyClaude 项目工程树。
+
+    Args:
+        root_path: 项目根目录路径，None 则使用当前执行目录。
+
+    Returns:
+        bool: 成功返回 True，失败返回 False。
+    """
+    if root_path is None:
+        root_path = Path.cwd()
+    else:
+        root_path = root_path.resolve()
+
+    if not root_path.is_dir():
+        console.print(f"[red]错误：目录不存在 - {root_path}[/red]")
+        return False
+
+    # 初始化 OpenAI 客户端
+    client: OpenAI | None = None
+    if api_key:
+        client = OpenAI(
+            api_key=api_key,
+            base_url=base_url,
+        )
+    else:
+        console.print("[yellow][警告] 未设置 DEEPSEEK_API_KEY 环境变量，将跳过 LLM 概述生成[/yellow]")
+
+    console.print(f"\n[bold]🔍 正在扫描项目: {root_path}[/bold]\n")
+
+    # 解析 .gitignore
+    gitignore_rules = parse_gitignore(root_path)
+
+    # 始终忽略缓存，强制重新生成概述
+    cache: dict[str, tuple[int, str]] = {}
+    cache_data_path = root_path / ".tree_cache_data.md"
+    tree_output_path = root_path / ".tree_cache.md"
+    no_cache = True
+
+    # 构建树
+    tree = build_tree(
+        root_path, root_path, gitignore_rules, cache,
+        cache_data_path, client, no_cache,
+    )
+
+    if tree is not None:
+        # 原来 console.print(tree) 的地方，改为保存到树形文件
+        console.print("\n[bold]📁 项目目录树：[/bold]")
+        console.print(tree)
+        _save_tree_to_file(tree, tree_output_path, root_path)
+        console.print(f"\n[dim]树形结构已保存到 {tree_output_path}[/dim]")
+    else:
+        console.print("[dim](空目录或所有内容已被忽略)[/dim]")
+
+    # 保存缓存（概述信息表格到独立文件）
+    save_cache(cache_data_path, cache, root_path)
+
+    return True
+
+
+# 保留 main 作为独立运行的兼容入口
 def main() -> None:
+    """独立命令行运行入口（兼容旧用法）。"""
+    import argparse
     parser = argparse.ArgumentParser(
         description="MyClaude 目录地图可视化生成器",
     )
@@ -488,45 +541,7 @@ def main() -> None:
     else:
         root_path = Path.cwd()
 
-    if not root_path.is_dir():
-        print(f"错误：目录不存在 - {root_path}", file=sys.stderr)
-        sys.exit(1)
-
-    # 初始化 OpenAI 客户端
-    client: OpenAI | None = None
-    if api_key:
-        client = OpenAI(
-            api_key=api_key,
-            base_url=base_url,
-        )
-    else:
-        print("[警告] 未设置 DEEPSEEK_API_KEY 环境变量，将跳过 LLM 概述生成")
-        print("        设置方法：set DEEPSEEK_API_KEY=your-key  (Windows)")
-        print("                  export DEEPSEEK_API_KEY=your-key  (Linux/Mac)")
-        print()
-
-    # 解析 .gitignore
-    gitignore_rules = parse_gitignore(root_path)
-
-    # 始终忽略缓存，强制重新生成概述
-    cache: dict[str, tuple[int, str]] = {}
-    cache_path = root_path / ".tree_cache.md"
-
-    # 构建树
-    console = Console()
-    no_cache = True
-    tree = build_tree(
-        root_path, root_path, gitignore_rules, cache,
-        cache_path, client, no_cache, console,
-    )
-
-    if tree is not None:
-        console.print(tree)
-    else:
-        console.print("[dim](空目录或所有内容已被忽略)[/dim]")
-
-    # 始终保存缓存
-    save_cache(cache_path, cache, root_path)
+    create_project_tree(root_path)
 
 
 if __name__ == "__main__":

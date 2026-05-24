@@ -115,7 +115,6 @@ class _SessionHTMLParser(HTMLParser):
             self._in_session_time = False
         elif self._in_entry_header:
             # 提取 Turn 编号，格式如 "🔄 Turn 1" 或 "Turn 1"
-            # 注意：handle_data 可能因空白节点分段调用，只在匹配成功时退出
             match = re.search(r"Turn\s*(\d+)", data, re.IGNORECASE)
             if match:
                 turn_num = int(match.group(1))
@@ -195,9 +194,7 @@ def _format_memory_content(content: str) -> str:
     memory_num = 0
     while idx < len(entries):
         memory_num += 1
-        # entries[idx] 是 "\n- [id="，entries[idx+1] 是后面的全部内容
         raw_entry = entries[idx] + (entries[idx + 1] if idx + 1 < len(entries) else "")
-        # 从 raw_entry 中提取相关性作为父节点标签
         match = re.search(r"\(相关性:\s*([\d.]+)\)", raw_entry)
         relevance = match.group(1) if match else "?"
         # 删除子条目中的 (相关性: X.XX)，保留缩进
@@ -226,7 +223,6 @@ def _build_markdown(
     # 标题
     title = data.get("session_title", "")
     if title:
-        # 去除可能的 emoji 前缀
         clean_title = re.sub(r"^[^\w#]+", "", title).strip()
         lines.append(f"# {clean_title}")
     else:
@@ -246,11 +242,9 @@ def _build_markdown(
 
     # 筛选 turns
     if turns:
-        # 检查指定的 turn 是否存在
         existing_turn_nums = {t["turn_num"] for t in all_turns}
         specified_exist = any(tn in existing_turn_nums for tn in turns)
         if not specified_exist:
-            # 兜底：指定的 turn 都不存在，输出全部
             target_turns = all_turns
         else:
             target_turns = [t for t in all_turns if t["turn_num"] in turns]
@@ -272,7 +266,6 @@ def _build_markdown(
             existing_stripped = set(stripped_map.values())
             specified_exist = any(st in existing_stripped for st in sections)
             if not specified_exist:
-                # 兜底：指定的小节都不存在，输出该 turn 全部
                 target_sections = turn_sections
             else:
                 target_sections = [s for s in turn_sections if stripped_map[s["title"]] in sections]
@@ -286,14 +279,12 @@ def _build_markdown(
             if content:
                 stripped_title = _strip_emoji_prefix(sec['title'])
                 if stripped_title == "记忆召回":
-                    # 对记忆召回的内容做后处理：添加父节点、去重相关性
                     content = _format_memory_content(content)
                 lines.append(f"\n```\n{content}\n```")
             else:
                 lines.append("\n*（无内容）*")
 
     result = "\n".join(lines)
-    # 清理多余的空行（连续 3 个以上的换行缩减为 2 个）
     result = re.sub(r"\n{3,}", "\n\n", result)
     return result
 
@@ -318,45 +309,36 @@ def convert_html_to_markdown(
     Returns:
         结果消息字符串。
     """
-    # 解析 logs_root
     if logs_root is None:
         try:
             from src.utility.config_loader import load_config
             cfg = load_config()
             logs_root = cfg.base_path.logs_root
         except Exception:
-            # 回退默认值
             logs_root = "D:/AI/MyClaude/log"
 
-    # 解析参数
     turns = _parse_turns(turns_str or "")
     sections = _parse_sections(sections_str or "")
 
-    # 解析路径
     source_path = _resolve_path(source, logs_root)
     dest_path = _resolve_path(dest, logs_root)
 
-    # 检查源文件
     if not source_path.exists():
         return f"[ERROR] 源文件不存在: {source_path}"
 
-    # 读取 HTML
     try:
         html_content = source_path.read_text(encoding="utf-8")
     except Exception as e:
         return f"[ERROR] 读取源文件失败: {e}"
 
-    # 解析 HTML
     parser = _SessionHTMLParser()
     try:
         parser.feed(html_content)
     except Exception as e:
         return f"[ERROR] HTML 解析失败: {e}"
 
-    # 生成 Markdown
     md_content = _build_markdown(parser.result, turns, sections)
 
-    # 写入目标文件
     try:
         dest_path.parent.mkdir(parents=True, exist_ok=True)
         dest_path.write_text(md_content, encoding="utf-8")
@@ -370,7 +352,7 @@ def main() -> None:
     """独立命令行运行入口。
 
     用法:
-        python -m src.tools.h2m <p1> <p2> [<p3>] [<p4>]
+        python -m src.cli.h2m <p1> <p2> [<p3>] [<p4>]
 
     参数:
         p1: 源 HTML 文件
@@ -381,14 +363,14 @@ def main() -> None:
     参数值如果包含空格，用双引号或单引号包裹。
 
     示例:
-        python -m src.tools.h2m session.html output.md
-        python -m src.tools.h2m "MyClaude 2026-05-24 09-52-32.html" output.md t1
-        python -m src.tools.h2m session.html output.md t1 "用户输入,LLM 应答"
+        python -m src.cli.h2m session.html output.md
+        python -m src.cli.h2m "MyClaude 2026-05-24 09-52-32.html" output.md t1
+        python -m src.cli.h2m session.html output.md t1 "用户输入,LLM 应答"
     """
     args = sys.argv[1:]
     if len(args) < 2:
-        print("用法: python -m src.tools.h2m <p1> <p2> [<p3>] [<p4>]")
-        print("示例: python -m src.tools.h2m session.html output.md t1 \"用户输入\"")
+        print("用法: python -m src.cli.h2m <p1> <p2> [<p3>] [<p4>]")
+        print('示例: python -m src.cli.h2m session.html output.md t1 "用户输入"')
         sys.exit(1)
 
     p1 = args[0]

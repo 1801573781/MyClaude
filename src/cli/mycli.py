@@ -56,6 +56,16 @@ class MyClaudeCLI:
                 cli_print.print_info(f"已清除所有记忆（共 {total} 条）。")
             return True
 
+        elif cmd.startswith('/pt'):
+            # /pt — 创建 MyClaude 项目工程树
+            from src.cli.tree_visualizer import create_project_tree
+            success = create_project_tree()
+            if success:
+                cli_print.print_info("项目工程树创建完成。")
+            else:
+                cli_print.print_error("项目工程树创建失败，请检查目录是否存在。")
+            return True
+
         elif cmd.startswith('/h2m'):
             # /h2m <p1> <p2> [<p3>] [<p4>] — HTML 转 Markdown
             # 参数值如果包含空格，用双引号或单引号包裹
@@ -74,12 +84,18 @@ class MyClaudeCLI:
             p2 = args[1]
             p3 = args[2] if len(args) > 2 else None
             p4 = args[3] if len(args) > 3 else None
-            from src.tools.h2m import convert_html_to_markdown
+            from src.cli.h2m import convert_html_to_markdown
             result = convert_html_to_markdown(p1, p2, p3, p4)
             if result.startswith("[ERROR]"):
                 cli_print.print_error(result[7:].strip())  # 去掉 "[ERROR] " 前缀
             else:
                 cli_print.print_info(result[1:].strip())  # 去掉 "✅ " 前缀
+            return True
+
+        elif cmd == '/cs':
+            # /cs — 统计项目代码行数
+            from src.cli.code_statistics import code_statistics
+            code_statistics()
             return True
 
         elif cmd.startswith('/save'):

@@ -2,14 +2,15 @@
 """
 MyClaude 代码行数统计器 —— 增强版
 支持按目录详细统计 + 按扩展名汇总统计
+通过 CLI 命令 /cs 调用 code_statistics()。
 """
 from pathlib import Path
 from collections import defaultdict
-from rich.console import Console
 from rich.table import Table
 
+from src.utility.config_loader import global_cfg
+from src.cli.cli_print import console
 
-console = Console()
 
 # ==================== 常量配置 ====================
 
@@ -243,9 +244,18 @@ def print_summary_table(root, ext_stats):
     return grand
 
 
-# ==================== 主入口 ====================
+# ==================== 主函数 ====================
 
-def main(root_dir="."):
+def code_statistics(root_dir: str | None = None):
+    """
+    统计项目代码行数，支持按目录和扩展名汇总。
+
+    Args:
+        root_dir: 项目根目录路径，None 则使用全局配置 base_path.project_root。
+    """
+    if root_dir is None:
+        root_dir = global_cfg.base_path.project_root
+
     root = Path(root_dir).resolve()
 
     console.print(f"\n[bold]🔍 正在扫描项目: {root}[/bold]\n")
@@ -262,5 +272,11 @@ def main(root_dir="."):
     return grand
 
 
+# 保留 main 作为独立运行的兼容入口
+def main():
+    """独立命令行运行入口（兼容旧用法）。"""
+    code_statistics()
+
+
 if __name__ == "__main__":
-    main(".")
+    main()
