@@ -5,12 +5,14 @@ from src.utility.skill_loader import get_skill_loader
 # 通过API与LLM交互时，Message的构建
 class LLMAPIMessage:
 
-    def __init__(self):
+    def __init__(self, role: str = "mycode"):
+        self.project_root = Path(__file__).resolve().parent.parent.parent
+
         # 从同目录加载 sys_prompt.md 作为系统提示词
-        self.api_messages = self._load_system_prompt()
+        self.api_messages = self._load_system_prompt(role)
 
         # 注入项目上下文（放在系统提示词之后、用户输入之前）
-        project_context = self._load_project_context()
+        project_context = self._load_project_context(role)
         if project_context:
             context_msg = {
                 "role": "user",
@@ -29,9 +31,17 @@ class LLMAPIMessage:
 
 
     @staticmethod
-    def _load_system_prompt() -> list[dict]:
-        """从项目根目录加载 sys_prompt.md，包装为 API 消息格式，并追加技能清单（L1 Metadata）。"""
-        md_path = Path(__file__).resolve().parent.parent.parent / "sys_prompt.md"
+    def _load_system_prompt(role: str) -> list[dict]:
+        """根据 role 从 config/role/{role}/ 目录加载系统提示词，包装为 API 消息格式，并追加技能清单（L1 Metadata）。"""
+        project_root = Path(__file__).resolve().parent.parent.parent
+        md_path = project_root / "config" / "role" / role / f"{role}_sys_prompt.md"
+
+        # 兼容旧路径：若新路径不存在，回退到项目根目录的 sys_prompt.md
+        if not md_path.exists():
+            fallback_path = project_root / "sys_prompt.md"
+            if fallback_path.exists():
+                md_path = fallback_path
+
         base_prompt = ""
         if md_path.exists():
             base_prompt = md_path.read_text(encoding="utf-8")
@@ -46,18 +56,23 @@ class LLMAPIMessage:
 
 
     @staticmethod
-    def _load_project_context() -> str:
-        """从项目根目录加载 MyClaude.md 作为上下文注入"""
+    def _load_project_context(role: str) -> str:
+        """根据 role 从 config/role/{role}/ 目录加载项目上下文注入"""
         try:
-            # 从 src/message/ 向上两级到达项目根目录（MyClaude/）
             project_root = Path(__file__).resolve().parent.parent.parent
-            md_path = project_root / "MyClaude.md"
+            md_path = project_root / "config" / "role" / role / f"{role}.md"
+
+            # 兼容旧路径：若新路径不存在，回退到项目根目录的 MyClaude.md
+            if not md_path.exists():
+                fallback_path = project_root / "MyClaude.md"
+                if fallback_path.exists():
+                    md_path = fallback_path
+
             if md_path.exists():
                 return md_path.read_text(encoding="utf-8")
             return ""
         except (OSError, UnicodeDecodeError) as e:
-            # 可选：打印警告，但不阻断主流程
-            print(f"[warn] 加载 MyClaude.md 失败: {e}")
+            print(f"[warn] 加载项目上下文失败: {e}")
             return ""
 
 

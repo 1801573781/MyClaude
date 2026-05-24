@@ -2,6 +2,8 @@ import sys
 import logging
 from pathlib import Path
 
+# import asyncio
+
 # ===== 日志文件配置（必须在其他 import 之前，避免日志落到 stderr）=====
 _log_dir = Path(__file__).resolve().parent.parent / "log"
 _log_dir.mkdir(parents=True, exist_ok=True)
@@ -17,38 +19,31 @@ logging.basicConfig(
     ],
 )
 
-'''
-# ===========================================
 
-# ===== 兼容 cmd 和 PyCharm 各种运行方式 =====
-# 获取 myclaude.py 所在目录（即 src/）
-_src_dir = Path(__file__).resolve().parent
-# 确保 src/ 在 Python 搜索路径最前面
-if str(_src_dir) not in sys.path:
-    sys.path.insert(0, str(_src_dir))
-# ===========================================
-'''
-
-# import asyncio
 from src.cli.mycli import MyClaudeCLI
 
 
 def main():
     """主函数"""
     import argparse
+    import sys
 
     parser = argparse.ArgumentParser(description="MyClaude Code CLI")
 
     parser.add_argument(
-        '-m', '--model',
+        '-r', '--role',
         type=str,
-        default='MiniMax-M2.7',
-        help='AI model to use'
+        default='mycode',
+        help='角色名称，决定加载哪套提示词（默认：mycode）'
     )
 
-    # args = parser.parse_args()
+    args = parser.parse_args()
 
-    cli = MyClaudeCLI()
+    if args.role != 'mycode':
+        print("暂时不支持此类角色，程序退出。")
+        sys.exit(1)
+
+    cli = MyClaudeCLI(role=args.role)
     cli.run()
 
 

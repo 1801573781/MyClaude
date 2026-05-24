@@ -1,0 +1,42 @@
+# 模型 API Key 配置（敏感信息，请勿提交到版本控制）
+# 修改后重启生效
+
+# DeepSeek API 连接参数
+DeepSeek:
+  api_key: "***"
+  base_url: "https://api.deepseek.com"
+  model_name: "deepseek-v4-pro"
+
+# MiniMax API 连接参数
+MiniMax:
+  api_key: "***"
+  base_url: "https://api.minimaxi.com/v1"
+  model_name: "MiniMax-M2.7"
+
+# ============================================================
+# memory_1 模型配置（向量化 + LLM 压缩）
+#   说明：memory 模块独立于 MyClaude 主循环。
+#   provider 字段引用上方 MiniMax / DeepSeek 配置节的
+#   api_key 和 base_url，无需在此重复配置。
+# ============================================================
+memory_1:
+  embedding:
+    provider: "MiniMax"
+    model_name: "embo-01"
+  llm:
+    provider: "DeepSeek"
+    model_name: "deepseek-chat"
+
+# ============================================================
+# memory_2 模型配置（LLM 直接召回 + 压缩）
+#   说明：provider 引用上方 DeepSeek 配置节的 api_key / base_url，
+#   无需在此重复配置。
+# ============================================================
+memory_2:
+  llm:
+    provider: "DeepSeek"
+    model_name: "deepseek-chat"
+
+# 模型基本参数
+model:
+  provider: "DeepSeek"

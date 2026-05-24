@@ -8,8 +8,8 @@ class MyClaudeCLI:
     """MyClaude Code 风格的 CLI 界面"""
 
 
-    def __init__(self):
-        self.query_loop = QueryLoop()
+    def __init__(self, role: str = "mycode"):
+        self.query_loop = QueryLoop(role=role)
         self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 
 

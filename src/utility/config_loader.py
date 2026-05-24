@@ -17,7 +17,7 @@ def get_project_root() -> Path:
     return find_project_root(Path(__file__).resolve().parent)
 
 
-def find_project_root(start: Path, marker: str = "config.yaml") -> Path:
+def find_project_root(start: Path, marker: str = "src") -> Path:
     """
     从 start 目录出发，逐级向上查找包含 marker 文件/目录的目录。
     优先按"包含 config.yaml"来识别项目根目录，更鲁棒。
@@ -65,8 +65,8 @@ def load_config(config_yaml="config.yaml", model_key_yaml="model_key.yaml"):
     start_dir = Path(__file__).resolve().parent
     base_dir = find_project_root(start_dir, config_yaml)
 
-    # 加载 model_key.yaml
-    model_key_path = base_dir / model_key_yaml
+    # 加载 model_key.yaml（从 config/ 目录）
+    model_key_path = base_dir / "config" / model_key_yaml
     model_key_raw = {}
     if model_key_path.exists():
         with open(model_key_path, "r", encoding="utf-8") as f:
@@ -74,8 +74,8 @@ def load_config(config_yaml="config.yaml", model_key_yaml="model_key.yaml"):
             if raw is not None:
                 model_key_raw = raw
 
-    # 加载 config.yaml
-    config_path = base_dir / config_yaml
+    # 加载 config.yaml（从 config/ 目录）
+    config_path = base_dir / "config" / config_yaml
     config_raw = {}
     if config_path.exists():
         with open(config_path, "r", encoding="utf-8") as f:

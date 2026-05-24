@@ -28,8 +28,9 @@ class QueryLoop:
     """
 
 
-    def __init__(self, show_thinking: bool = False):
+    def __init__(self, show_thinking: bool = False, role: str = "mycode"):
         self.show_thinking = show_thinking
+        self.role = role
 
         self.api_messages = None
         self.session = None
@@ -101,7 +102,7 @@ class QueryLoop:
         turn = 0
         quit_chat = ChatOrNot.Continue
 
-        self.api_messages = llm_api_msg.LLMAPIMessage()
+        self.api_messages = llm_api_msg.LLMAPIMessage(role=self.role)
         self.session = SessionLog()
         self.max_turns = global_cfg.cli.max_turns
         self.is_chat_mode = True
