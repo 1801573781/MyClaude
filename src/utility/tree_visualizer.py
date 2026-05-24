@@ -2,7 +2,7 @@
 """
 MyClaude 目录地图可视化生成器
 递归扫描项目目录，调用 DeepSeek LLM 生成文件概述，输出标准树形目录。
-运行方式：python tree_visualizer.py <项目根目录路径> [--no-cache]
+运行方式：python -m src.utility.tree_visualizer [项目根目录路径]
 """
 
 import argparse
@@ -282,7 +282,6 @@ PROMPT_TEMPLATE = (
 )
 
 
-
 def get_file_overview(
         file_path: Path,
         cache: dict[str, tuple[int, str]],
@@ -478,28 +477,26 @@ def main() -> None:
     )
     parser.add_argument(
         "root",
-        help="项目根目录路径",
-    )
-    parser.add_argument(
-        "--no-cache",
-        action="store_true",
-        help="忽略缓存，强制重新生成概述",
+        nargs="?",
+        default=None,
+        help="项目根目录路径（可选，默认当前执行目录）",
     )
     args = parser.parse_args()
 
-    root_path = Path(args.root).resolve()
+    if args.root:
+        root_path = Path(args.root).resolve()
+    else:
+        root_path = Path.cwd()
+
     if not root_path.is_dir():
         print(f"错误：目录不存在 - {root_path}", file=sys.stderr)
         sys.exit(1)
 
     # 初始化 OpenAI 客户端
-
-    # api_key = os.environ.get("DEEPSEEK_API_KEY", "")
     client: OpenAI | None = None
     if api_key:
         client = OpenAI(
             api_key=api_key,
-            # base_url="https://api.deepseek.com/v1",
             base_url=base_url,
         )
     else:
@@ -511,15 +508,16 @@ def main() -> None:
     # 解析 .gitignore
     gitignore_rules = parse_gitignore(root_path)
 
-    # 加载缓存
+    # 始终忽略缓存，强制重新生成概述
+    cache: dict[str, tuple[int, str]] = {}
     cache_path = root_path / ".tree_cache.md"
-    cache = load_cache(cache_path) if not args.no_cache else {}
 
     # 构建树
     console = Console()
+    no_cache = True
     tree = build_tree(
         root_path, root_path, gitignore_rules, cache,
-        cache_path, client, args.no_cache, console,
+        cache_path, client, no_cache, console,
     )
 
     if tree is not None:
@@ -527,9 +525,8 @@ def main() -> None:
     else:
         console.print("[dim](空目录或所有内容已被忽略)[/dim]")
 
-    # 最终保存缓存
-    if not args.no_cache:
-        save_cache(cache_path, cache, root_path)
+    # 始终保存缓存
+    save_cache(cache_path, cache, root_path)
 
 
 if __name__ == "__main__":
