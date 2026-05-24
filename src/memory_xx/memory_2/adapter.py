@@ -144,6 +144,7 @@ class Memory2Adapter(MemoryInterface):
         return self._injector.format_search_results(
             query=recent_user_msg,
             results=retrieved,
+            score_working_fn=self._score_working_wrapper,
         )
 
     def get_context_for_query(self, query: str) -> str:
@@ -167,6 +168,7 @@ class Memory2Adapter(MemoryInterface):
         return self._injector.format_search_results(
             query=query,
             results=retrieved,
+            score_working_fn=self._score_working_wrapper,
         )
 
     def update(self, memory_id: str, **fields: Any) -> bool:
@@ -198,6 +200,29 @@ class Memory2Adapter(MemoryInterface):
     # ------------------------------------------------------------------ #
     #  适配器特有方法
     # ------------------------------------------------------------------ #
+
+    def _score_working_wrapper(
+        self, query: str, items: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """对工作记忆条目进行 LLM 评分的回调包装。
+
+        桥接 MemoryRetriever.score_external_items()，
+        使工作记忆与检索记忆使用同一 LLM 进行评分，
+        并记录评分结果到日志。
+        """
+        context = self._backend._build_context_text()
+        scored = self._backend._retriever.score_external_items(
+            query=query, items=items, context=context
+        )
+        if scored:
+            min_relevance = getattr(self._backend._retriever, "_min_relevance", 0.50)
+            filtered = [s for s in scored if s.get("llm_score", 0) >= min_relevance]
+            logger.info(
+                f"Memory2Adapter.score_working: 评分工作记忆 {len(scored)} 条，"
+                f"过滤后 {len(filtered)} 条，最高分 "
+                f"{max(s['score'] for s in scored) if scored else 0:.2f}"
+            )
+        return scored
 
     def set_llm_chat_fn(self, chat_fn: Callable[..., str]) -> None:
         """注入/更新 LLM 对话函数。"""

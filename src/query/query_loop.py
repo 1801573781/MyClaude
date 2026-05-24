@@ -368,14 +368,15 @@ class QueryLoop:
 
     @staticmethod
     def _count_recalled(mem_context: str) -> int:
-        """从记忆注入上下文中统计召回的记忆条目数。
+        """从记忆注入上下文中统计所有召回的记忆条目数。
 
-        统计所有以 ``- [`` 开头的行（包括工作记忆和检索记忆）。
-        不依赖区块边界判断，不因记忆内容内部换行（如 [LLM思考]）而提前终止。
+        统计所有以 ``- [`` 开头的行（包括检索记忆和工作记忆），
+        确保 CLI 打印数量与 session_log / myclaude.log 记录一致。
         """
         count = 0
         for line in mem_context.split("\n"):
-            if line.strip().startswith("- ["):
+            stripped = line.strip()
+            if stripped.startswith("- [") and "id=" in stripped:
                 count += 1
         return count
 

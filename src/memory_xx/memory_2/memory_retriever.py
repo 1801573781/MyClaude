@@ -668,6 +668,67 @@ class MemoryRetriever:
 
         return results
 
+    def score_external_items(
+        self,
+        query: str,
+        items: List[Dict[str, Any]],
+        context: str = "",
+    ) -> List[Dict[str, Any]]:
+        """对非持久化的外部记忆条目（如工作记忆）进行 LLM 评分。
+
+        与 search() 使用相同的评分逻辑和 Prompt，
+        但不依赖 MemoryStore，直接对传入的 items 进行评分。
+
+        Args:
+            query: 用户查询
+            items: 待评分的记忆条目列表，每项至少含 id、content 字段
+            context: 对话上下文
+
+        Returns:
+            带 llm_score 字段的评分后条目列表
+        """
+        if not items:
+            return []
+
+        if self._llm_chat_fn is None:
+            logger.warning("MemoryRetriever.score_external_items: LLM 函数未注入")
+            for item in items:
+                item["llm_score"] = 0.5
+                item["score"] = 0.5
+            return items
+
+        all_scores: Dict[str, float] = {}
+        all_reasons: Dict[str, str] = {}
+
+        batches = self._split_into_batches(items)
+        for batch in batches:
+            try:
+                batch_scores, batch_reasons = self._score_batch(query, context, batch)
+                all_scores.update(batch_scores)
+                all_reasons.update(batch_reasons)
+            except Exception as e:
+                logger.error(f"MemoryRetriever.score_external_items: 批次评分失败: {e}")
+                for item in batch:
+                    all_scores[item.get("id", str(id(item)))] = 0.5
+
+        # 构建结果
+        results = []
+        for item in items:
+            mid = item.get("id", str(id(item)))
+            llm_score = all_scores.get(mid, 0.5)
+            result = dict(item)
+            result["llm_score"] = round(llm_score, 4)
+            result["score"] = round(llm_score, 4)
+            if mid in all_reasons:
+                result["reason"] = all_reasons[mid]
+            results.append(result)
+
+        logger.debug(
+            f"MemoryRetriever.score_external_items: 评分 {len(items)} 条外部记忆，"
+            f"最高分 {max(r['score'] for r in results) if results else 0:.2f}"
+        )
+        return results
+
     def _compute_cache_key(self, query: str, candidate_ids: List[str]) -> str:
         """生成 LLM 评分缓存键（基于 query + candidate ID 集合哈希）。"""
         raw = query + "|" + ",".join(sorted(candidate_ids))

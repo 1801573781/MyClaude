@@ -13,7 +13,7 @@ memory_2 记忆注入器
 """
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -123,19 +123,55 @@ class MemoryInjector:
         self,
         working_memory_items: List[Dict[str, Any]],
         retrieved_items: Optional[List[Dict[str, Any]]] = None,
+        query: str = "",
+        score_working_fn: Optional[Callable[[str, List[Dict[str, Any]]], List[Dict[str, Any]]]] = None,
     ) -> str:
         """格式化完整的记忆上下文（合并工作记忆与检索结果）。
 
         Args:
             working_memory_items: 工作记忆条目列表
             retrieved_items: search() 返回的记忆列表
+            query: 用户查询（供 LLM 评分工作记忆时使用）
+            score_working_fn: 工作记忆评分回调，签名 (query, items) -> scored_items。
+                              若未提供，工作记忆保持原始 score=1.0（兼容旧行为）。
 
         Returns:
             格式化的 Markdown 字符串
         """
+        # 对工作记忆进行 LLM 评分（如果提供了评分回调）
+        scored_working = working_memory_items
+        if score_working_fn and working_memory_items:
+            try:
+                # 只对 user/assistant 角色的工作记忆评分
+                scorable = [
+                    w for w in working_memory_items
+                    if w.get("role") in ("user", "assistant") and w.get("content")
+                ]
+                unscorable = [
+                    w for w in working_memory_items
+                    if w.get("role") not in ("user", "assistant") or not w.get("content")
+                ]
+                if scorable:
+                    scored = score_working_fn(query or "", scorable)
+                    # 保留 unscorable 的条目并给默认分
+                    scored_working = scored + [
+                        {**w, "score": 0.5, "llm_score": 0.5}
+                        for w in unscorable
+                    ]
+                    logger.debug(
+                        f"MemoryInjector.format_context: 工作记忆 LLM 评分完成，"
+                        f"最高分 {max(w['score'] for w in scored) if scored else 0:.2f}"
+                    )
+            except Exception as e:
+                logger.warning(f"MemoryInjector.format_context: 工作记忆评分失败，使用默认分数: {e}")
+                scored_working = [
+                    {**w, "score": 1.0, "llm_score": 1.0}
+                    for w in working_memory_items
+                ]
+
         # 合并去重
         merged = self._merge_and_deduplicate(
-            working_memory_items, retrieved_items or []
+            scored_working, retrieved_items or []
         )
 
         if not merged:
@@ -171,6 +207,7 @@ class MemoryInjector:
         query: str,
         results: List[Dict[str, Any]],
         working_memory_items: Optional[List[Dict[str, Any]]] = None,
+        score_working_fn: Optional[Callable[[str, List[Dict[str, Any]]], List[Dict[str, Any]]]] = None,
     ) -> str:
         """格式化 search() 结果为注入文本（保持向后兼容）。
 
@@ -178,6 +215,7 @@ class MemoryInjector:
             query: 原始查询
             results: search() 返回的记忆列表
             working_memory_items: 工作记忆条目（可选，无 instances 时为空）
+            score_working_fn: 工作记忆评分回调
 
         Returns:
             格式化的 Markdown 文本
@@ -185,6 +223,8 @@ class MemoryInjector:
         return self.format_context(
             working_memory_items=working_memory_items or [],
             retrieved_items=results,
+            query=query,
+            score_working_fn=score_working_fn,
         )
 
     # ------------------------------------------------------------------ #
@@ -227,11 +267,14 @@ class MemoryInjector:
                 if prefix in seen_prefixes:
                     continue
 
+                # 保留已有的 LLM 评分，如果没有则默认 0.5（不再硬编码 1.0）
+                existing_score = item.get("score", item.get("llm_score", 0.5))
                 merged.append({
                     "id": item.get("id", ""),
                     "content": content,
-                    "score": 1.0,
-                    "timestamp": _time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "score": existing_score,
+                    "llm_score": item.get("llm_score", existing_score),
+                    "timestamp": item.get("timestamp") or _time.strftime("%Y-%m-%d %H:%M:%S"),
                     "turn": item.get("turn", "?"),
                     "role": role,
                     "_is_working": True,
