@@ -56,6 +56,32 @@ class MyClaudeCLI:
                 cli_print.print_info(f"已清除所有记忆（共 {total} 条）。")
             return True
 
+        elif cmd.startswith('/h2m'):
+            # /h2m <p1> <p2> [<p3>] [<p4>] — HTML 转 Markdown
+            # 参数值如果包含空格，用双引号或单引号包裹
+            import shlex
+            try:
+                args = shlex.split(command[4:].strip())
+            except ValueError as e:
+                cli_print.print_error(f"参数解析错误: {e}")
+                return True
+            if len(args) < 2:
+                cli_print.print_error("缺少必选参数 p1 和 p2（源文件和目标文件）")
+                cli_print.print_info("用法: /h2m <源HTML文件> <目标MD文件> [<轮次>] [<小节>]")
+                cli_print.print_info("示例: /h2m \"MyClaude session.html\" output.md t1 \"用户输入,LLM 应答\"")
+                return True
+            p1 = args[0]
+            p2 = args[1]
+            p3 = args[2] if len(args) > 2 else None
+            p4 = args[3] if len(args) > 3 else None
+            from src.tools.h2m import convert_html_to_markdown
+            result = convert_html_to_markdown(p1, p2, p3, p4)
+            if result.startswith("[ERROR]"):
+                cli_print.print_error(result[7:].strip())  # 去掉 "[ERROR] " 前缀
+            else:
+                cli_print.print_info(result[1:].strip())  # 去掉 "✅ " 前缀
+            return True
+
         elif cmd.startswith('/save'):
             # /save <filename> [all] — 保存屏幕输出到文件（HTML/Word）
             parts = command.strip().split(maxsplit=2)
