@@ -13,17 +13,50 @@ console = Console()
 
 # ==================== 常量配置 ====================
 
-SKIP_DIRS = {
-    '.git', '.idea', '__pycache__', 'venv', '.venv',
-    'node_modules', 'code_output', 'log', 'context', '.memdir'
-}
-
 SKIP_FILES = {'.gitignore'}
 
 CODE_EXTS = {
     '.py', '.yaml', '.yml', '.json', '.md', '.txt',
     '.sh', '.bat', '.ps1', '.toml', '.ini', '.cfg'
 }
+
+
+# ==================== .gitignore 动态解析 ====================
+
+def parse_gitignore_skip_dirs(gitignore_path):
+    """
+    动态解析 .gitignore，提取需要跳过的目录名集合。
+    仅处理目录模式（以 '/' 或 '/*' 结尾的行），忽略以 '!' 开头的例外。
+    """
+    skip_dirs = set()
+    gi = Path(gitignore_path)
+    if not gi.is_file():
+        return skip_dirs
+
+    for line in gi.read_text(encoding='utf-8', errors='ignore').splitlines():
+        line = line.strip()
+        # 跳过空行和注释
+        if not line or line.startswith('#'):
+            continue
+        # 跳过例外规则（! 开头）
+        if line.startswith('!'):
+            continue
+        # 跳过文件模式（*.ext）
+        if line.startswith('*.'):
+            continue
+
+        # 提取目录名：去除尾部的 '/' 和 '/*'
+        if line.endswith('/*'):
+            dir_name = line[:-2]
+        elif line.endswith('/'):
+            dir_name = line[:-1]
+        else:
+            # 纯文件名或 glob 模式，不处理
+            continue
+
+        skip_dirs.add(dir_name)
+
+    return skip_dirs
 
 
 # ==================== 注释计数 ====================
@@ -75,6 +108,7 @@ def collect_stats(root):
       ext_stats:  { ext: {"files": n, "total": n, "code": n, "blank": n, "comment": n} }
     """
     root = Path(root).resolve()
+    skip_dirs = parse_gitignore_skip_dirs(root / '.gitignore')
 
     dir_stats = defaultdict(list)
     ext_stats = defaultdict(lambda: {"files": 0, "total": 0, "code": 0,
@@ -88,7 +122,7 @@ def collect_stats(root):
 
         rel = path.relative_to(root)
         parts = rel.parts
-        if any(p in SKIP_DIRS for p in parts[:-1]):
+        if any(p in skip_dirs for p in parts[:-1]):
             continue
 
         ext = path.suffix.lower()
