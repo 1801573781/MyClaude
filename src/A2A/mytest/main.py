@@ -3,9 +3,7 @@ MyTest A2A 服务 — FastAPI 应用入口
 封装测试智能体 B，在 Docker 沙箱中执行代码并返回测试报告
 """
 import logging
-import sys
 import time
-from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Header
 from python_a2a import A2AServer
@@ -48,7 +46,7 @@ def build_test_script(code: str, spec) -> str:
     ]
 
     for i, criterion in enumerate(spec.acceptance_criteria, start=1):
-        test_id = f"TC-{i:02d}"
+        test_id = f"TC-{i: 02d}"
         input_expr = criterion.input
         expected = criterion.expected_output
 
@@ -59,32 +57,32 @@ def build_test_script(code: str, spec) -> str:
         lines.append("    actual_str = str(actual)")
         lines.append("    if actual_str == str(expected_val):")
         lines.append(f"        results.append({{")
-        lines.append(f"            'test_id': '{test_id}',")
-        lines.append(f"            'status': 'PASS',")
-        lines.append(f"            'description': '{input_expr} 应返回 {expected}',")
-        lines.append(f"            'expected': '{expected}',")
-        lines.append(f"            'actual': actual_str,")
+        lines.append(f"            'test_id': '{test_id}', ")
+        lines.append(f"            'status': 'PASS', ")
+        lines.append(f"            'description': '{input_expr} 应返回 {expected}', ")
+        lines.append(f"            'expected': '{expected}', ")
+        lines.append(f"            'actual': actual_str, ")
         lines.append(f"            'error_message': None")
-        lines.append(f"        }})")
+        lines.append(f"}})")
         lines.append("    else:")
         lines.append(f"        results.append({{")
-        lines.append(f"            'test_id': '{test_id}',")
-        lines.append(f"            'status': 'FAIL',")
-        lines.append(f"            'description': '{input_expr} 应返回 {expected}',")
-        lines.append(f"            'expected': '{expected}',")
-        lines.append(f"            'actual': actual_str,")
+        lines.append(f"            'test_id': '{test_id}', ")
+        lines.append(f"            'status': 'FAIL', ")
+        lines.append(f"            'description': '{input_expr} 应返回 {expected}', ")
+        lines.append(f"            'expected': '{expected}', ")
+        lines.append(f"            'actual': actual_str, ")
         lines.append(f"            'error_message': f'值不匹配: 期望 {{expected_val}}, 实际 {{actual}}'")
-        lines.append(f"        }})")
+        lines.append(f"}})")
         lines.append("except Exception as e:")
         lines.append(f"    exc_info = traceback.format_exc()")
         lines.append(f"    results.append({{")
-        lines.append(f"        'test_id': '{test_id}',")
-        lines.append(f"        'status': 'ERROR',")
-        lines.append(f"        'description': '{input_expr} 应返回 {expected}',")
-        lines.append(f"        'expected': '{expected}',")
-        lines.append(f"        'actual': 'N/A',")
+        lines.append(f"        'test_id': '{test_id}', ")
+        lines.append(f"        'status': 'ERROR', ")
+        lines.append(f"        'description': '{input_expr} 应返回 {expected}', ")
+        lines.append(f"        'expected': '{expected}', ")
+        lines.append(f"        'actual': 'N/A', ")
         lines.append(f"        'error_message': f'{{type(e).__name__}}: {{str(e)}}'")
-        lines.append(f"    }})")
+        lines.append(f"}})")
         lines.append("")
 
     lines.append("print(json.dumps(results, ensure_ascii=False))")
@@ -151,7 +149,7 @@ def call_agent_b(request: RunTestsRequest) -> RunTestsResponse:
     )
 
     logger.info(f"[{request.task_id}] Round {request.round}: "
-                 f"测试完成 {passed}/{total} (pass_rate={pass_rate:.0%})")
+                f"测试完成 {passed}/{total} (pass_rate={pass_rate: .0%})")
 
     return RunTestsResponse(test_report=report)
 

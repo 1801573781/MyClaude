@@ -40,18 +40,18 @@ class A2AGlobalConfig(BaseModel):
 
 
 # 全局单例
-_global_config: A2AGlobalConfig | None = None
+_global_a2a_config: A2AGlobalConfig | None = None
 
 
 def get_config() -> A2AGlobalConfig:
     """获取全局配置单例"""
-    global _global_config
-    if _global_config is None:
-        _global_config = A2AGlobalConfig.from_env()
-    return _global_config
+    global _global_a2a_config
+    if _global_a2a_config is None:
+        _global_a2a_config = A2AGlobalConfig.from_env()
+    return _global_a2a_config
 
 
 def set_config(config: A2AGlobalConfig) -> None:
     """设置全局配置（用于测试注入）"""
-    global _global_config
-    _global_config = config
+    global _global_a2a_config
+    _global_a2a_config = config

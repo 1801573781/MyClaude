@@ -11,8 +11,19 @@ import requests
 
 try:
     import docker
+    from docker import from_env
+    from docker.errors import APIError, DockerException
     DOCKER_AVAILABLE = True
 except ImportError:
+    # 哑元异常类，仅供类型检查使用，永远不会在运行时被捕获
+    class APIError(Exception):
+        pass
+
+    class DockerException(Exception):
+        pass
+
+    docker = None
+    from_env = None
     DOCKER_AVAILABLE = False
 
 from src.A2A.shared.config import get_config
@@ -46,9 +57,9 @@ class DockerSandbox:
 
     @property
     def client(self):
-        if self._client is None and DOCKER_AVAILABLE:
+        if self._client is None and from_env is not None:
             try:
-                self._client = docker.from_env()
+                self._client = from_env()
             except Exception as e:
                 logger.warning(f"无法连接 Docker: {e}，将使用子进程回退模式")
                 self._client = None
@@ -65,6 +76,11 @@ class DockerSandbox:
         """在 Docker 容器中执行"""
         start_time = time.time()
         timeout = self.config.test_exec_timeout_sec or self.TIMEOUT_SECONDS
+
+        stdout = ""
+        stderr = ""
+        exit_code = -1
+        timed_out = False
 
         # 将代码写入临时文件
         with tempfile.NamedTemporaryFile(
@@ -97,24 +113,24 @@ class DockerSandbox:
                 # 等待超时
                 try:
                     container.kill()
-                except docker.errors.APIError:
+                except APIError:
                     pass
                 exit_code = -1
                 stdout = ""
                 stderr = "执行超时（超过 {} 秒）".format(timeout)
                 timed_out = True
-            except docker.errors.APIError:
+            except APIError:
                 # Docker API 调用异常
                 try:
                     container.kill()
-                except docker.errors.APIError:
+                except APIError:
                     pass
                 exit_code = -1
                 stdout = ""
                 stderr = "Docker API 异常"
                 timed_out = True
 
-        except docker.errors.DockerException as e:
+        except DockerException as e:
             stdout = ""
             stderr = f"Docker 执行异常: {e}"
             exit_code = -1
@@ -140,6 +156,11 @@ class DockerSandbox:
 
         start_time = time.time()
         timeout = self.config.test_exec_timeout_sec or self.TIMEOUT_SECONDS
+
+        stdout = ""
+        stderr = ""
+        exit_code = -1
+        timed_out = False
 
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".py", prefix="sandbox_", delete=False, encoding="utf-8"

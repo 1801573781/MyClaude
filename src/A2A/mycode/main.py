@@ -90,7 +90,7 @@ async def generate_code(
     """A2A generate_code 能力端点"""
     verify_auth(authorization)
     
-    config = get_config()
+    # config = get_config()
     
     # 校验必填字段
     if not request.task_id:
@@ -99,7 +99,7 @@ async def generate_code(
     try:
         response = call_agent_a(request)
         logger.info(f"[{request.task_id}] Round {request.round}: 代码生成完毕, "
-                     f"{response.generation_metadata.generation_time_ms}ms")
+                    f"{response.generation_metadata.generation_time_ms}ms")
         return response.model_dump()
     except TimeoutError:
         raise HTTPException(status_code=408, detail="Code generation timeout")
