@@ -1,0 +1,34 @@
+# ruff.toml
+
+[lint]
+
+# 选择核心规则集
+select = [
+    "E", "F", "W",           # 基础错误、pyflakes、pycodestyle
+    "I",                     # import 排序
+    "N",                     # 命名规范
+    "UP",                    # pyupgrade
+    "PL",                    # pylint（包含重复代码、静态方法等）
+    "RUF",                   # ruff 特有规则
+    "SIM",                   # 代码简化
+    "B",                     # flake8-bugbear
+    "A",                     # flake8-builtins
+    "COM",                   # flake8-commas
+    "C4",                    # flake8-comprehensions
+]
+
+# 忽略过于严格的规则
+ignore = [
+    "D",                     # 文档字符串要求过于严格
+    "PLR0913",               # 函数参数过多
+    "PLR0912",               # 函数分支过多
+    "PLR0915",               # 函数语句过多
+]
+
+# 排除目录
+exclude = [".venv", ".git", "__pycache__", "venv", ".venv", "build", "dist"]
+
+[lint.pylint]
+
+# 启用重复代码检查
+max-nested-blocks = 5

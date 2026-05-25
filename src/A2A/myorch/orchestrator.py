@@ -91,7 +91,7 @@ class Orchestrator:
 
                 logger.info(
                     f"[{task_id}] Round {round_num}: "
-                    f"通过 {report.passed}/{report.total} ({report.pass_rate:.0%})"
+                    f"通过 {report.passed}/{report.total} ({report.pass_rate: .0%})"
                 )
 
                 # 3. 判定终止条件
