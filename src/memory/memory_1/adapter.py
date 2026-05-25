@@ -5,17 +5,17 @@ memory_1 适配层
 提供便捷的初始化和嵌入函数注入方法。
 
 用法（在 query_loop.py 中）：
-    from src.memory_xx.memory_1.adapter import Memory1Adapter
+    from src.memory.memory_1.adapter import Memory1Adapter
     self._memory = Memory1Adapter(config)
 """
 
 import logging
 from typing import Any, Callable, Dict, List, Optional
 
-from src.memory_xx.memory_1.memory1 import Memory1Backend
-from src.memory_xx.memory_1.memory_compressor import MemoryCompressor
-from src.memory_xx.memory_1.memory_injector import MemoryInjector
-from src.memory_xx.memory_interface import MemoryInterface
+from src.memory.memory_1.memory1 import Memory1Backend
+from src.memory.memory_1.memory_compressor import MemoryCompressor
+from src.memory.memory_1.memory_injector import MemoryInjector
+from src.memory.memory_interface import MemoryInterface
 
 logger = logging.getLogger(__name__)
 

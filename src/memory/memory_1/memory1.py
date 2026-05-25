@@ -13,9 +13,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from src.memory_xx.memory_1.memory_store import MemoryStore
-from src.memory_xx.memory_1.memory_retriever import MemoryRetriever
-from src.memory_xx.memory_interface import MemoryInterface
+from src.memory.memory_1.memory_store import MemoryStore
+from src.memory.memory_1.memory_retriever import MemoryRetriever
+from src.memory.memory_interface import MemoryInterface
 
 logger = logging.getLogger(__name__)
 

@@ -10,10 +10,10 @@ memory_2 适配层
 import logging
 from typing import Any, Callable, Dict, List, Optional
 
-from src.memory_xx.memory_2.memory2 import Memory2Backend
-from src.memory_xx.memory_2.memory_injector import MemoryInjector
-from src.memory_xx.memory_2.memory_compressor import MemoryCompressor
-from src.memory_xx.memory_interface import MemoryInterface
+from src.memory.memory_2.memory2 import Memory2Backend
+from src.memory.memory_2.memory_injector import MemoryInjector
+from src.memory.memory_2.memory_compressor import MemoryCompressor
+from src.memory.memory_interface import MemoryInterface
 
 logger = logging.getLogger(__name__)
 

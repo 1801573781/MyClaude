@@ -8,8 +8,8 @@ from src.llm_tool import tool_executor
 from src.utility.config_loader import global_cfg
 from src.utility.normal_utility import strip_thinking
 from src.query.session_log import SessionLog
-from src.memory_xx.factory import create_memory
-from src.memory_xx.memory_interface import MemoryInterface
+from src.memory.factory import create_memory
+from src.memory.memory_interface import MemoryInterface
 import logging
 
 logger = logging.getLogger(__name__)
@@ -58,7 +58,7 @@ class QueryLoop:
             logger.info(f"记忆模块初始化成功: {type(self._memory).__name__}")
         except Exception as e:
             logger.warning(f"记忆模块初始化失败，降级为 NoopMemory: {e}")
-            from src.memory_xx.memory_interface import NoopMemory
+            from src.memory.memory_interface import NoopMemory
             self._memory = NoopMemory()
 
 

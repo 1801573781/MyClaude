@@ -1,5 +1,5 @@
 """
-memory_xx - 可插拔记忆子系统
+memory - 可插拔记忆子系统
 
 提供：
 - MemoryInterface: 统一抽象基类
@@ -9,7 +9,7 @@ memory_xx - 可插拔记忆子系统
 - memory_2: LLM 召回实现
 """
 
-from src.memory_xx.memory_interface import MemoryInterface, NoopMemory
-from src.memory_xx.factory import create_memory
+from src.memory.memory_interface import MemoryInterface, NoopMemory
+from src.memory.factory import create_memory
 
 __all__ = ["MemoryInterface", "NoopMemory", "create_memory"]

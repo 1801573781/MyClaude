@@ -13,6 +13,6 @@ memory_2 - LLM 召回记忆后端
 检索时交由 LLM 直接判断相关性并打分。
 """
 
-from src.memory_xx.memory_2.memory2 import Memory2Backend, create_memory
+from src.memory.memory_2.memory2 import Memory2Backend, create_memory
 
 __all__ = ["Memory2Backend", "create_memory"]

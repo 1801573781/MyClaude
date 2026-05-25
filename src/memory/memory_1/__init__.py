@@ -10,6 +10,6 @@ memory_1 - Embedding + FAISS 向量检索记忆后端
 - adapter: query_loop 适配层
 """
 
-from src.memory_xx.memory_1.memory1 import Memory1Backend, create_memory
+from src.memory.memory_1.memory1 import Memory1Backend, create_memory
 
 __all__ = ["Memory1Backend", "create_memory"]

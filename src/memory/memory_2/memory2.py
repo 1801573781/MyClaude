@@ -12,11 +12,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from src.memory_xx.memory_2.memory_store import MemoryStore
-from src.memory_xx.memory_2.memory_retriever import MemoryRetriever
-from src.memory_xx.memory_2.memory_compressor import MemoryCompressor
-from src.memory_xx.memory_2.memory_injector import MemoryInjector
-from src.memory_xx.memory_interface import MemoryInterface
+from src.memory.memory_2.memory_store import MemoryStore
+from src.memory.memory_2.memory_retriever import MemoryRetriever
+from src.memory.memory_2.memory_compressor import MemoryCompressor
+from src.memory.memory_2.memory_injector import MemoryInjector
+from src.memory.memory_interface import MemoryInterface
 
 logger = logging.getLogger(__name__)
 

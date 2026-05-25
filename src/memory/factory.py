@@ -5,7 +5,7 @@
 支持动态模块加载，使 query_loop.py 无需感知具体实现。
 
 用法:
-    from src.memory_xx.factory import create_memory
+    from src.memory.factory import create_memory
     memory = create_memory(config)
 """
 
@@ -14,20 +14,20 @@ import logging
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from src.memory_xx.memory_interface import MemoryInterface, NoopMemory
+from src.memory.memory_interface import MemoryInterface, NoopMemory
 
 logger = logging.getLogger(__name__)
 
 # 后端模块映射表
 _BACKEND_MODULE_MAP = {
-    "memory_1": "src.memory_xx.memory_1.memory1",
-    "memory_2": "src.memory_xx.memory_2.memory2",
+    "memory_1": "src.memory.memory_1.memory1",
+    "memory_2": "src.memory.memory_2.memory2",
 }
 
 # 已知适配器模块（用于自动检测适配器是否存在）
 _ADAPTER_MODULE_MAP = {
-    "memory_1": "src.memory_xx.memory_1.adapter",
-    "memory_2": "src.memory_xx.memory_2.adapter",
+    "memory_1": "src.memory.memory_1.adapter",
+    "memory_2": "src.memory.memory_2.adapter",
 }
 
 # 适配器类名映射
@@ -82,7 +82,7 @@ def create_memory(config: Any) -> MemoryInterface:
     if not isinstance(instance, MemoryInterface):
         raise TypeError(
             f"记忆后端 '{backend}' 返回的实例未继承 MemoryInterface。"
-            f"所有记忆实现必须继承 src.memory_xx.memory_interface.MemoryInterface。"
+            f"所有记忆实现必须继承 src.memory.memory_interface.MemoryInterface。"
         )
 
     logger.info(f"记忆后端 '{backend}' 加载成功")
@@ -206,7 +206,7 @@ def _inject_llm_fn_if_needed(instance: Any, backend: str, config: Any) -> None:
 
     # 复用 Memory2Adapter._build_models 的 LLM 构建逻辑
     try:
-        from src.memory_xx.memory_2.adapter import Memory2Adapter
+        from src.memory.memory_2.adapter import Memory2Adapter
         chat_fn = Memory2Adapter._build_models(config)
         if chat_fn is not None:
             instance.set_llm_chat_fn(chat_fn)
