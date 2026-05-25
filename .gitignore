@@ -6,6 +6,7 @@
 .memdir_test/
 __pycache__/
 venv/
+.venv/
 .idea/
 logo/
 src/crawler/
