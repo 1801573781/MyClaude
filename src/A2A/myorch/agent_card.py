@@ -9,7 +9,7 @@ def get_agent_card() -> AgentCard:
     return AgentCard(
         name="MyOrchestrator - 任务编排服务 (myorch-001)",
         description="A2A 任务编排引擎，协调 MyCode 与 MyTest 完成代码生成→测试→修复循环",
-        url="http://myorch:8000",
+        url="http://localhost:8002",  # url="http://myorch:8002",
         version="1.0.0",
         capabilities={
             "streaming": True,

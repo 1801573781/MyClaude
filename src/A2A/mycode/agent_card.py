@@ -9,7 +9,7 @@ def get_agent_card() -> AgentCard:
     return AgentCard(
         name="MyCode - 代码生成服务 (mycode-001)",
         description="基于 MyClaude 代码生成智能体的 A2A 服务，接收需求规格并生成 Python 代码",
-        url="http://mycode:8000",
+        url="http://localhost:8000",  # url="http://mycode:8000",
         version="1.0.0",
         capabilities={
             "streaming": True,

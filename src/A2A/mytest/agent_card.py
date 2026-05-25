@@ -9,7 +9,7 @@ def get_agent_card() -> AgentCard:
     return AgentCard(
         name="MyTest - 测试执行服务 (mytest-001)",
         description="基于 MyClaude 测试智能体的 A2A 服务，在 Docker 沙箱中执行代码并返回结构化测试报告",
-        url="http://mytest:8000",
+        url="http://localhost:8001",  # url="http://mytest:8001",
         version="1.0.0",
         capabilities={
             "streaming": True,

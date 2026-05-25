@@ -2,6 +2,7 @@
 MyOrchestrator A2A 服务 — FastAPI 应用入口
 A2A 任务编排服务，协调 MyCode 与 MyTest 完成代码生成→测试→修复循环
 """
+import json
 import logging
 import threading
 import time
@@ -109,11 +110,10 @@ async def metrics():
     tasks = []
     for task_file in Path(store.store_path).glob("*.json"):
         try:
-            import json
             data = json.loads(task_file.read_text(encoding="utf-8"))
             tasks.append(data)
-        except Exception:
-            pass
+        except (json.JSONDecodeError, IOError) as e:
+            logger.debug(f"读取任务文件失败 {task_file}: {e}")
 
     total = len(tasks)
     success = sum(1 for t in tasks if t.get("status") == "SUCCESS")
@@ -139,7 +139,7 @@ async def metrics():
         f"myorch_tasks_running {running}",
         "# HELP myorch_avg_rounds 平均轮次",
         "# TYPE myorch_avg_rounds gauge",
-        f"myorch_avg_rounds {avg_rounds:.1f}",
+        f"myorch_avg_rounds {avg_rounds: .1f}",
     ]
     return "\n".join(lines)
 
@@ -151,8 +151,12 @@ a2a_server = A2AServer(
 
 if __name__ == "__main__":
     import uvicorn
+    log_fmt = (
+        '{"timestamp": "%(asctime)s", "level": "%(levelname)s", '
+        '"service": "myorch", "task_id": "", "message": "%(message)s"}'
+    )
     logging.basicConfig(
         level=get_config().log_level,
-        format='{"timestamp": "%(asctime)s", "level": "%(levelname)s", "service": "myorch", "task_id": "", "message": "%(message)s"}'
+        format=log_fmt,
     )
     uvicorn.run(app, host="0.0.0.0", port=8002)
