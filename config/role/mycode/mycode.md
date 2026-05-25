@@ -12,32 +12,32 @@
 
 ### 绝对路径强制（Mandatory）
 所有文件操作必须使用**绝对路径**，严禁使用裸文件名或相对路径。
-- 绝对路径必须包含完整盘符和目录层级，如 `D:/AI/MyClaude/src/query/chat_llm.py`
+- 绝对路径必须包含完整盘符和目录层级，如 `${project_root}/src/query/chat_llm.py`
 - 严禁使用 `src/query/chat_llm.py`、`code_output/test.py` 等相对路径
 - 严禁使用裸文件名如 `spider_spec.md`
 - 因为强制使用绝对路径，不再区分代码文件与需求文档的查看工具，统一使用 `<file_view path="绝对路径"/>` 查看任何文件
 
 ### 代码文件目录（正式模块）
-代码文件（.py、.json、.yaml 等）必须存放在 `D:/AI/MyClaude/src/` 目录下。
+代码文件（.py、.json、.yaml 等）必须存放在 `${project_root}/src/` 目录下。
 - **严禁把代码文件直接放在 src/ 根目录**。即使只有一个文件，也必须放入子目录。
 - **子目录由功能语义决定**。
 
 | 功能类型 | 应放入的子目录 | 绝对路径示例 |
 |---------|--------------|-------------|
-| 终端显示、UI 渲染 | `src/cli/` | `D:/AI/MyClaude/src/cli/progress_bar.py` |
-| LLM 交互、多轮循环、API 封装 | `src/query/` | `D:/AI/MyClaude/src/query/chat_llm.py` |
-| 消息组装、系统提示词 | `src/message/` | `D:/AI/MyClaude/src/message/sys_prompt.md` |
-| XML 工具解析、文件操作、命令执行 | `src/llm_tool/` | `D:/AI/MyClaude/src/llm_tool/file_tool.py` |
-| 配置加载、通用工具函数 | `src/utility/` | `D:/AI/MyClaude/src/utility/config_loader.py` |
+| 终端显示、UI 渲染 | `src/cli/` | `${project_root}/src/cli/progress_bar.py` |
+| LLM 交互、多轮循环、API 封装 | `src/query/` | `${project_root}/src/query/chat_llm.py` |
+| 消息组装、系统提示词 | `src/message/` | `${project_root}/src/message/sys_prompt.md` |
+| XML 工具解析、文件操作、命令执行 | `src/llm_tool/` | `${project_root}/src/llm_tool/file_tool.py` |
+| 配置加载、通用工具函数 | `src/utility/` | `${project_root}/src/utility/config_loader.py` |
 
 **新建子目录命名规范**：使用小写、下划线分隔、语义明确，如 `src/crawler/`、`src/parser/`、`src/api_client/`。
 
 ### 需求规格目录
-需求文档（.md）必须存放在 `D:/AI/MyClaude/spec/` 目录下。
-- 示例：`D:/AI/MyClaude/spec/spider_spec.md`
+需求文档（.md）必须存放在 `${project_root}/spec/` 目录下。
+- 示例：`${project_root}/spec/spider_spec.md`
 
 ### 临时输出目录（探索/测试）
-当用户表达**探索、验证、草稿、测试**意图时，代码文件放在 `D:/AI/MyClaude/code_output/` 目录，**严禁放入 `src/`**。
+当用户表达**探索、验证、草稿、测试**意图时，代码文件放在 `${project_root}/code_output/` 目录，**严禁放入 `src/`**。
 
 **触发词（包括但不限于）**："做个测试"、"测试一下"、"跑个测试"、"临时测试"、"生成一个文件看看"、"随便写一个"、"写个示例"、"写个 demo"、"草稿"、"试试"、"验证一下"、"临时"。
 
@@ -45,31 +45,31 @@
 
 **特别注意**：单独的"测试"一词歧义较大（可能指"生成测试代码"），优先根据上下文判断。如果用户明确表达"试试"、"临时"、"草稿"等意图，优先适用临时输出。
 
-- 示例：`D:/AI/MyClaude/code_output/demo.py`、`D:/AI/MyClaude/code_output/temp_*.py`
+- 示例：`${project_root}/code_output/demo.py`、`${project_root}/code_output/temp_*.py`
 
 ### Skill 目录
-Skill 行为模板（任务策略、工具组合规范、禁忌与示例）存放在 `D:/AI/MyClaude/skill/` 目录下。
+Skill 行为模板（任务策略、工具组合规范、禁忌与示例）存放在 `${project_root}/skill/` 目录下。
 - 文件名使用小写、下划线分隔，如 `add_tests.md`、`refactor.md`、`debug.md`
 - Skill 不是代码文件，严禁放入 `src/`
 
 ### 正确与错误示例（路径格式）
 正确：
-- `<create path="D:/AI/MyClaude/src/tools/spider.py">...</create>`
-- `<file_view path="D:/AI/MyClaude/spec/spider_spec.md"/>`
-- `<file_view path="D:/AI/MyClaude/src/query/chat_llm.py"/>`
-- `<create path="D:/AI/MyClaude/code_output/test.py">...</create>`
+- `<create path="${project_root}/src/tools/spider.py">...</create>`
+- `<file_view path="${project_root}/spec/spider_spec.md"/>`
+- `<file_view path="${project_root}/src/query/chat_llm.py"/>`
+- `<create path="${project_root}/code_output/test.py">...</create>`
 
 错误（严禁）：
-- `<create path="D:/AI/MyClaude/src/spider.py">...</create>` ← 缺少子目录
-- `<create path="D:/AI/MyClaude/src/config.yaml">...</create>` ← 配置文件禁止放 src/
+- `<create path="${project_root}/src/spider.py">...</create>` ← 缺少子目录
+- `<create path="${project_root}/src/config.yaml">...</create>` ← 配置文件禁止放 src/
 - `<file_view path="spider_spec.md"/>` ← 裸文件名
 - `<create path="code_output/test.py">...</create>` ← 相对路径
-- `<create path="D:/AI/MyClaude/code_output/src/demo.py">...</create>` ← 路径嵌套错误
+- `<create path="${project_root}/code_output/src/demo.py">...</create>` ← 路径嵌套错误
 
 ### 需求文档读取流程
 当用户输入中包含需求规格引用，且**未表达测试/草稿/探索意图**时：
 1. 从用户输入中提取文件名（如 `spider_spec.md`）
-2. 调用 `<file_view path="D:/AI/MyClaude/spec/spider_spec.md"/>` 读取内容
+2. 调用 `<file_view path="${project_root}/spec/spider_spec.md"/>` 读取内容
 3. 等待系统返回文档内容
 4. 基于文档内容，调用 `<create>` 生成代码
 5. 等待系统返回创建结果
