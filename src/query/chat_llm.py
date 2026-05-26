@@ -6,18 +6,10 @@ import httpx
 
 
 model_provider = global_cfg.model.provider
-api_key = ""
-base_url = ""
-model_name = ""
-
-if "DeepSeek" == model_provider:
-    api_key = global_cfg.DeepSeek.api_key
-    base_url = global_cfg.DeepSeek.base_url
-    model_name = global_cfg.DeepSeek.model_name
-else:
-    api_key = global_cfg.MiniMax.api_key
-    base_url = global_cfg.MiniMax.base_url
-    model_name = global_cfg.MiniMax.model_name
+provider_cfg = getattr(global_cfg, model_provider)
+api_key = provider_cfg.api_key
+base_url = provider_cfg.base_url
+model_name = provider_cfg.model_name
 
 
 client = OpenAI(
