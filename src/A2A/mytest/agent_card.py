@@ -1,36 +1,88 @@
-"""
-MyTest A2A Agent Card 定义
-"""
-from python_a2a import AgentCard, AgentSkill
+"""MyTest 服务的 A2A Agent Card 定义"""
 
-
-def get_agent_card() -> AgentCard:
-    """获取 MyTest Agent Card"""
-    return AgentCard(
-        name="MyTest - 测试执行服务 (mytest-001)",
-        description="基于 MyClaude 测试智能体的 A2A 服务，在 Docker 沙箱中执行代码并返回结构化测试报告",
-        url="http://localhost:8001",  # url="http://mytest:8001",
-        version="1.0.0",
-        capabilities={
-            "streaming": True,
-            "pushNotifications": False,
-            "stateTransitionHistory": False
-        },
-        skills=[
-            AgentSkill(
-                id="run_tests",
-                name="run_tests",
-                description=(
-                    "根据需求规格的验收标准，对代码执行测试并生成报告。"
-                    "输入 code（待测 Python 源代码）、spec（原始需求规格文档对象）、task_id（任务标识）、round（轮次编号）。"
-                    "输出 test_report（含 passed/total/pass_rate/details/execution_time_ms/coverage_percent）。"
-                ),
-                tags=["testing", "code-execution"],
-                input_modes=["application/json"],
-                output_modes=["application/json"]
-            )
-        ],
-    )
-
-
-AGENT_CARD = get_agent_card()
+MYTEST_AGENT_CARD = {
+    "agent_id": "mytest-001",
+    "name": "MyTest - 测试执行服务",
+    "description": "基于 MyClaude 测试智能体的 A2A 服务，在 Docker 沙箱中执行代码并返回结构化测试报告",
+    "version": "1.0.0",
+    "capabilities": [
+        {
+            "capability_id": "run_tests",
+            "description": "根据需求规格的验收标准，对代码执行测试并生成报告",
+            "input_schema": {
+                "type": "object",
+                "required": ["code", "spec", "task_id"],
+                "properties": {
+                    "code": {
+                        "type": "string",
+                        "description": "待测 Python 源代码",
+                    },
+                    "spec": {
+                        "type": "object",
+                        "description": "原始需求规格文档对象",
+                    },
+                    "task_id": {
+                        "type": "string",
+                        "description": "任务唯一标识",
+                    },
+                    "round": {
+                        "type": "integer",
+                        "description": "当前轮次编号",
+                    },
+                },
+            },
+            "output_schema": {
+                "type": "object",
+                "required": ["test_report"],
+                "properties": {
+                    "test_report": {
+                        "type": "object",
+                        "required": [
+                            "passed",
+                            "total",
+                            "pass_rate",
+                            "details",
+                            "execution_time_ms",
+                        ],
+                        "properties": {
+                            "passed": {"type": "integer"},
+                            "total": {"type": "integer"},
+                            "pass_rate": {
+                                "type": "number",
+                                "minimum": 0,
+                                "maximum": 1.0,
+                            },
+                            "details": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "required": [
+                                        "test_id",
+                                        "status",
+                                        "description",
+                                    ],
+                                    "properties": {
+                                        "test_id": {"type": "string"},
+                                        "status": {
+                                            "type": "string",
+                                            "enum": ["PASS", "FAIL", "ERROR"],
+                                        },
+                                        "description": {"type": "string"},
+                                        "expected": {"type": "string"},
+                                        "actual": {"type": "string"},
+                                        "error_message": {"type": "string"},
+                                    },
+                                },
+                            },
+                            "execution_time_ms": {"type": "integer"},
+                            "coverage_percent": {"type": "number"},
+                        },
+                    },
+                },
+            },
+        }
+    ],
+    "endpoints": {
+        "run_tests": "POST /a2a/run_tests",
+    },
+}

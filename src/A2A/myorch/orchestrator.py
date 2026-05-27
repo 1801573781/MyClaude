@@ -1,329 +1,357 @@
+"""任务编排引擎核心逻辑
+
+协调 MyCode 与 MyTest 完成代码生成→测试→修复循环。
+实现循环终止判定、智能熔断、重试机制。
 """
-代码生成、测试与修复的循环编排引擎
-协调 MyCode 与 MyTest 服务，实现"生成→测试→反馈→修复"闭环
-"""
-import logging
+
 import time
 import uuid
-from typing import Optional
+import logging
+from typing import Optional, Dict, Any, Tuple
 
 import httpx
 
-from src.A2A.shared.config import get_config
-from src.A2A.shared.models import (
-    SpecDocument, TestReport, PreviousAttempt,
-    CodeGenerationRequest, CodeGenerationResponse,
-    TestRunRequest, TestRunResponse,
-    RoundSummary
+from .models import (
+    Spec,
+    TaskStatus,
+    RoundSummary,
+    TaskSummary,
+    RunTaskResponse,
 )
-from src.A2A.myorch.context_store import TaskContext, ContextStore
+from .context_store import ContextStore
 
 logger = logging.getLogger("myorch.orchestrator")
 
+# 默认配置
+DEFAULT_MYCODE_URL = "http://localhost:8000"
+DEFAULT_MYTEST_URL = "http://localhost:8001"
+DEFAULT_MAX_ROUNDS = 10
+DEFAULT_MELT_DOWN_WINDOW = 3
+DEFAULT_CODE_GEN_TIMEOUT = 10
+DEFAULT_TEST_EXEC_TIMEOUT = 30
+DEFAULT_RETRY_MAX = 3
+DEFAULT_RETRY_BACKOFF = [2, 4, 8]  # 秒
+
 
 class Orchestrator:
-    """任务编排引擎"""
+    """任务编排器"""
 
-    def __init__(self):
-        self.config = get_config()
-        self.context_store = ContextStore()
-        self._http_client: Optional[httpx.Client] = None
+    def __init__(
+        self,
+        context_store: Optional[ContextStore] = None,
+        mycode_url: str = DEFAULT_MYCODE_URL,
+        mytest_url: str = DEFAULT_MYTEST_URL,
+        max_rounds: int = DEFAULT_MAX_ROUNDS,
+        melt_down_window: int = DEFAULT_MELT_DOWN_WINDOW,
+        code_gen_timeout: int = DEFAULT_CODE_GEN_TIMEOUT,
+        test_exec_timeout: int = DEFAULT_TEST_EXEC_TIMEOUT,
+        auth_token: Optional[str] = None,
+    ):
+        self.context_store = context_store or ContextStore()
+        self.mycode_url = mycode_url.rstrip("/")
+        self.mytest_url = mytest_url.rstrip("/")
+        self.max_rounds = max_rounds
+        self.melt_down_window = melt_down_window
+        self.code_gen_timeout = code_gen_timeout
+        self.test_exec_timeout = test_exec_timeout
+        self.auth_token = auth_token
 
-    @property
-    def http_client(self) -> httpx.Client:
-        """获取 HTTP 客户端（延迟初始化）"""
-        if self._http_client is None:
-            self._http_client = httpx.Client(timeout=30.0)
-        return self._http_client
-
-    def run_task(self, spec: SpecDocument, max_rounds: Optional[int] = None) -> dict:
-        """
-        执行完整的代码生成→测试→修复循环
+    def run_task(self, spec: Spec, max_rounds: Optional[int] = None) -> RunTaskResponse:
+        """执行完整的代码生成→测试→修复循环
 
         Args:
-            spec: 需求规格文档
-            max_rounds: 最大循环轮次（覆盖全局默认值）
+            spec: 需求规格文档对象
+            max_rounds: 最大循环轮次（覆盖默认值）
 
         Returns:
-            包含 task_id, status, final_code, summary 的字典
+            RunTaskResponse: 任务最终结果
         """
-        task_id = f"task-{uuid.uuid4().hex[:8]}"
-        max_rounds = max_rounds or self.config.max_rounds
-        melt_down_window = self.config.melt_down_window
+        task_id = f"task-{uuid.uuid4().hex[:12]}"
+        effective_max_rounds = max_rounds or self.max_rounds
+        start_time = time.time()
 
-        ctx = self.context_store.create_task(task_id, spec)
-        ctx.status = "RUNNING"
-        self.context_store.save(ctx)
+        logger.info(f"任务开始 task_id={task_id} max_rounds={effective_max_rounds}")
 
+        # 初始化任务状态
+        self.context_store.save_task_state(task_id, {
+            "task_id": task_id,
+            "status": TaskStatus.RUNNING.value,
+            "current_round": 0,
+            "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        })
+
+        last_attempt: Optional[Dict[str, Any]] = None
         best_code = ""
         best_pass_rate = 0.0
-
-        logger.info(f"[{task_id}] 开始执行, max_rounds={max_rounds}")
+        round_summaries = []
+        final_status = TaskStatus.MAX_ROUNDS
+        final_code = ""
 
         try:
-            for round_num in range(1, max_rounds + 1):
-                logger.info(f"[{task_id}] === Round {round_num}/{max_rounds} ===")
+            for round_num in range(1, effective_max_rounds + 1):
+                self._update_status(task_id, TaskStatus.GENERATING, round_num)
+                logger.info(f"第 {round_num}/{effective_max_rounds} 轮开始 task_id={task_id}")
 
                 # 1. 调用 MyCode 生成/修复代码
-                code_result = self._call_mycode(task_id, round_num, spec, ctx.last_attempt)
-                if code_result is None:
-                    ctx.status = "ERROR"
-                    self.context_store.save(ctx)
-                    return self._build_error_result(task_id, ctx, "MyCode 调用失败")
+                code = self._generate_code(task_id, round_num, spec, last_attempt)
+                if code is None:
+                    final_status = TaskStatus.ERROR
+                    final_code = best_code
+                    break
 
-                code = code_result.code
-                ctx.save_code_snapshot(round_num, code)
+                self.context_store.save_code_snapshot(task_id, round_num, code)
 
                 # 2. 调用 MyTest 执行测试
-                test_result = self._call_mytest(task_id, round_num, spec, code)
-                if test_result is None:
-                    ctx.status = "ERROR"
-                    self.context_store.save(ctx)
-                    return self._build_error_result(task_id, ctx, "MyTest 调用失败")
+                self._update_status(task_id, TaskStatus.TESTING, round_num)
+                test_report = self._run_tests(task_id, round_num, code, spec)
+                if test_report is None:
+                    final_status = TaskStatus.ERROR
+                    final_code = code
+                    break
 
-                report = test_result.test_report
-                ctx.save_test_report(round_num, report)
+                self.context_store.save_test_report(task_id, round_num, test_report)
+                self._update_status(task_id, TaskStatus.EVALUATING, round_num)
 
-                # 更新最佳结果
-                if report.pass_rate > best_pass_rate:
-                    best_pass_rate = report.pass_rate
-                    best_code = code
+                pass_rate = test_report.get("pass_rate", 0.0)
+                failed_tests = [
+                    d.get("test_id", "?")
+                    for d in test_report.get("details", [])
+                    if d.get("status") != "PASS"
+                ]
+                round_summaries.append(RoundSummary(
+                    round=round_num,
+                    pass_rate=pass_rate,
+                    failed_tests=failed_tests,
+                ))
 
-                logger.info(
-                    f"[{task_id}] Round {round_num}: "
-                    f"通过 {report.passed}/{report.total} ({report.pass_rate: .0%})"
-                )
+                logger.info(f"第 {round_num} 轮完成 pass_rate={pass_rate:.2f} failed={failed_tests}")
 
                 # 3. 判定终止条件
-                # 3a. 全部通过 → 成功
-                if report.pass_rate >= 1.0:
-                    ctx.status = "SUCCESS"
-                    self.context_store.save(ctx)
-                    logger.info(f"[{task_id}] 全部测试通过！总轮次: {round_num}")
-                    return self._build_success_result(task_id, ctx)
+                if pass_rate == 1.0:
+                    final_status = TaskStatus.SUCCESS
+                    final_code = code
+                    logger.info(f"全部测试通过 task_id={task_id} round={round_num}")
+                    break
 
-                # 3b. 熔断检测（需要至少 melt_down_window 轮数据）
-                if round_num >= melt_down_window:
-                    if self._is_melt_down(ctx, window=melt_down_window):
-                        ctx.status = "MELT_DOWN"
-                        self.context_store.save(ctx)
-                        logger.warning(f"[{task_id}] 触发熔断！近 {melt_down_window} 轮无改善")
-                        return self._build_meltdown_result(task_id, ctx)
+                # 更新最佳结果
+                if pass_rate > best_pass_rate:
+                    best_pass_rate = pass_rate
+                    best_code = code
 
-            # 达到最大轮次
-            ctx.status = "MAX_ROUNDS_REACHED"
-            self.context_store.save(ctx)
-            logger.info(f"[{task_id}] 达到最大轮次 {max_rounds}")
-            return self._build_max_rounds_result(task_id, ctx)
+                # 智能熔断检测（从第 melt_down_window 轮开始）
+                if round_num >= self.melt_down_window:
+                    if self._is_melt_down(round_summaries):
+                        final_status = TaskStatus.MELT_DOWN
+                        final_code = best_code
+                        logger.warning(f"触发熔断 task_id={task_id} round={round_num}")
+                        break
+
+                # 4. 准备下一轮上下文
+                last_attempt = {
+                    "code": code,
+                    "test_report": test_report,
+                }
+
+            else:
+                # 达到最大轮次
+                final_status = TaskStatus.MAX_ROUNDS
+                final_code = best_code or code
+                logger.warning(f"达到最大轮次 task_id={task_id}")
 
         except Exception as e:
-            logger.error(f"[{task_id}] 执行异常: {e}", exc_info=True)
-            ctx.status = "ERROR"
-            self.context_store.save(ctx)
-            return self._build_error_result(task_id, ctx, str(e))
+            logger.error(f"任务执行异常 task_id={task_id}: {e}")
+            final_status = TaskStatus.ERROR
+            final_code = best_code
 
-    def get_task_status(self, task_id: str) -> Optional[dict]:
-        """查询任务状态"""
-        ctx = self.context_store.get_task(task_id)
-        if ctx is None:
-            return None
+        total_time = time.time() - start_time
 
-        history = []
-        for r in ctx.rounds:
-            if r.get("test_report"):
-                tr = r["test_report"]
-                failed = [
-                    d.get("test_id", "?")
-                    for d in tr.get("details", [])
-                    if d.get("status") in ("FAIL", "ERROR")
-                ]
-                history.append(RoundSummary(
-                    round=r["round"],
-                    pass_rate=tr["pass_rate"],
-                    failed_tests=failed,
-                ).model_dump())
+        # 持久化最终状态
+        self._save_final_state(task_id, final_status, final_code, round_summaries, total_time)
 
-        return {
+        return RunTaskResponse(
+            task_id=task_id,
+            status=final_status,
+            total_rounds=len(round_summaries),
+            final_code=final_code,
+            summary=TaskSummary(
+                rounds=round_summaries,
+                total_time_seconds=round(total_time, 1),
+                final_verdict=final_status.value,
+            ),
+        )
+
+    # ---- 内部方法 ----
+
+    def _generate_code(
+        self,
+        task_id: str,
+        round_num: int,
+        spec: Spec,
+        last_attempt: Optional[Dict[str, Any]],
+    ) -> Optional[str]:
+        """调用 MyCode 服务生成代码（含重试）"""
+        payload = {
+            "spec": spec.model_dump(),
             "task_id": task_id,
-            "status": ctx.status,
-            "current_round": ctx.current_round,
-            "history": history,
+            "round": round_num,
+        }
+        if last_attempt:
+            payload["previous_attempt"] = last_attempt
+
+        for attempt in range(DEFAULT_RETRY_MAX + 1):
+            try:
+                response = httpx.post(
+                    f"{self.mycode_url}/a2a/generate_code",
+                    json=payload,
+                    timeout=self.code_gen_timeout,
+                    headers=self._auth_headers(),
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    return data.get("code", "")
+                elif response.status_code == 503:
+                    if attempt < DEFAULT_RETRY_MAX:
+                        wait = DEFAULT_RETRY_BACKOFF[attempt]
+                        logger.warning(f"MyCode 503，{wait}s 后重试 task_id={task_id}")
+                        time.sleep(wait)
+                        continue
+                logger.error(f"MyCode 调用失败 task_id={task_id} status={response.status_code}")
+                return None
+            except httpx.TimeoutException:
+                logger.error(f"MyCode 超时 task_id={task_id}")
+                return None
+            except httpx.ConnectError:
+                if attempt < DEFAULT_RETRY_MAX:
+                    wait = DEFAULT_RETRY_BACKOFF[attempt]
+                    logger.warning(f"MyCode 连接失败，{wait}s 后重试 task_id={task_id}")
+                    time.sleep(wait)
+                    continue
+                logger.error(f"MyCode 无法连接 task_id={task_id}")
+                return None
+        return None
+
+    def _run_tests(
+        self,
+        task_id: str,
+        round_num: int,
+        code: str,
+        spec: Spec,
+    ) -> Optional[Dict[str, Any]]:
+        """调用 MyTest 服务执行测试（含重试）"""
+        payload = {
+            "code": code,
+            "spec": spec.model_dump(),
+            "task_id": task_id,
+            "round": round_num,
         }
 
-    def _call_mycode(
-        self,
-        task_id: str,
-        round_num: int,
-        spec: SpecDocument,
-        last_attempt: Optional[dict],
-    ) -> Optional[CodeGenerationResponse]:
-        """调用 MyCode 服务（带重试）"""
-        url = f"{self.config.mycode_url}/a2a/generate_code"
-        headers = {}
-        if self.config.a2a_auth_token:
-            headers["Authorization"] = f"Bearer {self.config.a2a_auth_token}"
-
-        prev = None
-        if last_attempt:
-            prev = PreviousAttempt(
-                code=last_attempt["code"],
-                test_report=TestReport.model_validate(last_attempt["test_report"])
-                if last_attempt.get("test_report") else None,
-            )
-
-        req = CodeGenerationRequest(
-            spec=spec,
-            task_id=task_id,
-            round=round_num,
-            previous_attempt=prev,
-        )
-
-        max_retries = 3
-        for attempt in range(1, max_retries + 1):
+        for attempt in range(DEFAULT_RETRY_MAX + 1):
             try:
-                resp = self.http_client.post(
-                    url,
-                    json=req.model_dump(),
-                    headers=headers,
-                    timeout=self.config.code_gen_timeout_sec,
+                response = httpx.post(
+                    f"{self.mytest_url}/a2a/run_tests",
+                    json=payload,
+                    timeout=self.test_exec_timeout,
+                    headers=self._auth_headers(),
                 )
-                if resp.status_code == 200:
-                    return CodeGenerationResponse.model_validate(resp.json())
-                elif resp.status_code == 503:
-                    # 服务暂不可用，重试
-                    wait = 2 ** attempt
-                    logger.warning(f"[{task_id}] MyCode 返回 503, {wait}s 后重试 ({attempt}/{max_retries})")
-                    time.sleep(wait)
-                elif resp.status_code == 429:
-                    wait = 2 ** attempt
-                    logger.warning(f"[{task_id}] MyCode 限流 429, {wait}s 后重试 ({attempt}/{max_retries})")
-                    time.sleep(wait)
-                else:
-                    logger.error(f"[{task_id}] MyCode 返回错误: {resp.status_code} {resp.text[:200]}")
-                    return None
+                if response.status_code == 200:
+                    data = response.json()
+                    return data.get("test_report", {})
+                elif response.status_code == 503:
+                    if attempt < DEFAULT_RETRY_MAX:
+                        wait = DEFAULT_RETRY_BACKOFF[attempt]
+                        logger.warning(f"MyTest 503，{wait}s 后重试 task_id={task_id}")
+                        time.sleep(wait)
+                        continue
+                logger.error(f"MyTest 调用失败 task_id={task_id} status={response.status_code}")
+                return None
             except httpx.TimeoutException:
-                logger.warning(f"[{task_id}] MyCode 超时 ({attempt}/{max_retries})")
-                time.sleep(2 ** attempt)
-            except Exception as e:
-                logger.error(f"[{task_id}] MyCode 调用异常: {e}")
-                time.sleep(2 ** attempt)
-
-        logger.error(f"[{task_id}] MyCode 重试耗尽")
+                logger.error(f"MyTest 超时 task_id={task_id}")
+                return None
+            except httpx.ConnectError:
+                if attempt < DEFAULT_RETRY_MAX:
+                    wait = DEFAULT_RETRY_BACKOFF[attempt]
+                    logger.warning(f"MyTest 连接失败，{wait}s 后重试 task_id={task_id}")
+                    time.sleep(wait)
+                    continue
+                logger.error(f"MyTest 无法连接 task_id={task_id}")
+                return None
         return None
 
-    def _call_mytest(
-        self,
-        task_id: str,
-        round_num: int,
-        spec: SpecDocument,
-        code: str,
-    ) -> Optional[TestRunResponse]:
-        """调用 MyTest 服务（带重试）"""
-        url = f"{self.config.mytest_url}/a2a/run_tests"
-        headers = {}
-        if self.config.a2a_auth_token:
-            headers["Authorization"] = f"Bearer {self.config.a2a_auth_token}"
+    def _is_melt_down(self, round_summaries: list) -> bool:
+        """检测是否触发智能熔断
 
-        req = TestRunRequest(
-            code=code,
-            spec=spec,
-            task_id=task_id,
-            round=round_num,
-        )
-
-        max_retries = 3
-        for attempt in range(1, max_retries + 1):
-            try:
-                resp = self.http_client.post(
-                    url,
-                    json=req.model_dump(),
-                    headers=headers,
-                    timeout=self.config.test_exec_timeout_sec,
-                )
-                if resp.status_code == 200:
-                    return TestRunResponse.model_validate(resp.json())
-                elif resp.status_code == 503:
-                    wait = 2 ** attempt
-                    logger.warning(f"[{task_id}] MyTest 返回 503, {wait}s 后重试 ({attempt}/{max_retries})")
-                    time.sleep(wait)
-                elif resp.status_code == 429:
-                    wait = 2 ** attempt
-                    logger.warning(f"[{task_id}] MyTest 限流 429, {wait}s 后重试 ({attempt}/{max_retries})")
-                    time.sleep(wait)
-                else:
-                    logger.error(f"[{task_id}] MyTest 返回错误: {resp.status_code} {resp.text[:200]}")
-                    return None
-            except httpx.TimeoutException:
-                logger.warning(f"[{task_id}] MyTest 超时 ({attempt}/{max_retries})")
-                time.sleep(2 ** attempt)
-            except Exception as e:
-                logger.error(f"[{task_id}] MyTest 调用异常: {e}")
-                time.sleep(2 ** attempt)
-
-        logger.error(f"[{task_id}] MyTest 重试耗尽")
-        return None
-
-    def _is_melt_down(self, ctx: TaskContext, window: int = 3) -> bool:
-        """检测是否触发熔断"""
-        recent = ctx.last_n_rounds(window)
-        if len(recent) < window:
+        熔断条件：
+        1. 最近 melt_down_window 轮通过率持续不上升且最后轮 < 1.0
+        2. 最近一轮通过率为 0
+        """
+        if not round_summaries:
             return False
 
-        pass_rates = [r["test_report"]["pass_rate"] for r in recent]
-
-        # 条件 1: 连续 window 轮通过率不上升（持平或下降）
-        non_increasing = all(
-            pass_rates[i] >= pass_rates[i + 1]
-            for i in range(len(pass_rates) - 1)
-        )
-        if non_increasing and pass_rates[-1] < 1.0:
-            logger.warning(f"[{ctx.task_id}] 熔断条件1触发: pass_rates={pass_rates}")
-            return True
+        window = self.melt_down_window
+        recent = round_summaries[-window:] if len(round_summaries) >= window else round_summaries
+        pass_rates = [r.pass_rate for r in recent]
 
         # 条件 2: 最近一轮通过率为 0
-        if pass_rates[-1] == 0:
-            logger.warning(f"[{ctx.task_id}] 熔断条件2触发: 最近一轮全部失败")
+        if pass_rates[-1] == 0.0:
             return True
+
+        # 条件 1: 最近 window 轮通过率持续不上升
+        if len(pass_rates) >= 2:
+            non_increasing = all(
+                pass_rates[i] >= pass_rates[i + 1]
+                for i in range(len(pass_rates) - 1)
+            )
+            if non_increasing and pass_rates[-1] < 1.0:
+                return True
 
         return False
 
-    def _build_success_result(self, task_id: str, ctx: TaskContext) -> dict:
-        """构建成功结果"""
-        return {
+    def _update_status(self, task_id: str, status: TaskStatus, round_num: int) -> None:
+        """更新任务状态"""
+        self.context_store.save_task_state(task_id, {
             "task_id": task_id,
-            "status": "SUCCESS",
-            "total_rounds": ctx.current_round,
-            "final_code": ctx.best_code,
-            "summary": ctx.summary().model_dump(),
-        }
+            "status": status.value,
+            "current_round": round_num,
+        })
 
-    def _build_max_rounds_result(self, task_id: str, ctx: TaskContext) -> dict:
-        """构建达到最大轮次结果"""
-        return {
+    def _save_final_state(
+        self,
+        task_id: str,
+        status: TaskStatus,
+        final_code: str,
+        round_summaries: list,
+        total_time: float,
+    ) -> None:
+        """保存任务最终状态"""
+        self.context_store.save_task_state(task_id, {
             "task_id": task_id,
-            "status": "MAX_ROUNDS_REACHED",
-            "total_rounds": ctx.current_round,
-            "final_code": ctx.best_code,
-            "summary": ctx.summary().model_dump(),
-        }
+            "status": status.value,
+            "current_round": len(round_summaries),
+            "total_time_seconds": round(total_time, 1),
+            "rounds_summary": [r.model_dump() for r in round_summaries],
+            "completed_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        })
+        # 保存最终代码
+        if final_code:
+            final_path = self.context_store.base_path / task_id / "final_code.py"
+            with open(final_path, "w", encoding="utf-8") as f:
+                f.write(final_code)
 
-    def _build_meltdown_result(self, task_id: str, ctx: TaskContext) -> dict:
-        """构建熔断结果"""
-        return {
-            "task_id": task_id,
-            "status": "MELT_DOWN",
-            "total_rounds": ctx.current_round,
-            "final_code": ctx.best_code,
-            "summary": ctx.summary().model_dump(),
-        }
+    def _auth_headers(self) -> Dict[str, str]:
+        """构建认证头"""
+        if self.auth_token:
+            return {"Authorization": f"Bearer {self.auth_token}"}
+        return {}
 
-    def _build_error_result(self, task_id: str, ctx: TaskContext, error_msg: str) -> dict:
-        """构建错误结果"""
+    def get_task_status(self, task_id: str) -> Optional[Dict[str, Any]]:
+        """查询任务状态"""
+        state = self.context_store.get_task_state(task_id)
+        if state is None:
+            return None
+        history = self.context_store.get_history(task_id)
         return {
             "task_id": task_id,
-            "status": "ERROR",
-            "total_rounds": ctx.current_round,
-            "final_code": ctx.best_code,
-            "error": error_msg,
-            "summary": ctx.summary().model_dump(),
+            "status": state.get("status", "UNKNOWN"),
+            "current_round": state.get("current_round", 0),
+            "history": history,
         }

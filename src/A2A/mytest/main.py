@@ -1,157 +1,21 @@
+"""MyTest A2A 服务 — FastAPI 应用入口
+
+封装测试智能体 B，在 Docker 沙箱中执行代码并返回测试报告。
 """
-MyTest A2A 服务 — FastAPI 应用入口
-封装测试智能体 B，在 Docker 沙箱中执行代码并返回测试报告
-"""
-import logging
+
 import time
-
-from fastapi import FastAPI, HTTPException, Header
-from python_a2a import A2AServer
-
-# sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-from src.A2A.shared.config import get_config
-from src.A2A.mytest.agent_card import AGENT_CARD
-from src.A2A.mytest.models import RunTestsRequest, RunTestsResponse
-from src.A2A.mytest.sandbox import DockerSandbox
-from src.A2A.shared.models import TestReport, TestDetail
+import logging
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
+from .models import RunTestsRequest, RunTestsResponse, TestReport, TestDetail
+from .agent_card import MYTEST_AGENT_CARD
+from .sandbox import execute_in_sandbox
 
 logger = logging.getLogger("mytest")
-app = FastAPI(title="MyTest", description="测试执行 A2A 服务", version="1.0.0")
+logging.basicConfig(level=logging.INFO, format='{"timestamp": "%(asctime)s", "level": "%(levelname)s", "service": "mytest", "message": "%(message)s"}')
 
 
-def verify_auth(authorization: str | None = Header(default=None)) -> None:
-    """验证 Bearer Token"""
-    config = get_config()
-    if not config.a2a_auth_token:
-        return
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
-    token = authorization.removeprefix("Bearer ")
-    if token != config.a2a_auth_token:
-        raise HTTPException(status_code=401, detail="Invalid token")
-
-
-def build_test_script(code: str, spec) -> str:
-    """根据需求规格的验收标准构建测试脚本"""
-    lines = [
-        "import sys",
-        "import json",
-        "import traceback",
-        "",
-        code,
-        "",
-        "results = []",
-        "",
-    ]
-
-    for i, criterion in enumerate(spec.acceptance_criteria, start=1):
-        test_id = f"TC-{i: 02d}"
-        input_expr = criterion.input
-        expected = criterion.expected_output
-
-        lines.append(f"# {test_id}: {input_expr} 应返回 {expected}")
-        lines.append("try:")
-        lines.append(f"    actual = {input_expr}")
-        lines.append(f"    expected_val = {expected}")
-        lines.append("    actual_str = str(actual)")
-        lines.append("    if actual_str == str(expected_val):")
-        lines.append(f"        results.append({{")
-        lines.append(f"            'test_id': '{test_id}', ")
-        lines.append(f"            'status': 'PASS', ")
-        lines.append(f"            'description': '{input_expr} 应返回 {expected}', ")
-        lines.append(f"            'expected': '{expected}', ")
-        lines.append(f"            'actual': actual_str, ")
-        lines.append(f"            'error_message': None")
-        lines.append(f"}})")
-        lines.append("    else:")
-        lines.append(f"        results.append({{")
-        lines.append(f"            'test_id': '{test_id}', ")
-        lines.append(f"            'status': 'FAIL', ")
-        lines.append(f"            'description': '{input_expr} 应返回 {expected}', ")
-        lines.append(f"            'expected': '{expected}', ")
-        lines.append(f"            'actual': actual_str, ")
-        lines.append(f"            'error_message': f'值不匹配: 期望 {{expected_val}}, 实际 {{actual}}'")
-        lines.append(f"}})")
-        lines.append("except Exception as e:")
-        lines.append(f"    exc_info = traceback.format_exc()")
-        lines.append(f"    results.append({{")
-        lines.append(f"        'test_id': '{test_id}', ")
-        lines.append(f"        'status': 'ERROR', ")
-        lines.append(f"        'description': '{input_expr} 应返回 {expected}', ")
-        lines.append(f"        'expected': '{expected}', ")
-        lines.append(f"        'actual': 'N/A', ")
-        lines.append(f"        'error_message': f'{{type(e).__name__}}: {{str(e)}}'")
-        lines.append(f"}})")
-        lines.append("")
-
-    lines.append("print(json.dumps(results, ensure_ascii=False))")
-    return "\n".join(lines)
-
-
-def call_agent_b(request: RunTestsRequest) -> RunTestsResponse:
-    """
-    内部调用测试智能体 B（MyClaude 实例，sys_prompt=测试生成）
-    当前实现：根据验收标准构建测试脚本，在沙箱中执行
-    """
-    start_time = time.time()
-    logger.info(f"[{request.task_id}] Round {request.round}: 开始执行测试")
-
-    # 构建测试脚本
-    test_script = build_test_script(request.code, request.spec)
-
-    # 在沙箱中执行
-    sandbox = DockerSandbox()
-    result = sandbox.execute(test_script)
-
-    # 解析测试结果
-    details = []
-    passed = 0
-    total = 0
-
-    if result.exit_code == 0 and result.stdout.strip():
-        try:
-            import json
-            raw_details = json.loads(result.stdout.strip())
-            for d in raw_details:
-                detail = TestDetail(**d)
-                details.append(detail)
-                if detail.status == "PASS":
-                    passed += 1
-                total += 1
-        except Exception as e:
-            logger.warning(f"解析测试结果失败: {e}, stdout={result.stdout[:200]}")
-            details.append(TestDetail(
-                test_id="PARSE_ERROR",
-                status="ERROR",
-                description="无法解析测试输出",
-                error_message=str(e),
-            ))
-            total = 1
-    else:
-        details.append(TestDetail(
-            test_id="EXEC_ERROR",
-            status="ERROR",
-            description="代码执行失败",
-            error_message=result.stderr or result.stdout or "未知错误",
-        ))
-        total = 1
-
-    pass_rate = passed / total if total > 0 else 0.0
-    elapsed_ms = int((time.time() - start_time) * 1000)
-
-    report = TestReport(
-        passed=passed,
-        total=total,
-        pass_rate=pass_rate,
-        details=details,
-        execution_time_ms=elapsed_ms,
-    )
-
-    logger.info(f"[{request.task_id}] Round {request.round}: "
-                f"测试完成 {passed}/{total} (pass_rate={pass_rate: .0%})")
-
-    return RunTestsResponse(test_report=report)
+app = FastAPI(title="MyTest - 测试执行服务", version="1.0.0")
 
 
 @app.get("/health")
@@ -162,34 +26,115 @@ async def health_check():
 
 @app.get("/.well-known/agent-card.json")
 async def agent_card():
-    """A2A Agent Card 发现端点"""
-    return AGENT_CARD.model_dump()
+    """返回 A2A Agent Card"""
+    return MYTEST_AGENT_CARD
 
 
-@app.post("/a2a/run_tests")
-async def run_tests(
-    request: RunTestsRequest,
-    authorization: str | None = Header(default=None),
-):
-    """A2A run_tests 能力端点"""
-    verify_auth(authorization)
+@app.get("/metrics")
+async def metrics():
+    """Prometheus 指标端点（简化版）"""
+    return {"service": "mytest", "status": "running"}
+
+
+@app.post("/a2a/run_tests", response_model=RunTestsResponse)
+async def run_tests(request: RunTestsRequest):
+    """接收代码与需求规格，在沙箱中执行并返回测试报告"""
+    start_time = time.time()
+    logger.info(f"收到测试请求 task_id={request.task_id} round={request.round}")
 
     try:
-        response = call_agent_b(request)
-        return response.model_dump()
+        # 构建测试用例
+        test_details = _build_test_details(request)
+
+        # 在沙箱中执行
+        exec_result = execute_in_sandbox(
+            code=request.code,
+            test_inputs=[
+                {"test_id": f"TC-{i+1:02d}", "input": ac.input, "expected": ac.expected_output}
+                for i, ac in enumerate(request.spec.acceptance_criteria)
+            ],
+            timeout_sec=min(request.spec.constraints.max_execution_time_ms // 1000, 30),
+        )
+
+        # 合并沙箱执行结果与期望对比
+        merged_details = _merge_results(test_details, exec_result)
+
+        passed = sum(1 for d in merged_details if d.status == "PASS")
+        total = len(merged_details)
+        pass_rate = passed / total if total > 0 else 0.0
+        elapsed_ms = int((time.time() - start_time) * 1000)
+
+        report = TestReport(
+            passed=passed,
+            total=total,
+            pass_rate=pass_rate,
+            details=merged_details,
+            execution_time_ms=elapsed_ms,
+            coverage_percent=0.0,  # 后续可接入 coverage.py
+        )
+
+        logger.info(f"测试完成 task_id={request.task_id} round={request.round} "
+                     f"passed={passed}/{total} pass_rate={pass_rate:.2f} elapsed_ms={elapsed_ms}")
+
+        return RunTestsResponse(test_report=report)
+
     except TimeoutError:
-        raise HTTPException(status_code=408, detail="Test execution timeout")
+        logger.error(f"测试执行超时 task_id={request.task_id}")
+        raise HTTPException(status_code=408, detail="测试执行超时")
     except Exception as e:
-        logger.error(f"[{request.task_id}] 测试执行失败: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
+        logger.error(f"测试执行失败 task_id={request.task_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-a2a_server = A2AServer(
-    agent_card=AGENT_CARD,
-    app=app,
-)
+def _build_test_details(request: RunTestsRequest) -> list:
+    """根据验收标准构建初始测试结果列表"""
+    details = []
+    for i, ac in enumerate(request.spec.acceptance_criteria):
+        details.append(TestDetail(
+            test_id=f"TC-{i+1:02d}",
+            status="PENDING",
+            description=f"{ac.input} 应返回 {ac.expected_output}",
+            expected=ac.expected_output,
+            actual="N/A",
+        ))
+    return details
 
-if __name__ == "__main__":
-    import uvicorn
-    logging.basicConfig(level=get_config().log_level)
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+
+def _merge_results(details: list, exec_result: dict) -> list:
+    """将沙箱执行结果与期望值合并，生成最终测试结果"""
+    results = exec_result.get("results", [])
+    result_map = {r.get("test_id", ""): r for r in results}
+
+    merged = []
+    for d in details:
+        tid = d.test_id
+        actual_result = result_map.get(tid)
+
+        if actual_result is None:
+            d.status = "ERROR"
+            d.error_message = f"测试用例 {tid} 未执行"
+        elif actual_result.get("error"):
+            d.status = "ERROR"
+            d.error_message = actual_result["error"]
+        else:
+            actual_val = str(actual_result.get("output", "")).strip()
+            expected_val = d.expected.strip()
+            d.actual = actual_val
+            if actual_val == expected_val:
+                d.status = "PASS"
+            else:
+                d.status = "FAIL"
+                d.error_message = f"期望={expected_val}，实际={actual_val}"
+        merged.append(d)
+
+    return merged
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """全局异常处理"""
+    logger.error(f"未处理的异常: {exc}")
+    return JSONResponse(
+        status_code=500,
+        content={"error": "InternalError", "message": str(exc)},
+    )

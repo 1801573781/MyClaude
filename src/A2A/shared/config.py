@@ -1,57 +1,64 @@
+"""共享配置模块
+
+从环境变量加载各项服务、路径、阈值等配置，生成全局配置对象。
 """
-A2A 系统全局配置数据模型
-支持环境变量加载与全局单例管理
-"""
+
 import os
-# from dataclasses import dataclass, field
-from pydantic import BaseModel
+from typing import Optional
 
 
-class A2AGlobalConfig(BaseModel):
+class A2AConfig:
     """A2A 系统全局配置"""
-    mycode_url: str = "http://localhost:8000"
-    mytest_url: str = "http://localhost:8001"
-    a2a_auth_token: str = ""
-    max_rounds: int = 10
-    melt_down_window: int = 3
-    code_gen_timeout_sec: int = 10
-    test_exec_timeout_sec: int = 30
-    sandbox_cpu_limit: float = 1.0
-    sandbox_memory_mb: int = 512
-    context_store_path: str = "./data/tasks"
-    log_level: str = "INFO"
 
-    @classmethod
-    def from_env(cls) -> "A2AGlobalConfig":
-        """从环境变量加载配置"""
-        return cls(
-            mycode_url=os.getenv("MYCODE_URL", "http://localhost:8000"),
-            mytest_url=os.getenv("MYTEST_URL", "http://localhost:8001"),
-            a2a_auth_token=os.getenv("A2A_AUTH_TOKEN", ""),
-            max_rounds=int(os.getenv("MAX_ROUNDS", "10")),
-            melt_down_window=int(os.getenv("MELT_DOWN_WINDOW", "3")),
-            code_gen_timeout_sec=int(os.getenv("CODE_GEN_TIMEOUT_SEC", "10")),
-            test_exec_timeout_sec=int(os.getenv("TEST_EXEC_TIMEOUT_SEC", "30")),
-            sandbox_cpu_limit=float(os.getenv("SANDBOX_CPU_LIMIT", "1.0")),
-            sandbox_memory_mb=int(os.getenv("SANDBOX_MEMORY_MB", "512")),
-            context_store_path=os.getenv("CONTEXT_STORE_PATH", "./data/tasks"),
-            log_level=os.getenv("LOG_LEVEL", "INFO"),
+    def __init__(self):
+        # ---- 服务地址 ----
+        self.mycode_url: str = os.getenv("MYCODE_URL", "http://localhost:8000")
+        self.mytest_url: str = os.getenv("MYTEST_URL", "http://localhost:8001")
+        self.myorch_url: str = os.getenv("MYORCH_URL", "http://localhost:8002")
+
+        # ---- 认证 ----
+        self.auth_token: Optional[str] = os.getenv("A2A_AUTH_TOKEN", None)
+
+        # ---- Orchestrator 参数 ----
+        self.max_rounds: int = int(os.getenv("MAX_ROUNDS", "10"))
+        self.melt_down_window: int = int(os.getenv("MELT_DOWN_WINDOW", "3"))
+        self.code_gen_timeout_sec: int = int(os.getenv("CODE_GEN_TIMEOUT_SEC", "10"))
+        self.test_exec_timeout_sec: int = int(os.getenv("TEST_EXEC_TIMEOUT_SEC", "30"))
+
+        # ---- 沙箱参数 ----
+        self.sandbox_cpu_limit: str = os.getenv("SANDBOX_CPU_LIMIT", "1.0")
+        self.sandbox_memory_mb: int = int(os.getenv("SANDBOX_MEMORY_MB", "512"))
+        self.sandbox_timeout_sec: int = int(os.getenv("SANDBOX_TIMEOUT_SEC", "30"))
+
+        # ---- 存储 ----
+        self.context_store_path: str = os.getenv(
+            "CONTEXT_STORE_PATH", "./data/tasks"
         )
+
+        # ---- 日志 ----
+        self.log_level: str = os.getenv("LOG_LEVEL", "INFO")
+
+        # ---- LLM ----
+        self.llm_model: str = os.getenv("LLM_MODEL", "deepseek-v3")
+        self.llm_api_key: Optional[str] = os.getenv("LLM_API_KEY", None)
+
+    def as_dict(self) -> dict:
+        """导出为字典"""
+        return {
+            "mycode_url": self.mycode_url,
+            "mytest_url": self.mytest_url,
+            "myorch_url": self.myorch_url,
+            "max_rounds": self.max_rounds,
+            "melt_down_window": self.melt_down_window,
+            "code_gen_timeout_sec": self.code_gen_timeout_sec,
+            "test_exec_timeout_sec": self.test_exec_timeout_sec,
+            "sandbox_cpu_limit": self.sandbox_cpu_limit,
+            "sandbox_memory_mb": self.sandbox_memory_mb,
+            "log_level": self.log_level,
+            "llm_model": self.llm_model,
+            "context_store_path": self.context_store_path,
+        }
 
 
 # 全局单例
-_global_a2a_config: A2AGlobalConfig | None = None
-
-
-def get_config() -> A2AGlobalConfig:
-    """获取全局配置单例"""
-    global _global_a2a_config
-    if _global_a2a_config is None:
-        _global_a2a_config = A2AGlobalConfig.from_env()
-    return _global_a2a_config
-
-
-def set_config(config: A2AGlobalConfig) -> None:
-    """设置全局配置（用于测试注入）"""
-    global _global_a2a_config
-    _global_a2a_config = config
+global_config = A2AConfig()

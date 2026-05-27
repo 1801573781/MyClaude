@@ -1,162 +1,155 @@
+"""MyOrchestrator A2A 服务 — FastAPI 应用入口
+
+任务编排引擎，协调 MyCode 与 MyTest 完成代码生成→测试→修复循环。
 """
-MyOrchestrator A2A 服务 — FastAPI 应用入口
-A2A 任务编排服务，协调 MyCode 与 MyTest 完成代码生成→测试→修复循环
-"""
-import json
-import logging
-import threading
+
 import time
+import logging
 from pathlib import Path
+from fastapi import FastAPI, HTTPException, Request, Query
+from fastapi.responses import JSONResponse
 
-from fastapi import FastAPI, HTTPException
-from python_a2a import A2AServer
-
-# sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-from src.A2A.shared.config import get_config
-from src.A2A.myorch.agent_card import AGENT_CARD
-from src.A2A.myorch.models import RunTaskRequest
-from src.A2A.myorch.orchestrator import Orchestrator
-from src.A2A.myorch.context_store import ContextStore
+from .models import (
+    Spec,
+    TaskStatus,
+    RunTaskRequest,
+    RunTaskResponse,
+    GetTaskStatusResponse,
+    GlobalMetrics,
+    ErrorResponse,
+)
+from .agent_card import MYORCH_AGENT_CARD
+from .orchestrator import Orchestrator
+from .context_store import ContextStore
 
 logger = logging.getLogger("myorch")
-app = FastAPI(title="MyOrchestrator", description="任务编排 A2A 服务", version="1.0.0")
-
-# 单例
-_orchestrator: Orchestrator | None = None
-_context_store: ContextStore | None = None
+logging.basicConfig(level=logging.INFO, format='{"timestamp": "%(asctime)s", "level": "%(levelname)s", "service": "myorch", "message": "%(message)s"}')
 
 
-def get_orchestrator() -> Orchestrator:
-    """获取 Orchestrator 单例"""
-    global _orchestrator
-    if _orchestrator is None:
-        _orchestrator = Orchestrator()
-    return _orchestrator
+# ---- 初始化 ----
+context_store = ContextStore(base_path=Path("./data/tasks"))
+orchestrator = Orchestrator(
+    context_store=context_store,
+    mycode_url="http://localhost:8000",
+    mytest_url="http://localhost:8001",
+    max_rounds=10,
+    melt_down_window=3,
+    code_gen_timeout=10,
+    test_exec_timeout=30,
+    auth_token=None,  # 从环境变量或配置文件注入
+)
 
-
-def get_context_store() -> ContextStore:
-    """获取 ContextStore 单例"""
-    global _context_store
-    if _context_store is None:
-        _context_store = ContextStore()
-    return _context_store
-
-
-@app.on_event("startup")
-async def startup():
-    """启动时初始化并启动僵尸任务清理定时器"""
-    store = get_context_store()
-
-    def cleanup_loop():
-        while True:
-            time.sleep(60)  # 每 60 秒扫描一次
-            try:
-                store.cleanup_stale_tasks()
-            except Exception as e:
-                logger.error(f"清理超时任务失败: {e}")
-
-    thread = threading.Thread(target=cleanup_loop, daemon=True)
-    thread.start()
-    logger.info("僵尸任务清理定时器已启动")
+app = FastAPI(title="MyOrchestrator - 任务编排服务", version="1.0.0")
 
 
 @app.get("/health")
 async def health_check():
     """健康检查端点"""
-    return {"status": "ok", "service": "myorch"}
+    # 同步检查下游服务健康状态
+    downstream = {"mycode": "unknown", "mytest": "unknown"}
+    try:
+        import httpx
+        mc_resp = httpx.get("http://localhost:8000/health", timeout=2)
+        downstream["mycode"] = "ok" if mc_resp.status_code == 200 else "unhealthy"
+    except Exception:
+        downstream["mycode"] = "unreachable"
+    try:
+        mt_resp = httpx.get("http://localhost:8001/health", timeout=2)
+        downstream["mytest"] = "ok" if mt_resp.status_code == 200 else "unhealthy"
+    except Exception:
+        downstream["mytest"] = "unreachable"
+
+    return {"status": "ok", "service": "myorch", "downstream": downstream}
 
 
 @app.get("/.well-known/agent-card.json")
 async def agent_card():
-    """A2A Agent Card 发现端点"""
-    return AGENT_CARD.model_dump()
-
-
-@app.post("/a2a/run_task")
-async def run_task(request: RunTaskRequest):
-    """A2A run_task 能力端点 — 提交代码生成任务"""
-    orch = get_orchestrator()
-
-    # 校验需求规格
-    spec = request.spec
-    if spec.language != "python":
-        raise HTTPException(status_code=400, detail="目前仅支持 Python 语言")
-
-    if spec.constraints.max_execution_time_ms <= 0:
-        raise HTTPException(status_code=400, detail="max_execution_time_ms 必须大于 0")
-
-    # 同步执行编排循环（当前为单任务同步模式）
-    # 如需并发，可改为 BackgroundTasks + asyncio.to_thread
-    result = orch.run_task(spec, max_rounds=request.max_rounds)
-
-    return result
-
-
-@app.get("/a2a/tasks/{task_id}")
-async def get_task_status(task_id: str):
-    """查询任务状态"""
-    orch = get_orchestrator()
-    status = orch.get_task_status(task_id)
-    if status is None:
-        raise HTTPException(status_code=404, detail=f"任务 {task_id} 不存在")
-    return status
+    """返回 A2A Agent Card"""
+    return MYORCH_AGENT_CARD
 
 
 @app.get("/metrics")
 async def metrics():
     """Prometheus 指标端点"""
-    store = get_context_store()
-    tasks = []
-    for task_file in Path(store.store_path).glob("*.json"):
+    return context_store.get_global_metrics()
+
+
+@app.post("/a2a/run_task", response_model=RunTaskResponse)
+async def run_task(request: RunTaskRequest):
+    """提交代码生成任务，同步返回最终结果"""
+    logger.info(f"收到任务请求 title={request.spec.title} max_rounds={request.max_rounds}")
+
+    try:
+        result = orchestrator.run_task(
+            spec=request.spec,
+            max_rounds=request.max_rounds,
+        )
+        logger.info(f"任务完成 task_id={result.task_id} status={result.status.value}")
+        return result
+    except Exception as e:
+        logger.error(f"任务执行异常: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/a2a/tasks/{task_id}", response_model=GetTaskStatusResponse)
+async def get_task_status(task_id: str):
+    """查询任务当前状态与进度"""
+    state = orchestrator.get_task_status(task_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail=f"任务不存在: {task_id}")
+
+    return GetTaskStatusResponse(
+        task_id=task_id,
+        status=TaskStatus(state.get("status", "UNKNOWN")),
+        current_round=state.get("current_round", 0),
+        history=state.get("history", []),
+    )
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """全局异常处理"""
+    logger.error(f"未处理的异常: {exc}")
+    return JSONResponse(
+        status_code=500,
+        content={"error": "InternalError", "message": str(exc)},
+    )
+
+
+# ---- 僵尸任务清理后台线程 ----
+
+import threading
+
+def cleanup_zombie_tasks():
+    """后台清理超过 10 分钟的 RUNNING 状态任务"""
+    import time as _time
+    while True:
+        _time.sleep(60)  # 每分钟扫描一次
         try:
-            data = json.loads(task_file.read_text(encoding="utf-8"))
-            tasks.append(data)
-        except (json.JSONDecodeError, IOError) as e:
-            logger.debug(f"读取任务文件失败 {task_file}: {e}")
-
-    total = len(tasks)
-    success = sum(1 for t in tasks if t.get("status") == "SUCCESS")
-    failed = sum(1 for t in tasks if t.get("status") in ("MAX_ROUNDS_REACHED", "MELT_DOWN", "ERROR"))
-    running = sum(1 for t in tasks if t.get("status") == "RUNNING")
-
-    # 计算平均轮次
-    rounds = [t.get("current_round", 0) for t in tasks]
-    avg_rounds = sum(rounds) / len(rounds) if rounds else 0
-
-    lines = [
-        "# HELP myorch_tasks_total 任务总数",
-        "# TYPE myorch_tasks_total gauge",
-        f"myorch_tasks_total {total}",
-        "# HELP myorch_tasks_success 成功任务数",
-        "# TYPE myorch_tasks_success gauge",
-        f"myorch_tasks_success {success}",
-        "# HELP myorch_tasks_failed 失败任务数",
-        "# TYPE myorch_tasks_failed gauge",
-        f"myorch_tasks_failed {failed}",
-        "# HELP myorch_tasks_running 运行中任务数",
-        "# TYPE myorch_tasks_running gauge",
-        f"myorch_tasks_running {running}",
-        "# HELP myorch_avg_rounds 平均轮次",
-        "# TYPE myorch_avg_rounds gauge",
-        f"myorch_avg_rounds {avg_rounds: .1f}",
-    ]
-    return "\n".join(lines)
+            for task_id in context_store.list_running_tasks():
+                state = context_store.get_task_state_safe(task_id)
+                if state is None:
+                    continue
+                status = state.get("status", "")
+                if status in ("RUNNING", "GENERATING", "TESTING", "EVALUATING"):
+                    updated = state.get("updated_at", "")
+                    if updated:
+                        try:
+                            from datetime import datetime
+                            dt = datetime.fromisoformat(updated)
+                            delta = (datetime.now() - dt).total_seconds()
+                            if delta > 600:  # 10 分钟
+                                context_store.save_task_state(task_id, {
+                                    "task_id": task_id,
+                                    "status": "TIMEOUT",
+                                    "current_round": state.get("current_round", 0),
+                                })
+                                logger.warning(f"僵尸任务清理 task_id={task_id}")
+                        except Exception:
+                            pass
+        except Exception as e:
+            logger.error(f"僵尸任务扫描异常: {e}")
 
 
-a2a_server = A2AServer(
-    agent_card=AGENT_CARD,
-    app=app,
-)
-
-if __name__ == "__main__":
-    import uvicorn
-    log_fmt = (
-        '{"timestamp": "%(asctime)s", "level": "%(levelname)s", '
-        '"service": "myorch", "task_id": "", "message": "%(message)s"}'
-    )
-    logging.basicConfig(
-        level=get_config().log_level,
-        format=log_fmt,
-    )
-    uvicorn.run(app, host="0.0.0.0", port=8002)
+cleanup_thread = threading.Thread(target=cleanup_zombie_tasks, daemon=True)
+cleanup_thread.start()

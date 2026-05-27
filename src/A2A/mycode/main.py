@@ -1,73 +1,25 @@
+"""MyCode A2A 服务 — FastAPI 应用入口
+
+封装代码生成智能体 A，接收需求规格并生成 Python 代码。
 """
-MyCode A2A 服务 — FastAPI 应用入口
-封装代码生成智能体 A，接收需求规格并生成 Python 代码
-"""
-import logging
-# import sys
+
 import time
-# from pathlib import Path
-
-from fastapi import FastAPI, HTTPException, Header
-from python_a2a import A2AServer
-
-# 将项目根目录加入 sys.path 以支持 shared 导入
-# sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-from src.A2A.shared.config import get_config
-from src.A2A.mycode.agent_card import AGENT_CARD
-from src.A2A.mycode.models import GenerateCodeRequest, GenerateCodeResponse, GenerationMetadata
+import logging
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
+from .models import (
+    GenerateCodeRequest,
+    GenerateCodeResponse,
+    GenerationMetadata,
+    ErrorResponse,
+)
+from .agent_card import MYCODE_AGENT_CARD
 
 logger = logging.getLogger("mycode")
-app = FastAPI(title="MyCode", description="代码生成 A2A 服务", version="1.0.0")
+logging.basicConfig(level=logging.INFO, format='{"timestamp": "%(asctime)s", "level": "%(levelname)s", "service": "mycode", "message": "%(message)s"}')
 
 
-def verify_auth(authorization: str | None = Header(default=None)) -> None:
-    """验证 Bearer Token"""
-    config = get_config()
-    if not config.a2a_auth_token:
-        return  # 未配置 Token 时跳过验证
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
-    token = authorization.removeprefix("Bearer ")
-    if token != config.a2a_auth_token:
-        raise HTTPException(status_code=401, detail="Invalid token")
-
-
-def call_agent_a(request: GenerateCodeRequest) -> GenerateCodeResponse:
-    """
-    内部调用代码生成智能体 A（MyClaude 实例，sys_prompt=代码生成）
-    当前为 Mock 实现，实际应调用 MyClaude 的 query_loop
-    """
-    start_time = time.time()
-    logger.info(f"[{request.task_id}] Round {request.round}: 开始代码生成")
-    
-    # TODO: 替换为真实的 MyClaude 调用
-    # from src.query.query_loop import QueryLoop
-    # from src.utility.config_loader import load_global_config
-    # ...
-    
-    # Mock 实现：根据需求规格生成占位代码
-    spec = request.spec
-    func_name = spec.title.replace(" ", "_").lower()
-    
-    code_lines = [
-        f"def {func_name}(a, b): ",
-        "    # TODO: 实现实际逻辑",
-        "    return a + b",
-    ]
-    code = "\n".join(code_lines)
-    
-    elapsed_ms = int((time.time() - start_time) * 1000)
-    
-    return GenerateCodeResponse(
-        code=code,
-        file_name=f"{func_name}.py",
-        generation_metadata=GenerationMetadata(
-            model="deepseek-v3",
-            tokens_used=len(code) // 4,
-            generation_time_ms=elapsed_ms,
-        )
-    )
+app = FastAPI(title="MyCode - 代码生成服务", version="1.0.0")
 
 
 @app.get("/health")
@@ -78,43 +30,121 @@ async def health_check():
 
 @app.get("/.well-known/agent-card.json")
 async def agent_card():
-    """A2A Agent Card 发现端点"""
-    return AGENT_CARD.model_dump()
+    """返回 A2A Agent Card"""
+    return MYCODE_AGENT_CARD
 
 
-@app.post("/a2a/generate_code")
-async def generate_code(
-    request: GenerateCodeRequest,
-    authorization: str | None = Header(default=None),
-):
-    """A2A generate_code 能力端点"""
-    verify_auth(authorization)
-    
-    # config = get_config()
-    
-    # 校验必填字段
-    if not request.task_id:
-        raise HTTPException(status_code=400, detail="task_id is required")
-    
+@app.get("/metrics")
+async def metrics():
+    """Prometheus 指标端点（简化版）"""
+    return {"service": "mycode", "status": "running"}
+
+
+@app.post("/a2a/generate_code", response_model=GenerateCodeResponse)
+async def generate_code(request: GenerateCodeRequest):
+    """接收需求规格，生成 Python 代码"""
+    start_time = time.time()
+    logger.info(f"收到代码生成请求 task_id={request.task_id} round={request.round}")
+
     try:
-        response = call_agent_a(request)
-        logger.info(f"[{request.task_id}] Round {request.round}: 代码生成完毕, "
-                    f"{response.generation_metadata.generation_time_ms}ms")
-        return response.model_dump()
+        # 构建给智能体 A 的提示词
+        prompt = _build_prompt(request)
+        code, tokens_used = _call_code_agent(prompt)
+
+        elapsed_ms = int((time.time() - start_time) * 1000)
+        logger.info(f"代码生成完成 task_id={request.task_id} round={request.round} tokens={tokens_used} elapsed_ms={elapsed_ms}")
+
+        return GenerateCodeResponse(
+            code=code,
+            file_name=_infer_file_name(request.spec.title),
+            generation_metadata=GenerationMetadata(
+                model="deepseek-v3",
+                tokens_used=tokens_used,
+                generation_time_ms=elapsed_ms,
+            ),
+        )
+
     except TimeoutError:
-        raise HTTPException(status_code=408, detail="Code generation timeout")
+        logger.error(f"代码生成超时 task_id={request.task_id}")
+        raise HTTPException(status_code=408, detail="代码生成超时")
     except Exception as e:
-        logger.error(f"[{request.task_id}] 代码生成失败: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
+        logger.error(f"代码生成失败 task_id={request.task_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-# 创建 A2A Server 包装
-a2a_server = A2AServer(
-    agent_card=AGENT_CARD,
-    app=app,
-)
+def _build_prompt(request: GenerateCodeRequest) -> str:
+    """构建给智能体 A 的代码生成提示词"""
+    spec = request.spec
+    lines = [
+        "你是一个专业的 Python 代码生成智能体。",
+        "",
+        f"## 任务：{spec.title}",
+        f"## 功能描述：{spec.description}",
+        "",
+        "## 验收标准（必须全部满足）：",
+    ]
+    for i, ac in enumerate(spec.acceptance_criteria, 1):
+        lines.append(f"{i}. 输入：{ac.input} → 期望输出：{ac.expected_output}")
 
-if __name__ == "__main__":
-    import uvicorn
-    logging.basicConfig(level=get_config().log_level)
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    lines.extend([
+        "",
+        f"## 约束条件：",
+        f"- 最大执行时间：{spec.constraints.max_execution_time_ms}ms",
+        f"- 编程语言：{spec.language}",
+        "",
+        "## 要求：",
+        "- 只输出可直接运行的 Python 代码",
+        "- 包含必要的 import 语句",
+        "- 处理所有边界条件",
+    ])
+
+    if request.previous_attempt:
+        prev = request.previous_attempt
+        test_report = prev.test_report
+        failed_tests = [
+            d for d in test_report.get("details", [])
+            if d.get("status") != "PASS"
+        ]
+        lines.extend([
+            "",
+            "## 上一轮测试反馈（请修复以下失败项）：",
+            f"通过率：{test_report.get('pass_rate', 0)*100:.0f}%",
+        ])
+        for ft in failed_tests:
+            lines.append(
+                f"- [{ft.get('status')}] {ft.get('description')}："
+                f"期望={ft.get('expected')}，实际={ft.get('actual')}，"
+                f"错误={ft.get('error_message', 'N/A')}"
+            )
+
+    return "\n".join(lines)
+
+
+def _call_code_agent(prompt: str) -> tuple:
+    """调用代码生成智能体 A（MyClaude 实例）
+
+    实际环境中应通过 MyClaude 的 QueryLoop 执行，此处为简化实现。
+    """
+    # TODO: 接入实际的 MyClaude 代码生成智能体
+    # 当前为占位实现，返回示例代码
+    import hashlib
+    code = f"# Generated by MyCode Agent\n# Prompt hash: {hashlib.md5(prompt.encode()).hexdigest()[:8]}\n\n# TODO: 实现 {prompt.split(chr(10))[2] if len(prompt.split(chr(10))) > 2 else 'function'}\n"
+    tokens_used = len(prompt) // 4  # 粗略估算
+    return code, tokens_used
+
+
+def _infer_file_name(title: str) -> str:
+    """根据功能名称推断文件名"""
+    import re
+    safe = re.sub(r'[^\w]', '_', title.lower())
+    return f"{safe}.py"
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """全局异常处理"""
+    logger.error(f"未处理的异常: {exc}")
+    return JSONResponse(
+        status_code=500,
+        content={"error": "InternalError", "message": str(exc)},
+    )

@@ -1,192 +1,169 @@
-"""
-任务上下文持久化存储
-记录多轮迭代状态与最优结果，支持超时任务自动清理
-"""
-import json
-import logging
-import time
-from pathlib import Path
-from typing import Optional
-from datetime import datetime, timedelta
+"""任务上下文持久化存储
 
-from src.A2A.shared.config import get_config
-from src.A2A.shared.models import SpecDocument, RoundSummary, TaskSummary, TestReport
+按 task_id 管理每轮的代码快照、测试报告和状态，支持回溯与审计。
+"""
+
+import json
+import os
+import logging
+from datetime import datetime
+from pathlib import Path
+from typing import Optional, Dict, Any, List
+
+from .models import TaskStatus, TaskSummary, RoundSummary
 
 logger = logging.getLogger("myorch.context_store")
 
-
-class TaskContext:
-    """单个任务的上下文"""
-
-    def __init__(self, task_id: str, spec: SpecDocument):
-        self.task_id = task_id
-        self.spec = spec
-        self.status = "PENDING"
-        self.current_round = 0
-        self.rounds: list[dict] = []  # [{round, code, test_report, timestamp}]
-        self.best_code: str = ""
-        self.best_pass_rate: float = 0.0
-        self.last_attempt: Optional[dict] = None
-        self.created_at = time.time()
-        self.updated_at = time.time()
-
-    def save_code_snapshot(self, round_num: int, code: str) -> None:
-        """保存代码快照"""
-        self.rounds.append({
-            "round": round_num,
-            "code": code,
-            "test_report": None,
-            "timestamp": datetime.now().isoformat(),
-        })
-        self.current_round = round_num
-        self.updated_at = time.time()
-
-    def save_test_report(self, round_num: int, report: TestReport) -> None:
-        """保存测试报告"""
-        for r in self.rounds:
-            if r["round"] == round_num:
-                r["test_report"] = report.model_dump()
-                break
-
-        if report.pass_rate > self.best_pass_rate:
-            self.best_pass_rate = report.pass_rate
-            for r in self.rounds:
-                if r["round"] == round_num and r["code"]:
-                    self.best_code = r["code"]
-                    break
-
-        self.last_attempt = {
-            "code": self._get_code_for_round(round_num),
-            "test_report": report.model_dump(),
-        }
-        self.updated_at = time.time()
-
-    def _get_code_for_round(self, round_num: int) -> str:
-        for r in self.rounds:
-            if r["round"] == round_num:
-                return r.get("code", "")
-        return ""
-
-    def last_n_rounds(self, n: int) -> list[dict]:
-        """获取最近 n 轮的摘要"""
-        recent = [r for r in self.rounds if r.get("test_report")]
-        recent.sort(key=lambda x: x["round"])
-        return recent[-n:]
-
-    def summary(self) -> TaskSummary:
-        """生成任务摘要"""
-        summaries = []
-        for r in self.rounds:
-            if r.get("test_report"):
-                tr = r["test_report"]
-                failed = [
-                    d.get("test_id", "?")
-                    for d in tr.get("details", [])
-                    if d.get("status") in ("FAIL", "ERROR")
-                ]
-                summaries.append(RoundSummary(
-                    round=r["round"],
-                    pass_rate=tr["pass_rate"],
-                    failed_tests=failed,
-                ))
-
-        total_time = time.time() - self.created_at
-        verdict = "ALL_TESTS_PASSED" if self.status == "SUCCESS" else self.status
-
-        return TaskSummary(
-            rounds=summaries,
-            total_time_seconds=total_time,
-            final_verdict=verdict,
-        )
+DEFAULT_STORE_PATH = Path("./data/tasks")
 
 
 class ContextStore:
-    """任务上下文持久化存储"""
+    """按 task_id 组织的文件系统上下文存储"""
 
-    def __init__(self):
-        config = get_config()
-        self.store_path = Path(config.context_store_path)
-        self.store_path.mkdir(parents=True, exist_ok=True)
-        self._tasks: dict[str, TaskContext] = {}
+    def __init__(self, base_path: Optional[Path] = None):
+        self.base_path = base_path or DEFAULT_STORE_PATH
+        self.base_path.mkdir(parents=True, exist_ok=True)
 
-    def create_task(self, task_id: str, spec: SpecDocument) -> TaskContext:
-        """创建任务上下文"""
-        ctx = TaskContext(task_id, spec)
-        self._tasks[task_id] = ctx
-        self._persist(ctx)
-        return ctx
+    def _task_dir(self, task_id: str) -> Path:
+        """获取任务目录"""
+        task_dir = self.base_path / task_id
+        task_dir.mkdir(parents=True, exist_ok=True)
+        return task_dir
 
-    def get_task(self, task_id: str) -> Optional[TaskContext]:
-        """获取任务上下文"""
-        if task_id in self._tasks:
-            return self._tasks[task_id]
+    # ---- 代码快照 ----
 
-        # 尝试从磁盘恢复
-        task_file = self.store_path / f"{task_id}.json"
-        if task_file.exists():
-            try:
-                data = json.loads(task_file.read_text(encoding="utf-8"))
-                ctx = TaskContext(
-                    task_id=data["task_id"],
-                    spec=SpecDocument.model_validate(data["spec"]),
-                )
-                ctx.status = data.get("status", "PENDING")
-                ctx.current_round = data.get("current_round", 0)
-                ctx.rounds = data.get("rounds", [])
-                ctx.best_code = data.get("best_code", "")
-                ctx.best_pass_rate = data.get("best_pass_rate", 0.0)
-                ctx.created_at = data.get("created_at", time.time())
-                ctx.updated_at = data.get("updated_at", time.time())
-                self._tasks[task_id] = ctx
-                return ctx
-            except Exception as e:
-                logger.warning(f"恢复任务 {task_id} 失败: {e}")
+    def save_code_snapshot(self, task_id: str, round_num: int, code: str) -> Path:
+        """保存某轮生成的代码快照"""
+        task_dir = self._task_dir(task_id)
+        file_path = task_dir / f"round_{round_num:03d}_code.py"
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(code)
+        logger.info(f"代码快照已保存 task_id={task_id} round={round_num}")
+        return file_path
 
-        return None
+    def get_code_snapshot(self, task_id: str, round_num: int) -> Optional[str]:
+        """读取某轮的代码快照"""
+        task_dir = self._task_dir(task_id)
+        file_path = task_dir / f"round_{round_num:03d}_code.py"
+        if not file_path.exists():
+            return None
+        with open(file_path, "r", encoding="utf-8") as f:
+            return f.read()
 
-    def save(self, ctx: TaskContext) -> None:
-        """持久化任务上下文"""
-        self._persist(ctx)
+    # ---- 测试报告 ----
 
-    def _persist(self, ctx: TaskContext) -> None:
-        """写入磁盘"""
-        task_file = self.store_path / f"{ctx.task_id}.json"
-        data = {
-            "task_id": ctx.task_id,
-            "spec": ctx.spec.model_dump(),
-            "status": ctx.status,
-            "current_round": ctx.current_round,
-            "rounds": ctx.rounds,
-            "best_code": ctx.best_code,
-            "best_pass_rate": ctx.best_pass_rate,
-            "created_at": ctx.created_at,
-            "updated_at": ctx.updated_at,
+    def save_test_report(self, task_id: str, round_num: int, report: Dict[str, Any]) -> Path:
+        """保存某轮的测试报告"""
+        task_dir = self._task_dir(task_id)
+        file_path = task_dir / f"round_{round_num:03d}_report.json"
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(report, f, ensure_ascii=False, indent=2)
+        logger.info(f"测试报告已保存 task_id={task_id} round={round_num}")
+        return file_path
+
+    def get_test_report(self, task_id: str, round_num: int) -> Optional[Dict[str, Any]]:
+        """读取某轮的测试报告"""
+        task_dir = self._task_dir(task_id)
+        file_path = task_dir / f"round_{round_num:03d}_report.json"
+        if not file_path.exists():
+            return None
+        with open(file_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    # ---- 任务状态 ----
+
+    def save_task_state(self, task_id: str, state: Dict[str, Any]) -> None:
+        """保存任务整体状态"""
+        task_dir = self._task_dir(task_id)
+        file_path = task_dir / "task_state.json"
+        state["updated_at"] = datetime.now().isoformat()
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+
+    def get_task_state(self, task_id: str) -> Optional[Dict[str, Any]]:
+        """读取任务整体状态"""
+        task_dir = self._task_dir(task_id)
+        file_path = task_dir / "task_state.json"
+        if not file_path.exists():
+            return None
+        with open(file_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    # ---- 历史记录 ----
+
+    def get_history(self, task_id: str) -> List[Dict[str, Any]]:
+        """获取任务的所有历史轮次"""
+        task_dir = self._task_dir(task_id)
+        history = []
+        round_num = 1
+        while True:
+            code = self.get_code_snapshot(task_id, round_num)
+            report = self.get_test_report(task_id, round_num)
+            if code is None and report is None:
+                break
+            history.append({
+                "round": round_num,
+                "code_snapshot": code,
+                "test_report": report,
+            })
+            round_num += 1
+        return history
+
+    # ---- 僵尸任务扫描 ----
+
+    def list_running_tasks(self) -> List[str]:
+        """列出所有目录中的任务 ID"""
+        if not self.base_path.exists():
+            return []
+        return [
+            d.name for d in self.base_path.iterdir()
+            if d.is_dir()
+        ]
+
+    def get_task_state_safe(self, task_id: str) -> Optional[Dict[str, Any]]:
+        """安全读取任务状态（不存在返回 None）"""
+        try:
+            return self.get_task_state(task_id)
+        except Exception:
+            return None
+
+    # ---- 全局指标 ----
+
+    def get_global_metrics(self) -> Dict[str, Any]:
+        """统计全局指标"""
+        total = 0
+        success = 0
+        fail = 0
+        meltdown = 0
+        total_rounds = 0
+        latencies = []
+
+        for task_id in self.list_running_tasks():
+            state = self.get_task_state_safe(task_id)
+            if state is None:
+                continue
+            total += 1
+            status = state.get("status", "")
+            if status == "SUCCESS":
+                success += 1
+            elif status in ("MAX_ROUNDS_REACHED", "ERROR", "TIMEOUT"):
+                fail += 1
+            elif status == "MELT_DOWN":
+                meltdown += 1
+
+            total_rounds += state.get("current_round", 0)
+            if state.get("total_time_seconds"):
+                latencies.append(state["total_time_seconds"])
+
+        latencies.sort()
+        p95_idx = int(len(latencies) * 0.95) if latencies else 0
+        p95_latency = latencies[p95_idx] if latencies else 0.0
+
+        return {
+            "total_tasks": total,
+            "success_count": success,
+            "fail_count": fail,
+            "meltdown_count": meltdown,
+            "avg_rounds": total_rounds / total if total > 0 else 0.0,
+            "p95_latency_seconds": p95_latency,
         }
-        task_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    def cleanup_stale_tasks(self, max_age_minutes: int = 10) -> int:
-        """清理超时任务"""
-        cleaned = 0
-        cutoff = time.time() - max_age_minutes * 60
-
-        for task_id, ctx in list(self._tasks.items()):
-            if ctx.status == "RUNNING" and ctx.updated_at < cutoff:
-                ctx.status = "TIMEOUT"
-                self._persist(ctx)
-                del self._tasks[task_id]
-                cleaned += 1
-
-        # 扫描磁盘上的任务文件
-        for task_file in self.store_path.glob("*.json"):
-            try:
-                data = json.loads(task_file.read_text(encoding="utf-8"))
-                if data.get("status") == "RUNNING" and data.get("updated_at", 0) < cutoff:
-                    data["status"] = "TIMEOUT"
-                    task_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-                    cleaned += 1
-            except (json.JSONDecodeError, OSError):
-                pass
-
-        if cleaned > 0:
-            logger.info(f"清理了 {cleaned} 个超时任务")
-        return cleaned
