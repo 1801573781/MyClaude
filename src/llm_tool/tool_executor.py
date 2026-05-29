@@ -194,7 +194,7 @@ def execute_code_tool(tool):
     elif name == "use_skill":
         skill_name = p["name"]
         # 动态导入避免循环依赖
-        from utility.skill_loader import get_skill_loader
+        from src.utility.skill_loader import get_skill_loader
         loader = get_skill_loader()
         full_content = loader.load_full_skill(skill_name)
         if full_content is not None:
