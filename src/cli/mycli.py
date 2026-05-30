@@ -21,10 +21,10 @@ class MyClaudeCLI:
             cli_print.print_info("Goodbye! Thanks for using MyClaude CLI.")
             return False
 
-        elif cmd == '/clear':
+        elif cmd == '/cls':
             cli_print.clear_screen()
             cli_print.print_header(self.session_id)
-            cli_print.print_info("Conversation cleared!")
+            cli_print.print_info("Clear Screen")
             return True
 
         elif cmd == '/help':
@@ -32,9 +32,8 @@ class MyClaudeCLI:
             return True
 
         elif cmd == '/tokens':
-            # cli_print.show_token_count(self.messages)
-            req_tokens, rsp_tokens = self.query_loop.get_tokens()
-            cli_print.show_token_count(req_tokens, rsp_tokens)
+            token_stats = self.query_loop.get_tokens()
+            cli_print.show_token_count(token_stats)
             return True
 
         elif cmd.startswith('/t'):
@@ -157,3 +156,21 @@ class MyClaudeCLI:
                                 cli_print.typewriter_then_collapse)
 
             cli_print.print_blank()
+
+
+    def run_test_mode(self, prompt: str):
+        """测试模式：直接执行一次 QueryLoop，不进入交互循环"""
+        from src.cli import cli_print as cp
+        cp.print_info(f"[测试模式] 输入: {prompt}")
+        cp.reset_reasoning()
+
+        self.query_loop.run(
+            prompt,
+            cp.show_status,
+            cp.print_info,
+            cp.typewriter_then_markdown,
+            cp.print_tool_call,
+            cp.print_tool_result,
+            cp.typewriter_then_collapse
+        )
+        cp.print_info("[测试模式] 执行完毕，退出。")

@@ -47,6 +47,11 @@ class QueryLoop:
         self._print_tool_call = None
         self._print_tool_result = None
 
+        # 精确 token 统计（从 API usage 获取，非粗略估算）
+        self.prompt_cache_hit = 0    # 输入（命中缓存）
+        self.prompt_cache_miss = 0   # 输入（未命中缓存）
+        self.completion_tokens = 0   # 输出
+        # 向后兼容旧接口（get_tokens）
         self.req_tokens = 0
         self.rsp_tokens = 0
 
@@ -74,7 +79,16 @@ class QueryLoop:
 
 
     def get_tokens(self):
-        return self.req_tokens, self.rsp_tokens
+        """返回详细的 token 统计字典。
+        keys: prompt_cache_hit, prompt_cache_miss, completion_tokens, total
+        """
+        total = self.prompt_cache_hit + self.prompt_cache_miss + self.completion_tokens
+        return {
+            "prompt_cache_hit": self.prompt_cache_hit,
+            "prompt_cache_miss": self.prompt_cache_miss,
+            "completion_tokens": self.completion_tokens,
+            "total": total,
+        }
 
 
     def run(
@@ -123,7 +137,15 @@ class QueryLoop:
                 thinking_begin = self._on_llm_req(turn, user_input)
 
                 # 发送请求给LLM
-                ai_response, is_truncated, reasoning_content = chat_llm.chat_with_retry(self.api_messages.get_msg())
+                ai_response, is_truncated, reasoning_content, usage = chat_llm.chat_with_retry(self.api_messages.get_msg())
+
+                # 累积精确 token 统计
+                if usage:
+                    cached = usage.get("cached_tokens", 0)
+                    prompt_total = usage.get("prompt_tokens", 0)
+                    self.prompt_cache_hit += cached
+                    self.prompt_cache_miss += (prompt_total - cached)
+                    self.completion_tokens += usage.get("completion_tokens", 0)
 
             """2. 解构 LLM response"""
             tools, remaining_text = self._on_llm_rsp(turn, user_input, thinking_begin,

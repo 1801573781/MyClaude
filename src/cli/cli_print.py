@@ -179,7 +179,7 @@ Welcome to MyClaude Code CLI! A beautiful terminal interface for AI Coding.
 - 📋 Copy messages to clipboard
 
 ## Commands
-- `/clear` - Clear conversation history
+- `/cls` - Clear Screen
 - `/help` - Show this help message
 - `/tokens` - Show the tokens statistics
 - `/t number` - 展开指定 Turn 的思考过程
@@ -346,20 +346,28 @@ def show_history(messages):
     console.print(table)
 
 
-def show_token_count(req_tokens, rsp_tokens):
-    # 标题单独打印，表格只负责数据
-    console.print("[bold]Token Statistics（粗略统计）[/bold]")
+def show_token_count(token_stats: dict):
+    """显示详细的 Token 统计（基于 API 返回的精确 usage）"""
+    console.print(f"[bold]📊 Token 统计（{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}）[/bold]")
 
     stats_table = Table(show_header=False, box=None)
-    stats_table.add_column("Metric", style="cyan", min_width=12)
-    stats_table.add_column("Value", style="green", min_width=10)
+    stats_table.add_column("Metric", style="cyan", min_width=20)
+    stats_table.add_column("Value", style="green", min_width=12)
 
-    stats_table.add_row("req tokens", f"{req_tokens}")
-    stats_table.add_row("rsp tokens", f"{rsp_tokens}")
+    stats_table.add_row("输入（命中缓存）", f"{token_stats['prompt_cache_hit']:,}")
+    stats_table.add_row("输入（未命中缓存）", f"{token_stats['prompt_cache_miss']:,}")
+    stats_table.add_row("输出", f"{token_stats['completion_tokens']:,}")
+    stats_table.add_row("总计", f"[bold]{token_stats['total']:,}[/bold]")
 
     console.print(stats_table)
     # HTML 缓冲区
-    _append_html(f'<p style="color:#f59e0b;">📊 Token: req={req_tokens}, rsp={rsp_tokens}</p>')
+    _append_html(
+        f'<p style="color:#f59e0b;">📊 Token（精确）: '
+        f'输入(缓存命中)={token_stats["prompt_cache_hit"]:,}, '
+        f'输入(未命中)={token_stats["prompt_cache_miss"]:,}, '
+        f'输出={token_stats["completion_tokens"]:,}, '
+        f'总计={token_stats["total"]:,}</p>'
+    )
 
 
 def print_unknown_cmd(command):
