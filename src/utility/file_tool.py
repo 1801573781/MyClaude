@@ -1,5 +1,4 @@
 from pathlib import Path
-from src.utility.config_loader import global_cfg
 
 # 读取文件时优先尝试的编码顺序
 _FALLBACK_ENCODINGS = ["utf-8", "gbk", "gb2312", "latin-1"]
@@ -21,6 +20,25 @@ def _read_text_safe(file_path: Path) -> str:
     )
 
 
+# LLM 可能输出占位符作为路径（如"绝对路径"、"命令"等），这些不是合法路径，必须拒绝
+_INVALID_PATH_TOKENS = [
+    "绝对路径", "项目代码目录", "项目需求目录", "{项目代码目录}",
+    "{项目需求目录}", "{文件名}", "{子目录}", "文件路径",
+    "命令", "shell 命令", "摘要", "旧代码", "新代码",
+]
+
+
+def _is_invalid_path(path: str) -> bool:
+    """检测路径是否为 LLM 未替换的占位符或空字符串"""
+    stripped = path.strip()
+    if not stripped:
+        return True
+    for token in _INVALID_PATH_TOKENS:
+        if token in stripped:
+            return True
+    return False
+
+
 def add_root_path(root: str, path: str) -> str:
     """
         解析 LLM 传来的路径：
@@ -38,6 +56,9 @@ def add_root_path(root: str, path: str) -> str:
 
 
 def file_view(root: str, path: str, limit: int = None, offset: int = None) -> str:
+    if _is_invalid_path(path):
+        return f"[BLOCKED] 无效路径：'{path}'。请使用真实的绝对路径，例如 D:\\AI\\MyClaude\\src\\..."  # noqa: E231
+
     full_path = add_root_path(root, path)
 
     """查看文件或目录，支持 limit（最多读取行数）和 offset（从第N行开始，1-based）"""
@@ -46,9 +67,12 @@ def file_view(root: str, path: str, limit: int = None, offset: int = None) -> st
         return f"错误：路径不存在 {full_path}"
     if p.is_dir():
         items = []
-        for f in p.iterdir():
-            prefix = "[DIR]" if f.is_dir() else "[FILE]"
-            items.append(f"{prefix} {f.name}")
+        try:
+            for f in p.iterdir():
+                prefix = "[DIR]" if f.is_dir() else "[FILE]"
+                items.append(f"{prefix} {f.name}")
+        except OSError as e:
+            return f"错误：无法读取目录 {full_path}（{e}）"
         return "\n".join(items) if items else "（空目录）"
     try:
         lines = _read_text_safe(p).splitlines()
@@ -68,6 +92,9 @@ def file_view(root: str, path: str, limit: int = None, offset: int = None) -> st
 
 
 def file_create(root: str, path: str, content: str) -> str:
+    if _is_invalid_path(path):
+        return f"[BLOCKED] 无效路径：'{path}'。请使用真实的绝对路径，例如 D:\\AI\\MyClaude\\src\\..."  # noqa: E231
+
     full_path = add_root_path(root, path)
     try:
         p = Path(full_path)
@@ -105,6 +132,9 @@ def file_append(root: str, path: str, content: str):
 
 
 def file_str_replace(root: str, path: str, old: str, new: str) -> str:
+    if _is_invalid_path(path):
+        return f"[BLOCKED] 无效路径：'{path}'。请使用真实的绝对路径，例如 D:\\AI\\MyClaude\\src\\..."  # noqa: E231
+
     full_path = add_root_path(root, path)
 
     """精确替换文件内容"""

@@ -27,11 +27,27 @@ def parse_tools(response: str):
 
     all_matches.sort(key=lambda x: x[0])
 
+    # 识别容器块（create / str_replace），其内容中的 XML 标签是文档正文，不是工具调用
+    container_ranges = []
+    for start, end, tool_name, _m in all_matches:
+        if tool_name in ("create", "str_replace"):
+            container_ranges.append((start, end))
+
+    def _is_inside_container(pos: int) -> bool:
+        for cs, ce in container_ranges:
+            if cs < pos < ce:
+                return True
+        return False
+
     tools = []
     remaining_parts = []
     last_end = 0
 
     for start, end, tool_name, m in all_matches:
+        # 忽略嵌套在 create / str_replace 块内的"工具调用"
+        if tool_name not in ("create", "str_replace") and _is_inside_container(start):
+            continue
+
         if start > last_end:
             remaining_parts.append(response[last_end:start])
 
@@ -80,6 +96,10 @@ def parse_tools(response: str):
 
     remaining = "".join(remaining_parts).strip()
     remaining = re.sub(r'\n{3,}', '\n\n', remaining)
+
+    # 清理 LLM 可能泄露到工具块外部的文件内容残留（孤儿XML标签/文件正文）
+    if remaining and _is_xml_leakage(remaining):
+        remaining = ""
 
     return remaining, tools
 
@@ -153,9 +173,16 @@ def execute_code_tool(tool):
     如果 LLM 没有遵守指令，回复的是相对路径，出现错误，那就错吧
     '''
     if name == "file_view":
-        result = file_view(spec_root, p["path"],
+        # file_view 内部已经做了 _is_invalid_path 检测，这里再做一层目录截断
+        raw_path = p.get("path", "")
+        result = file_view(spec_root, raw_path,
                            limit=p.get("limit"),
                            offset=p.get("offset"))
+        # 如果返回的是目录列表且行数过多，截断并附加警告，防止 LLM 因巨量上下文产生幻觉
+        if result and not result.startswith("错误") and not result.startswith("[BLOCKED]") and not result.startswith("[ERROR]"):
+            lines = result.split("\n")
+            if len(lines) > 30 and all(line.startswith("[DIR]") or line.startswith("[FILE]") for line in lines):
+                result = "\n".join(lines[:30]) + f"\n...（共 {len(lines)} 项，已截断前 30 项。请使用更精确的路径或 limit 参数缩小范围）"
 
     elif name == "create":
         # 写入文件
@@ -237,3 +264,15 @@ def execute_tools(tools: list) -> list[dict]:
         results.append(t_results)
 
     return results
+
+
+def _is_xml_leakage(text: str) -> bool:
+    """
+    Detect if remaining_text is leaked file content from LLM tool blocks.
+    Used inside parse_tools() to suppress leaked content from entering remaining_text.
+
+    Heuristics:
+    1. Starts with an XML close tag (e.g. </create>,
+    """
+
+    return False

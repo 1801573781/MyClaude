@@ -28,7 +28,7 @@ class SessionLog:
     def init_session(self):
         now = datetime.now()
         ext = "html" if self.format == "html" else "md"
-        self.session_file_name = f"MyClaude {now.strftime('%Y-%m-%d %H-%M-%S')}.{ext}"
+        self.session_file_name = f"MyClaude_{now.strftime('%Y-%m-%d_%H-%M-%S')}.{ext}"
 
         save_session = [
             {"time": now.strftime("%Y-%m-%d %H : %M : %S")},

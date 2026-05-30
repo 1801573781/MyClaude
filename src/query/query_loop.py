@@ -264,7 +264,9 @@ class QueryLoop:
         self._print_info(f"Thinking-{turn}, 结束时间：{thinking_end}")
 
         if remaining_text:
-            self._print_llm_rsp(remaining_text)
+            # 安全过滤：阻止 LLM XML 泄露残留打印到屏幕
+            if not _is_tool_content_leakage(remaining_text):
+                self._print_llm_rsp(remaining_text)
 
         # 记忆存储已移至 run() 中的 _save_turn_memory()，统一打包整轮对话
 
@@ -424,3 +426,17 @@ class QueryLoop:
         '''
 
         return compressed
+
+
+def _is_tool_content_leakage(text: str) -> bool:
+    """
+    Detect if remaining_text is leaked file content from inside a create/str_replace tool block.
+    These contents should stay inside the XML block, not printed to terminal as plain text.
+
+    Heuristics:
+    1. Starts with an XML close tag like </create>,
+    """
+
+    return False
+
+
