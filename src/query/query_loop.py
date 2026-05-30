@@ -1,7 +1,7 @@
 from enum import Enum
 from contextlib import AbstractContextManager
 from datetime import datetime
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict
 from src.query import chat_llm
 from src.utility import llm_api_msg
 from src.llm_tool import tool_executor
@@ -9,7 +9,6 @@ from src.utility.config_loader import global_cfg
 from src.utility.normal_utility import strip_thinking
 from src.query.session_log import SessionLog
 from src.memory.factory import create_memory
-from src.memory.memory_interface import MemoryInterface
 import logging
 
 logger = logging.getLogger(__name__)
@@ -51,9 +50,6 @@ class QueryLoop:
         self.prompt_cache_hit = 0    # 输入（命中缓存）
         self.prompt_cache_miss = 0   # 输入（未命中缓存）
         self.completion_tokens = 0   # 输出
-        # 向后兼容旧接口（get_tokens）
-        self.req_tokens = 0
-        self.rsp_tokens = 0
 
 
     def _init_memory(self):
@@ -137,7 +133,7 @@ class QueryLoop:
                 thinking_begin = self._on_llm_req(turn, user_input)
 
                 # 发送请求给LLM
-                ai_response, is_truncated, reasoning_content, usage = chat_llm.chat_with_retry(self.api_messages.get_msg())
+                ai_response, is_truncated, reasoning_content, usage = chat_llm.chat_with_retry(self.api_messages.get_msg())  # noqa E501
 
                 # 累积精确 token 统计
                 if usage:
@@ -148,8 +144,8 @@ class QueryLoop:
                     self.completion_tokens += usage.get("completion_tokens", 0)
 
             """2. 解构 LLM response"""
-            tools, remaining_text = self._on_llm_rsp(turn, user_input, thinking_begin,
-                                                      ai_response, reasoning_content)
+            tools, remaining_text = self._on_llm_rsp(turn, thinking_begin,
+                                                     ai_response, reasoning_content)
 
             """3. 开始处理工具"""
             quit_chat, tool_exec_info = self._handle_tools(tools)
@@ -169,11 +165,6 @@ class QueryLoop:
 
         # 确保最后一个 Turn 的内容被持久化
         self.session.flush_turn()
-
-        # 估算tokens
-        req_tokens, rsp_tokens = self.session.get_tokens()
-        self.req_tokens += req_tokens
-        self.rsp_tokens += rsp_tokens
 
         # 会话结束时：执行记忆维护（压缩 + 遗忘）
         if self._memory_used:
@@ -233,7 +224,7 @@ class QueryLoop:
         return thinking_begin
 
 
-    def _on_llm_rsp(self, turn, user_input, thinking_begin, ai_response, reasoning_content):
+    def _on_llm_rsp(self, turn, thinking_begin, ai_response, reasoning_content):
         # LLM回答结束的时间戳
         thinking_end = datetime.now().strftime("%Y-%m-%d %H : %M : %S")
 
@@ -286,9 +277,7 @@ class QueryLoop:
         self._print_info(f"Thinking-{turn}, 结束时间：{thinking_end}")
 
         if remaining_text:
-            # 安全过滤：阻止 LLM XML 泄露残留打印到屏幕
-            if not _is_tool_content_leakage(remaining_text):
-                self._print_llm_rsp(remaining_text)
+            self._print_llm_rsp(remaining_text)
 
         # 记忆存储已移至 run() 中的 _save_turn_memory()，统一打包整轮对话
 
@@ -360,7 +349,7 @@ class QueryLoop:
         解决原有分开存储导致召回不完整的问题。
         """
         try:
-            parts = []
+            parts = []  # noqa E352
 
             # 1. 用户输入
             parts.append(f"[用户输入] {user_input}")
@@ -448,17 +437,3 @@ class QueryLoop:
         '''
 
         return compressed
-
-
-def _is_tool_content_leakage(text: str) -> bool:
-    """
-    Detect if remaining_text is leaked file content from inside a create/str_replace tool block.
-    These contents should stay inside the XML block, not printed to terminal as plain text.
-
-    Heuristics:
-    1. Starts with an XML close tag like </create>,
-    """
-
-    return False
-
-

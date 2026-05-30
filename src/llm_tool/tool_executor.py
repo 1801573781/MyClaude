@@ -97,10 +97,6 @@ def parse_tools(response: str):
     remaining = "".join(remaining_parts).strip()
     remaining = re.sub(r'\n{3,}', '\n\n', remaining)
 
-    # 清理 LLM 可能泄露到工具块外部的文件内容残留（孤儿XML标签/文件正文）
-    if remaining and _is_xml_leakage(remaining):
-        remaining = ""
-
     return remaining, tools
 
 
@@ -264,15 +260,3 @@ def execute_tools(tools: list) -> list[dict]:
         results.append(t_results)
 
     return results
-
-
-def _is_xml_leakage(text: str) -> bool:
-    """
-    Detect if remaining_text is leaked file content from LLM tool blocks.
-    Used inside parse_tools() to suppress leaked content from entering remaining_text.
-
-    Heuristics:
-    1. Starts with an XML close tag (e.g. </create>,
-    """
-
-    return False
