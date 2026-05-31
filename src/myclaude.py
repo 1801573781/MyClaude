@@ -48,6 +48,12 @@ def main():
         default=None,
         help='测试模式下的用户输入（必须与 --test-mode 成对使用）'
     )
+    parser.add_argument(
+        '--test-output',
+        type=str,
+        default=None,
+        help='测试模式下输出结构化JSON结果的文件路径（仅与 --test-mode 一起使用）'
+    )
 
     args = parser.parse_args()
 
@@ -68,7 +74,7 @@ def main():
     cli = MyClaudeCLI(role=args.role)
 
     if args.test_mode:
-        cli.run_test_mode(args.prompt)
+        cli.run_test_mode(args.prompt, test_output_path=args.test_output)
     else:
         cli.run()
 

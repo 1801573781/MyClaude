@@ -40,22 +40,100 @@ class Sandbox:
 
     # ------------------------------------------------------------------
 
-    def destroy(self):
-        """销毁沙箱"""
+    def run_myclaude_command_with_test_output(
+            self,
+            user_prompt: str,
+            myclaude_root: str | None = None,
+    ) -> tuple[str, str, int, dict | None]:
+        """运行 MyClaude 测试指令，并获取结构化 JSON 测试结果。
+        
+        在原有 stdout/stderr/exit_code 基础上，额外返回 mycli.py run_test_mode()
+        输出的结构化 JSON 数据（含 tool_calls、key_outputs 等字段）。
+        
+        Args:
+            user_prompt: 测试指令
+            myclaude_root: MyClaude 源码根目录
+            
+        Returns:
+            (stdout, stderr, exit_code, test_data_dict)
+            test_data_dict 为解析后的 JSON 字典，解析失败则为 None
+        """
+        import json
+        import tempfile
+        from pathlib import Path
+        
+        # 创建临时 JSON 输出文件
+        tmp_dir = Path(tempfile.gettempdir()) / "myclaude_test_output"
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        tmp_file = tmp_dir / f"test_{hash(user_prompt) & 0x7FFFFFFF:08x}.json"
+        
         if self._is_docker and self._container_id:
-            try:
-                subprocess.run(
-                    ["docker", "rm", "-f", self._container_id],
-                    capture_output=True,
-                    timeout=10,
-                )
-                logger.info("Destroyed Docker container %s", self._container_id)
-            except (OSError, subprocess.SubprocessError) as exc:
-                logger.warning("Failed to destroy container %s: %s",
-                               self._container_id, exc)
+            stdout, stderr, exit_code = self._run_in_docker_with_test_output(
+                user_prompt, str(tmp_file)
+            )
+        else:
+            stdout, stderr, exit_code = self._run_locally_with_test_output(
+                user_prompt, str(tmp_file), myclaude_root
+            )
+        
+        # 读取并解析 JSON 测试结果
+        test_data = None
+        try:
+            if tmp_file.exists():
+                with open(tmp_file, 'r', encoding='utf-8') as f:
+                    test_data = json.load(f)
+                tmp_file.unlink()  # 清理临时文件
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning("Failed to read test output JSON: %s", e)
+        
+        return stdout, stderr, exit_code, test_data
 
     # ------------------------------------------------------------------
-    # 私有方法
+    # 私有方法（带 test_output）
+    # ------------------------------------------------------------------
+
+    def _run_in_docker_with_test_output(
+            self, user_prompt: str, test_output_path: str
+    ) -> tuple[str, str, int]:
+        """在已有容器内执行命令，生成结构化测试 JSON"""
+        cmd = [
+            "docker", "exec", self._container_id,
+            "python", "-m", "src.myclaude",
+            "--test-mode",
+            "--prompt", user_prompt,
+            "--test-output", test_output_path,
+        ]
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True,
+                                  timeout=CONTAINER_TIMEOUT)
+            return proc.stdout, proc.stderr, proc.returncode
+        except subprocess.TimeoutExpired:
+            logger.error("Docker exec timed out after %ds", CONTAINER_TIMEOUT)
+            return "", f"Timeout after {CONTAINER_TIMEOUT}s", -1
+
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _run_locally_with_test_output(
+            user_prompt: str, test_output_path: str,
+            myclaude_root: Optional[str] = None
+    ) -> tuple[str, str, int]:
+        """降级模式：本地执行，生成结构化测试 JSON"""
+        root = myclaude_root or os.getcwd()
+        cmd = [
+            "python", "-m", "src.myclaude",
+            "--test-mode",
+            "--prompt", user_prompt,
+            "--test-output", test_output_path,
+        ]
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True,
+                                  timeout=CONTAINER_TIMEOUT, cwd=root)
+            return proc.stdout, proc.stderr, proc.returncode
+        except subprocess.TimeoutExpired:
+            logger.error("Local run timed out after %ds", CONTAINER_TIMEOUT)
+            return "", f"Timeout after {CONTAINER_TIMEOUT}s", -1
+
     # ------------------------------------------------------------------
 
     def _run_in_docker(self, user_prompt: str) -> tuple[str, str, int]:

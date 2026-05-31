@@ -128,7 +128,7 @@ class MyClaudeCLI:
 
     def run(self):
         """运行 CLI 主循环：聊天流式 + 编码工具双模式（全同步）"""
-        cli_print.clear_screen()
+        # cli_print.clear_screen()
         cli_print.print_welcome()
 
         while True:
@@ -158,19 +158,93 @@ class MyClaudeCLI:
             cli_print.print_blank()
 
 
-    def run_test_mode(self, prompt: str):
-        """测试模式：直接执行一次 QueryLoop，不进入交互循环"""
+    def run_test_mode(self, prompt: str, test_output_path: str = None):
+        """测试模式：直接执行一次 QueryLoop，不进入交互循环。
+        
+        Args:
+            prompt: 用户输入指令
+            test_output_path: 可选，结构化 JSON 结果输出文件路径。
+                输出 JSON 结构为：
+                {
+                    "exit_code": int,         # 0=成功，1=异常
+                    "tool_calls": [           # 工具调用列表
+                        {
+                            "tool": str,      # 工具名（create/str_replace/bash/file_view/use_skill/done）
+                            "params": dict,   # 工具参数（已脱敏，路径为绝对路径）
+                            "result": str     # 工具执行结果（截断 500 字符）
+                        }
+                    ],
+                    "key_outputs": [str, ...],  # LLM 在各轮对话中输出的纯文本片段（非工具调用部分）
+                    "is_truncated": bool,       # LLM 输出是否因 max_tokens 被截断
+                    "error": str|null           # 异常信息（正常为 null）
+                }
+        """
+        import json
+        from pathlib import Path
         from src.cli import cli_print as cp
+
         cp.print_info(f"[测试模式] 输入: {prompt}")
         cp.reset_reasoning()
 
-        self.query_loop.run(
-            prompt,
-            cp.show_status,
-            cp.print_info,
-            cp.typewriter_then_markdown,
-            cp.print_tool_call,
-            cp.print_tool_result,
-            cp.typewriter_then_collapse
-        )
+        # 收集结构化测试结果数据
+        test_data = {
+            "exit_code": 0,
+            "tool_calls": [],
+            "key_outputs": [],
+            "is_truncated": False,
+            "error": None,
+        }
+
+        # 包装回调：捕获 LLM 输出文本（typewriter_then_markdown 的参数）到 key_outputs
+        original_print_llm_rsp = cp.typewriter_then_markdown
+
+        def capturing_print_llm_rsp(text: str):
+            if text and text.strip():
+                test_data["key_outputs"].append(text)
+            original_print_llm_rsp(text)
+
+        # 包装回调：捕获工具调用信息
+        original_print_tool_call = cp.print_tool_call
+
+        def capturing_print_tool_call(tool_name: str, params: dict):
+            test_data["tool_calls"].append({
+                "tool": tool_name,
+                "params": params,
+                "result": "",  # 先占位，等 print_tool_result 填充
+            })
+            original_print_tool_call(tool_name, params)
+
+        # 包装回调：捕获工具执行结果并回填到最近一次工具调用记录中
+        original_print_tool_result = cp.print_tool_result
+
+        def capturing_print_tool_result(tool_name: str, result: str):
+            # 回填结果到最近的同名工具调用
+            for tc in reversed(test_data["tool_calls"]):
+                if tc["tool"] == tool_name and tc["result"] == "":
+                    tc["result"] = result[:500]  # 截断防止过大
+                    break
+            original_print_tool_result(tool_name, result)
+
+        try:
+            self.query_loop.run(
+                prompt,
+                cp.show_status,
+                cp.print_info,
+                capturing_print_llm_rsp,
+                capturing_print_tool_call,
+                capturing_print_tool_result,
+                cp.typewriter_then_collapse
+            )
+        except Exception as e:
+            test_data["exit_code"] = 1
+            test_data["error"] = str(e)
+
+        # 写入 JSON 结果文件
+        if test_output_path:
+            output_path = Path(test_output_path)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(output_path, 'w', encoding='utf-8') as f:
+                json.dump(test_data, f, ensure_ascii=False, indent=2)
+            cp.print_info(f"[测试模式] JSON 结果已输出到: {test_output_path}")
+
         cp.print_info("[测试模式] 执行完毕，退出。")

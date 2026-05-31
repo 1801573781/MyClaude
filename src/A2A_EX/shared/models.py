@@ -58,6 +58,12 @@ class TestCase(BaseModel):
     description: str
     user_prompt: str = Field(description="发送给 MyClaude 的测试指令")
     expected_behavior: str = Field(description="期望的行为描述（用于 LLM 评判）")
+    check_type: Optional[str] = Field(
+        default="general",
+        description="评判类型，用于指导 LLMJudge 的评判侧重点。"
+                    "可选值：file_created, file_modified, tool_chain, log_generated, "
+                    "startup, memory_aware, skill_triggered, path_safety, general"
+    )
 
 
 # ============================================================
