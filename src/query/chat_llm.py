@@ -1,8 +1,15 @@
 from openai import OpenAI, APIConnectionError, RateLimitError, APIError
-from openai import AsyncOpenAI
 
 from src.utility.config_loader import global_cfg
 import httpx
+import types
+
+
+def _to_dict(obj):
+    """递归将 SimpleNamespace 转回 dict，供 OpenAI SDK 使用"""
+    if isinstance(obj, types.SimpleNamespace):
+        return {k: _to_dict(v) for k, v in obj.__dict__.items()}
+    return obj
 
 
 model_provider = global_cfg.model.provider
@@ -10,7 +17,7 @@ provider_cfg = getattr(global_cfg, model_provider)
 api_key = provider_cfg.api_key
 base_url = provider_cfg.base_url
 model_name = provider_cfg.model_name
-
+extra_body = getattr(provider_cfg, 'extra_body', None)
 
 client = OpenAI(
     api_key=api_key,
@@ -69,14 +76,19 @@ def stream_chat(msg, max_tokens=global_cfg.model_chat.initial_max_tokens):
     usage = None
 
     try:
-        stream = client.chat.completions.create(
+        # 构建 API 调用参数，仅在 extra_body 非空时传入
+        api_kwargs = dict(
             model=model_name,
             messages=msg,
             max_tokens=max_tokens,
             temperature=global_cfg.model_chat.temperature,
             stream=True,
-            stream_options={"include_usage": True}
+            stream_options={"include_usage": True},
         )
+        if extra_body:
+            api_kwargs["extra_body"] = _to_dict(extra_body)
+
+        stream = client.chat.completions.create(**api_kwargs)
 
         # 整个流式循环也放在异常保护中
         for chunk in stream:
@@ -87,7 +99,7 @@ def stream_chat(msg, max_tokens=global_cfg.model_chat.initial_max_tokens):
                     "prompt_tokens": chunk.usage.prompt_tokens or 0,
                     "completion_tokens": chunk.usage.completion_tokens or 0,
                     "cached_tokens": getattr(chunk.usage, 'prompt_tokens_details', None) and
-                                     getattr(chunk.usage.prompt_tokens_details, 'cached_tokens', 0) or 0,
+                                     getattr(chunk.usage.prompt_tokens_details, 'cached_tokens', 0) or 0,  # noqa E131
                 }
                 continue  # 这个 chunk 通常不含 choices，继续循环（也可能同时也有 choices）
 
@@ -97,13 +109,15 @@ def stream_chat(msg, max_tokens=global_cfg.model_chat.initial_max_tokens):
 
             choice = chunk.choices[0]
 
-            # ① 收集推理内容（如果提供商支持）
-            if choice.delta.reasoning_content:
-                reasoning_content += choice.delta.reasoning_content
+            # ① 收集推理内容（如果提供商支持，安全访问避免 AttributeError）
+            delta = choice.delta
+            rc = getattr(delta, 'reasoning_content', None) or getattr(delta, 'reasoning', None)
+            if rc:
+                reasoning_content += rc
 
             # ② 收集内容（防止最后一个块同时带有内容和 finish_reason）
-            if choice.delta.content:
-                full_content += choice.delta.content
+            if getattr(delta, 'content', None):
+                full_content += delta.content
 
             # ③ 再处理结束原因
             if choice.finish_reason is not None:
@@ -144,7 +158,6 @@ def block_chat(msg, max_tokens=9000):
     return response.choices[0].message.content
 """
 
-
 """
 async_client = AsyncOpenAI(
     api_key=api_key,  # minimax_api_key,
@@ -181,4 +194,3 @@ async def async_stream_chat(msg, max_tokens=9000):
             text = choice.delta.content
             yield text
 """
-

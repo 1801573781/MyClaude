@@ -8,6 +8,8 @@ __pycache__/
 venv/
 .venv/
 .idea/
+.pytest_cache/
+.ruff_cache/
 logo/
 src/crawler/
 src/spider/

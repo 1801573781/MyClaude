@@ -26,13 +26,17 @@ CODE_EXTS = {
 
 def parse_gitignore_skip_dirs(gitignore_path):
     """
-    动态解析 .gitignore，提取需要跳过的目录名集合。
+    动态解析 .gitignore，提取需要跳过的目录集合。
+    返回 (simple_names, path_prefixes)：
+      - simple_names: 不含路径分隔符的目录名，匹配任意层级（如 __pycache__）
+      - path_prefixes: 含路径分隔符的路径，仅匹配从根目录开始的精确路径（如 src/memory）
     仅处理目录模式（以 '/' 或 '/*' 结尾的行），忽略以 '!' 开头的例外。
     """
-    skip_dirs = set()
+    simple_names = set()
+    path_prefixes = set()
     gi = Path(gitignore_path)
     if not gi.is_file():
-        return skip_dirs
+        return simple_names, path_prefixes
 
     for line in gi.read_text(encoding='utf-8', errors='ignore').splitlines():
         line = line.strip()
@@ -55,9 +59,13 @@ def parse_gitignore_skip_dirs(gitignore_path):
             # 纯文件名或 glob 模式，不处理
             continue
 
-        skip_dirs.add(dir_name)
+        # 含路径分隔符的为精确路径前缀，否则为简单目录名
+        if '/' in dir_name:
+            path_prefixes.add(dir_name)
+        else:
+            simple_names.add(dir_name)
 
-    return skip_dirs
+    return simple_names, path_prefixes
 
 
 # ==================== 注释计数 ====================
@@ -109,7 +117,7 @@ def collect_stats(root):
       ext_stats:  { ext: {"files": n, "total": n, "code": n, "blank": n, "comment": n} }
     """
     root = Path(root).resolve()
-    skip_dirs = parse_gitignore_skip_dirs(root / '.gitignore')
+    simple_names, path_prefixes = parse_gitignore_skip_dirs(root / '.gitignore')
 
     dir_stats = defaultdict(list)
     ext_stats = defaultdict(lambda: {"files": 0, "total": 0, "code": 0,
@@ -123,7 +131,15 @@ def collect_stats(root):
 
         rel = path.relative_to(root)
         parts = rel.parts
-        if any(p in skip_dirs for p in parts[:-1]):
+        # Windows 下 Path.relative_to 返回反斜杠路径，而 gitignore 用正斜杠
+        # 统一转为正斜杠后再与 path_prefixes 比较
+        rel_str = str(rel).replace('\\', '/')
+
+        # 匹配简单目录名：任意路径组件命中则跳过（如 __pycache__、venv）
+        if any(p in simple_names for p in parts[:-1]):
+            continue
+        # 匹配路径前缀：从根目录开始的精确路径匹配（如 src/memory、src/tools）
+        if any(rel_str == pf or rel_str.startswith(pf + '/') for pf in path_prefixes):
             continue
 
         ext = path.suffix.lower()
