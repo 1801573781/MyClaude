@@ -60,77 +60,76 @@ def _quick_balance_check(text: str) -> int:
 
 def _find_container_end(response: str, content_start: int,
                         open_tag_prefix: str, close_tag: str) -> int:
-    """嵌套感知的容器闭合标签查找器。
+    """嵌套感知的容器闭合标签查找器（字符串感知版）。
 
-    从 content_start 位置开始，跟踪同名标签的嵌套深度，
-    找到与当前开标签匹配的闭标签位置。
+    从 content_start 位置开始逐字符扫描，跟踪 JSON 字符串状态和
+    同名标签的嵌套深度，找到与当前开标签匹配的闭标签位置。
 
-    解决两大核心问题：
-    1. 当容器内容中包含同名的开/闭标签对时，深度跟踪正确处理。
-    2. 当容器内容中包含孤立的同名闭标签（如字符串中的 "</create>"），
-       通过结构平衡检查 + 行首启发式判断来跳过假闭标签。
-
-    验证策略（仅在存在多个候选闭标签时激活，避免误伤）：
-    - 结构平衡检查：内容若存在未闭合的字符串/括号，闭标签在内容内部，跳过。
-    - 行首启发式：真正的闭标签通常独占一行；若闭标签前有非空白内容，跳过。
+    核心改进：不再使用 str.find() 盲目搜索，而是逐字符扫描并
+    跟踪是否处于字符串字面量内部。当发现疑似开/闭标签前缀时，
+    若当前位置处于字符串内，则跳过不处理，彻底消除 JSON 内容中
+    出现同名标签关键字导致的误判。
     """
     depth = 1
-    search_pos = content_start
+    pos = content_start
+    in_string = False
+    string_char = None  # '"', "'", '"""', "'''"
+    open_len = len(open_tag_prefix)
+    close_len = len(close_tag)
 
-    while depth > 0 and search_pos < len(response):
-        next_open = response.find(open_tag_prefix, search_pos)
-        next_close = response.find(close_tag, search_pos)
+    while pos < len(response) and depth > 0:
+        if in_string:
+            ch = response[pos]
+            if ch == '\\':
+                pos += 2  # 跳过转义字符及被转义字符
+                continue
+            if string_char in ('"""', "'''"):
+                if response[pos:pos + 3] == string_char:
+                    in_string = False
+                    string_char = None
+                    pos += 3
+                    continue
+            elif ch == string_char:
+                in_string = False
+                string_char = None
+                pos += 1
+                continue
+            pos += 1
+            continue
 
-        if next_close == -1:
-            return -1
+        # 检查三引号开标签（""" 或 '''）
+        if pos + 3 <= len(response) and response[pos:pos + 3] in ('"""', "'''"):
+            in_string = True
+            string_char = response[pos:pos + 3]
+            pos += 3
+            continue
 
-        if next_open != -1 and next_open < next_close:
-            # 发现一个开标签前缀——检查是否为真正的开标签（而非子串）
-            after_open = next_open + len(open_tag_prefix)
-            if after_open < len(response) and response[after_open] in (' ', '>', '/', '\n', '\t', '\r'):
+        ch = response[pos]
+        if ch in ('"', "'"):
+            in_string = True
+            string_char = ch
+            pos += 1
+            continue
+
+        # 检查开标签前缀（仅当不在字符串内时生效）
+        if (pos + open_len <= len(response)
+                and response[pos:pos + open_len] == open_tag_prefix):
+            after = pos + open_len
+            if after < len(response) and response[after] in (' ', '>', '/', '\n', '\t', '\r'):
                 depth += 1
-            search_pos = after_open
-        else:
-            # 发现一个闭标签
+                pos = after
+                continue
+
+        # 检查闭标签（仅当不在字符串内时生效）
+        if (pos + close_len <= len(response)
+                and response[pos:pos + close_len] == close_tag):
             depth -= 1
             if depth == 0:
-                after_close = next_close + len(close_tag)
+                return pos + close_len
+            pos += close_len
+            continue
 
-                # 检查后面是否还有同名的闭标签
-                next_close_after = response.find(close_tag, after_close)
-
-                if next_close_after != -1:
-                    # 存在更多候选闭标签，需验证当前闭标签是否为真正的闭标签
-
-                    # 验证1：结构平衡检查
-                    # 如果内容结构不完整（未闭合的字符串/括号），
-                    # 说明此闭标签在内容内部（如字符串字面量），跳过
-                    content_so_far = response[content_start:next_close]
-                    balance = _quick_balance_check(content_so_far)
-
-                    if balance != 0:
-                        # 内容不完整，此闭标签极可能是内容的一部分
-                        search_pos = after_close
-                        depth = 1  # 恢复深度，继续搜索
-                        continue
-
-                    # 验证2：行首启发式
-                    # 真正的闭标签通常独占一行，前面只有空白
-                    line_start = response.rfind('\n', content_start, next_close)
-                    if line_start == -1:
-                        before_on_line = response[content_start:next_close]
-                    else:
-                        before_on_line = response[line_start + 1:next_close]
-
-                    if before_on_line.strip():
-                        # 闭标签前有非空白内容，可能是嵌入在内容中的假闭标签
-                        search_pos = after_close
-                        depth = 1
-                        continue
-
-                # 通过所有验证，或只有一个候选闭标签（信任它）
-                return after_close
-            search_pos = next_close + len(close_tag)
+        pos += 1
 
     return -1
 
