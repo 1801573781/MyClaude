@@ -112,6 +112,9 @@ def file_create(root: str, path: str, content: str) -> str:
 
         """创建新文件"""
         p.parent.mkdir(parents=True, exist_ok=True)
+        # 确保文件以换行符结尾（PEP 8 W292）
+        if not content.endswith("\n"):
+            content += "\n"
         p.write_text(content, encoding="utf-8")
         return f"已创建 {full_path} ({len(content)} 字符)"
     except OSError as e:
@@ -146,6 +149,9 @@ def file_str_replace(root: str, path: str, old: str, new: str) -> str:
         if old not in text:
             return f"[BLOCKED] 错误：未找到精确匹配片段，请重新查看文件内容。\n---待匹配片段---\n{old}\n---"
         text = text.replace(old, new, 1)
+        # 确保文件以换行符结尾（PEP 8 W292）
+        if not text.endswith("\n"):
+            text += "\n"
         p.write_text(text, encoding="utf-8")
         return f"已修改 {full_path}"
     except OSError as e:

@@ -181,13 +181,17 @@ class MyClaudeCLI:
         """
         import json
         from pathlib import Path
+        from src.utility.config_loader import global_cfg
         from src.cli import cli_print as cp
 
         cp.print_info(f"[测试模式] 输入: {prompt}")
         cp.reset_reasoning()
 
+        user_original_input = prompt
+
         # 收集结构化测试结果数据
         test_data = {
+            "user_original_input": user_original_input,
             "exit_code": 0,
             "tool_calls": [],
             "key_outputs": [],
@@ -242,9 +246,12 @@ class MyClaudeCLI:
         # 写入 JSON 结果文件
         if test_output_path:
             output_path = Path(test_output_path)
+            if not output_path.is_absolute():
+                logs_root = global_cfg.base_path.logs_root
+                output_path = Path(logs_root) / output_path.name
             output_path.parent.mkdir(parents=True, exist_ok=True)
             with open(output_path, 'w', encoding='utf-8') as f:
                 json.dump(test_data, f, ensure_ascii=False, indent=2)
-            cp.print_info(f"[测试模式] JSON 结果已输出到: {test_output_path}")
+            cp.print_info(f"[测试模式] JSON 结果已输出到: {output_path}")
 
         cp.print_info("[测试模式] 执行完毕，退出。")
