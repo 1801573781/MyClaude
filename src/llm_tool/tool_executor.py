@@ -140,7 +140,10 @@ def _extract_subtag_content(block: str, tag_name: str):
     例如从 str_replace 块中提取 old 和 new 子标签的内容。
     当子标签内容中包含同名的闭标签时，仍能正确提取。
 
-    返回 (content, end_pos)，未找到时返回 (None, -1)。
+    返回 (content, end_pos, found)。
+    - found=True 表示成功找到了闭合标签
+    - found=False 表示未找到闭合标签（content 为补偿提取的内容）
+    - 完全未找到开标签时返回 (None, -1, False)
     """
     open_tag = f'<{tag_name}>'
     close_tag_str = f'</{tag_name}>'
@@ -148,17 +151,97 @@ def _extract_subtag_content(block: str, tag_name: str):
 
     start = block.find(open_tag)
     if start == -1:
-        return None, -1
+        return None, -1, False
 
     content_start = start + len(open_tag)
     end_pos = _find_container_end(block, content_start, open_prefix, close_tag_str)
 
     if end_pos == -1:
         # 未闭合的子标签，取到块末尾
-        return block[content_start:], len(block)
+        return block[content_start:], len(block), False
 
     content = block[content_start:end_pos - len(close_tag_str)]
-    return content, end_pos
+    return content, end_pos, True
+
+
+def _parse_str_replace_block(block: str):
+    """解析 str_replace 块，提取 old/new 子标签，并清理标签泄露。
+
+    核心策略：
+    1. 优先使用嵌套感知的 _extract_subtag_content 提取子标签
+    2. 失败时回退到简单正则（兼容 LLM 输出的各种畸形情况）
+    3. 利用 found 标志检测标签泄露（old 闭合但 new 未闭合）
+    4. 从 new_content 末尾剥离泄露的 </old> / </new> / </str_replace>
+
+    Returns:
+        dict 或 None（解析失败时）
+    """
+    # 1. 从块开头提取外层 path/summary
+    open_match = re.match(
+        r'<str_replace\s+path="([^"]*)"(?:\s+summary="([^"]*)")?\s*>',
+        block
+    )
+    if not open_match:
+        return None
+    path = open_match.group(1)
+    summary = open_match.group(2) or ""
+
+    # 2. 提取 old 子标签（嵌套感知优先）
+    old_content, old_end, old_found = _extract_subtag_content(block, "old")
+    if old_content is None:
+        return None
+
+    # 3. 提取 new 子标签：嵌套感知 → 简单正则 → 末尾兜底
+    new_content, new_end, new_found = _extract_subtag_content(block, "new")
+    if new_content is None:
+        new_match = re.search(r'<new>(.*?)</new>', block, re.DOTALL)
+        if new_match:
+            new_content = new_match.group(1)
+            new_found = True
+        else:
+            new_start = block.find('<new>')
+            if new_start != -1:
+                new_content = block[new_start + len('<new>'):]
+                new_found = False
+            else:
+                return None
+
+    # 4. 标签泄露清理：old 正常闭合但 new 未闭合时
+    if old_found and not new_found:
+        leaked_tags = ["</old>", "</new>", "</str_replace>"]
+        changed = True
+        while changed:
+            changed = False
+            for tag in leaked_tags:
+                if new_content.endswith(tag):
+                    new_content = new_content[:-len(tag)]
+                    changed = True
+                    break
+            if not changed and new_content:
+                stripped = new_content.rstrip()
+                if stripped != new_content:
+                    new_content = stripped
+                    changed = True
+
+    # 5. 清理子标签内容首尾空白（保留内部格式）
+    if old_content.startswith('\n'):
+        old_content = old_content[1:]
+    if old_content.endswith('\n'):
+        old_content = old_content[:-1]
+    if new_content.startswith('\n'):
+        new_content = new_content[1:]
+    if new_content.endswith('\n'):
+        new_content = new_content[:-1]
+
+    return {
+        "llm_tool": "str_replace",
+        "params": {
+            "path": path,
+            "old": old_content,
+            "new": new_content,
+            "summary": summary,
+        }
+    }
 
 
 def parse_tools(response: str):
@@ -312,54 +395,6 @@ def parse_tools(response: str):
     remaining = re.sub(r'\n{3,}', '\n\n', remaining)
 
     return remaining, tools
-
-
-def _parse_str_replace_block(block: str):
-    """
-    容错解析单个 str_replace 块，使用嵌套感知的子标签提取。
-
-    当 old/new 子标签内容中包含同名闭标签时，仍能正确提取。
-    """
-    # 1. 提取 path 和 summary 属性
-    header = re.search(r'<str_replace\s+path="([^"]*)"(?:\s+summary="([^"]*)")?\s*>', block)
-    if not header:
-        return None
-    path = header.group(1)
-    summary = header.group(2) or ""
-
-    # 2. 使用嵌套感知的子标签提取
-    old_content, _ = _extract_subtag_content(block, "old")
-    new_content, _ = _extract_subtag_content(block, "new")
-
-    if old_content is None and new_content is None:
-        return None
-
-    # 3. 容错：如果嵌套感知提取失败，回退到简单正则
-    if old_content is None:
-        old_match = re.search(r'<old>(.*?)</old>', block, re.DOTALL)
-        old_content = old_match.group(1) if old_match else ""
-
-    if new_content is None:
-        new_match = re.search(r'<new>(.*?)</new>', block, re.DOTALL)
-        if new_match:
-            new_content = new_match.group(1)
-        else:
-            # 最后手段：<new> 到块末尾
-            new_start = block.find('<new>')
-            if new_start != -1:
-                new_content = block[new_start + len('<new>'):]
-            else:
-                return None
-
-    return {
-        "llm_tool": "str_replace",
-        "params": {
-            "path": path,
-            "summary": summary,
-            "old": old_content,
-            "new": new_content,
-        }
-    }
 
 
 code_output_root = global_cfg.base_path.code_output_root
