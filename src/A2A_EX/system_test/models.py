@@ -91,6 +91,43 @@ class HealthResponse(BaseModel):
     service: str = "systemtest"
 
 
+class UnitTestCase(BaseModel):
+    """单元测试用例（直接调用被测函数）。"""
+    id: str
+    description: str
+    target_module: str = ""
+    target_function: str = ""
+    test_input: str = ""
+    expected_behavior: str = ""
+
+
+class UnitTestResult(BaseModel):
+    """单个单元测试用例的执行结果。"""
+    test_id: str
+    description: str
+    status: TestStatus
+    actual_output: str = ""
+    duration_seconds: float = 0.0
+
+
+class RunUnitTestRequest(BaseModel):
+    """单元测试请求。"""
+    task_id: Optional[str] = None
+    test_cases: List[UnitTestCase]
+    myclaude_root: Optional[str] = None
+
+
+class RunUnitTestResponse(BaseModel):
+    """单元测试响应。"""
+    task_id: str
+    state: TestRunState
+    passed: int
+    total: int
+    pass_rate: float
+    details: List[UnitTestResult]
+    execution_time_seconds: float
+
+
 class SandboxStatus(BaseModel):
     """沙箱状态。"""
     available: bool

@@ -18,10 +18,12 @@ from .agent_card import get_agent_card
 from .models import (
     RunRegressionRequest, RunRegressionResponse,
     RunNewFeatureRequest, RunNewFeatureResponse,
+    RunUnitTestRequest, RunUnitTestResponse,
     TestRunState, TestStatus,
 )
 from .regression_runner import RegressionRunner
 from .new_feature_runner import NewFeatureRunner
+from .unit_test_runner import UnitTestRunner
 from .sandbox import SandboxManager
 from .judge import LLMJudge
 
@@ -114,6 +116,39 @@ async def run_new_feature_tests(req: RunNewFeatureRequest):
                 task_id, passed, total, passed / total * 100 if total else 0, elapsed)
 
     return RunNewFeatureResponse(
+        task_id=task_id,
+        state=TestRunState.COMPLETED,
+        passed=passed,
+        total=total,
+        pass_rate=passed / total if total else 0.0,
+        details=details,
+        execution_time_seconds=elapsed,
+    )
+
+
+# ------------------------------ 单元测试 --------------------------------
+
+@app.post("/a2a/run_unit_tests", response_model=RunUnitTestResponse)
+async def run_unit_tests(req: RunUnitTestRequest):
+    """执行单元测试用例（直接调用被测函数，LLM 评判返回值）"""
+    t0 = time.perf_counter()
+    task_id = req.task_id or f"ut-{int(t0)}"
+
+    logger.info("Starting unit-test run [task_id=%s] cases=%d",
+                task_id, len(req.test_cases))
+
+    runner = UnitTestRunner(judge=judge)
+    details = runner.execute(test_cases=req.test_cases,
+                             myclaude_root=req.myclaude_root)
+
+    passed = sum(1 for d in details if d.status == TestStatus.PASS)
+    total = len(details)
+    elapsed = round(time.perf_counter() - t0, 2)
+
+    logger.info("Unit tests complete [task_id=%s] %d/%d passed (%.1f%%) in %.1fs",
+                task_id, passed, total, passed / total * 100 if total else 0, elapsed)
+
+    return RunUnitTestResponse(
         task_id=task_id,
         state=TestRunState.COMPLETED,
         passed=passed,
