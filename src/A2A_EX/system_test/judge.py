@@ -8,6 +8,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+
+from utility.config_loader import global_cfg
 from .models import TestStatus
 
 logger = logging.getLogger(__name__)
@@ -34,15 +36,21 @@ _JUDGE_PROMPT = """你是一个测试评判助手。根据以下信息，判断�
 """
 
 
+model_provider = global_cfg.model.provider
+provider_cfg = getattr(global_cfg, model_provider)
+api_key = provider_cfg.api_key
+base_url = provider_cfg.base_url
+model_name = provider_cfg.model_name
+extra_body = getattr(provider_cfg, 'extra_body', None)
+
+
 class LLMJudge:
     """基于 LLM 的测试用例评判器"""
 
     def __init__(self):
-        self._api_key = os.environ.get("DEEPSEEK_API_KEY",
-                                       os.environ.get("MINIMAX_API_KEY", ""))
-        self._base_url = os.environ.get("DEEPSEEK_BASE_URL",
-                                        os.environ.get("LLM_BASE_URL", ""))
-        self._model = os.environ.get("JUDGE_MODEL", "deepseek-chat")
+        self._api_key = api_key
+        self._base_url = base_url
+        self._model = model_name
 
     # ------------------------------------------------------------------
 

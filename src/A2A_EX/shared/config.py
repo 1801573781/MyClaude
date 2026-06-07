@@ -75,4 +75,4 @@ def load_config() -> SimpleNamespace:
 
 
 # 全局单例
-global_cfg = load_config()
+a2a_global_cfg = load_config()

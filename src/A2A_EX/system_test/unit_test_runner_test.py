@@ -13,14 +13,15 @@ import time
 import traceback
 from pathlib import Path
 
-from .models import UnitTestResult, TestStatus
-from .judge import LLMJudge
+from src.A2A_EX.system_test.models import UnitTestResult, TestStatus
+from src.A2A_EX.system_test.judge import LLMJudge
 
 logger = logging.getLogger(__name__)
 
 
-class UnitTestRunner:
+class UnitTestRunner_2:
     """单元测试用例执行器"""
+
 
     def __init__(self, judge: LLMJudge):
         self._judge = judge
@@ -56,6 +57,7 @@ class UnitTestRunner:
             )
 
             # 2. 调用评判 LLM
+
             verdict_result = self._judge.evaluate(
                 expected=case["expected_behavior"],
                 actual_output=actual_output,
@@ -114,7 +116,7 @@ class UnitTestRunner:
         func = getattr(mod, target_function)
 
         # 构造参数（根据 test_input 解析）
-        args, kwargs = UnitTestRunner._build_args(test_input, target_function)
+        args, kwargs = UnitTestRunner_2._build_args(test_input, target_function)
 
         # 调用函数
         result = func(*args, **kwargs)
@@ -164,3 +166,46 @@ class UnitTestRunner:
 
         # 默认：test_input 作为单参数字符串传入
         return [test_input], {}
+
+
+if __name__ == "__main__":
+    # 配置日志输出到控制台和文件
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        handlers=[
+            logging.StreamHandler(),
+            logging.FileHandler(
+                Path(__file__).resolve().parent / "unit_test_runner_test.log",
+                encoding="utf-8",
+            ),
+        ],
+    )
+
+    judege = LLMJudge()
+    ut = UnitTestRunner_2(judge=judege)
+
+    ut_test_cases = [
+          {
+            "id": "UT-TP-009",
+            "description": "str_replace 的 new 块以 </old> 闭合时 parse_tools 容错降级",
+            "target_module": "src.llm_tool.tool_executor",
+            "target_function": "parse_tools",
+            "test_input": "<str_replace path='D:/test.py' summary='测试'><old>x=1</old><new>y=2</old></str_replace>",
+            "expected_behavior": "parse_tools 应能容错解析此畸形的 str_replace 标签，new 块以 </old> 错误闭合时降级识别，返回 new 内容为 'y=2' 而非 'y=2</old>'。不应抛出异常或丢失 str_replace 工具调用。"
+          },
+          {
+            "id": "UT-TP-011",
+            "description": "reasoning_content 兜底解析工具调用",
+            "target_module": "src.llm_tool.tool_executor",
+            "target_function": "parse_tools",
+            "test_input": "用户要创建文件...\n<create path='D:/test.py' summary='测试'/>\n之后输出 done...\n<done>完成\n",
+            "expected_behavior": "当主响应 content 中未解析到任何工具时，parse_tools 应尝试从 reasoning_content 中宽松匹配工具标签。应能从 reasoning_content 中提取出 create 和 done 两个工具调用。"
+          },
+    ]
+
+    myclaude_root_path = 'd:/ai/myclaude/'
+
+    ut.execute(test_cases=ut_test_cases, myclaude_root=myclaude_root_path)
+
+

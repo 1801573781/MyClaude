@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from src.A2A_EX.shared.config import global_cfg
+from src.A2A_EX.shared.config import a2a_global_cfg
 from src.A2A_EX.shared.models import (
     ValidationReport,
     ValidationRequest,
@@ -35,7 +35,7 @@ class ContextStore:
         Args:
             data_root: 数据存储根目录，默认使用全局配置。
         """
-        self._data_root = Path(data_root or global_cfg.data_root)
+        self._data_root = Path(data_root or a2a_global_cfg.data_root)
         self._data_root.mkdir(parents=True, exist_ok=True)
 
     # ============================================================

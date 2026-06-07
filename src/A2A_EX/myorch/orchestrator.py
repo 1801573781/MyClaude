@@ -12,7 +12,7 @@ from typing import Optional
 
 import httpx
 
-from src.A2A_EX.shared.config import global_cfg
+from src.A2A_EX.shared.config import a2a_global_cfg
 from src.A2A_EX.shared.models import (
     NewFeatureTestRequest,
     RegressionRequest,
@@ -48,15 +48,15 @@ class MyOrchestrator:
             system_test_url: SystemTest Agent 的基地址。
         """
         self._store = context_store or ContextStore()
-        cfg = global_cfg.system_test
+        cfg = a2a_global_cfg.system_test
         self._sys_test_url = system_test_url or f"http://{cfg.host}:{cfg.port}"  # noqa: E231
 
         # 判定阈值
-        self._regression_threshold = global_cfg.threshold.regression_pass_rate
-        self._new_feature_threshold = global_cfg.threshold.new_feature_pass_rate
+        self._regression_threshold = a2a_global_cfg.threshold.regression_pass_rate
+        self._new_feature_threshold = a2a_global_cfg.threshold.new_feature_pass_rate
 
         # HTTP 客户端
-        self._http = httpx.Client(timeout=float(global_cfg.docker.test_timeout) + 60)
+        self._http = httpx.Client(timeout=float(a2a_global_cfg.docker.test_timeout) + 60)
 
     # ============================================================
     # 公共接口
@@ -179,7 +179,7 @@ class MyOrchestrator:
         regression_req = RegressionRequest(
             task_id=task_id,
             test_ids=request.regression_test_ids,
-            myclaude_root=global_cfg.myclaude_root,
+            myclaude_root=a2a_global_cfg.myclaude_root,
         )
 
         try:
@@ -226,7 +226,7 @@ class MyOrchestrator:
             task_id=task_id,
             test_cases=request.test_cases,
             changed_files=request.changed_files,
-            myclaude_root=global_cfg.myclaude_root,
+            myclaude_root=a2a_global_cfg.myclaude_root,
         )
 
         try:

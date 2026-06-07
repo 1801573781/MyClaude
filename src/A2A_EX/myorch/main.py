@@ -141,11 +141,11 @@ async def metrics():
 
 if __name__ == "__main__":
     import uvicorn
-    from src.A2A_EX.shared.config import global_cfg
+    from src.A2A_EX.shared.config import a2a_global_cfg
 
     uvicorn.run(
         "src.A2A_EX.myorch.main:app",
-        host=global_cfg.myorch.host,
-        port=global_cfg.myorch.port,
+        host=a2a_global_cfg.myorch.host,
+        port=a2a_global_cfg.myorch.port,
         reload=True,
     )
