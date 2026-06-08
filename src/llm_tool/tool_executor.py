@@ -70,7 +70,7 @@ def _find_container_end(response: str, content_start: int,
             pos += 1
             continue
 
-        # 检查三引号开标签（""" 或 '''）
+        # 检查三引号开标签（""" 或 '''）  # noqa
         if pos + 3 <= len(response) and response[pos:pos + 3] in ('"""', "'''"):
             in_string = True
             string_char = response[pos:pos + 3]
@@ -161,7 +161,15 @@ def _parse_str_replace_block(block: str):
     # 2. 提取 old 子标签（嵌套感知优先）
     old_content, old_end, old_found = _extract_subtag_content(block, "old")
     if old_content is None:
-        return None
+        return {
+            "error": "str_replace 工具缺少  开标签，请检查 XML 格式。",
+            "params": {"path": path, "summary": summary}
+        }
+    if not old_found:
+        return {
+            "error": "str_replace 工具中  未闭合（缺少 ），请补全后重新生成。",
+            "params": {"path": path, "summary": summary}
+        }
 
     # 3. 提取 new 子标签：嵌套感知 → 简单正则 → 末尾兜底
     new_content, new_end, new_found = _extract_subtag_content(block, "new")
@@ -378,9 +386,20 @@ def _build_result(response: str, all_matches: list, _is_inside_container):
                 block = info["match"].group(0) + info["content"] + f'</{tool_name}>'
             tool = _parse_str_replace_block(block)
             if tool:
-                if info["is_unclosed"]:
-                    tool["params"]["_is_unclosed"] = True
-                tools.append(tool)
+                if "error" in tool:
+                    # old/new 标签匹配失败：转为 error_tool，后续由 execute_code_tool 返回报错提示给 LLM
+                    tools.append({
+                        "llm_tool": "str_replace",
+                        "params": {
+                            "path": tool["params"]["path"],
+                            "summary": tool["params"].get("summary", ""),
+                            "_error": tool["error"]
+                        }
+                    })
+                else:
+                    if info["is_unclosed"]:
+                        tool["params"]["_is_unclosed"] = True
+                    tools.append(tool)
 
         elif tool_name == "bash":
             info = m
@@ -542,19 +561,28 @@ def execute_code_tool(tool):
             result = f"已创建 {p['path']}（{size} 字符）"
 
     elif name == "str_replace":
-        result_detail = file_str_replace(code_output_root, p["path"], p["old"], p["new"])
-        summary = p.get("summary", "")
-        if summary and summary.strip():
-            if len(summary) > 50:
-                summary = summary[:47] + "..."
-            result = f"文件已修改：{p['path']}，摘要：{summary}"
+        # 标签匹配错误：直接返回报错提示，不执行文件替换
+        if p.get("_error"):
+            error_msg = p["_error"]
+            path = p.get("path", "未知路径")
+            result = (
+                f"[ERROR] str_replace 解析失败：[path] = {path}, [error] = {error_msg}\n"
+                f"请修正 XML 格式后重新输出  工具调用。"
+            )
         else:
-            if result_detail.startswith("已修改"):
-                old_len = len(p["old"])
-                new_len = len(p["new"])
-                result = f"文件已修改：{p['path']}，替换了 1 处（{old_len} → {new_len} 字符）"
+            result_detail = file_str_replace(code_output_root, p["path"], p["old"], p["new"])
+            summary = p.get("summary", "")
+            if summary and summary.strip():
+                if len(summary) > 50:
+                    summary = summary[:47] + "..."
+                result = f"文件已修改：{p['path']}，摘要：{summary}"
             else:
-                result = result_detail
+                if result_detail.startswith("已修改"):
+                    old_len = len(p["old"])
+                    new_len = len(p["new"])
+                    result = f"文件已修改：{p['path']}，替换了 1 处（{old_len} → {new_len} 字符）"
+                else:
+                    result = result_detail
 
     elif name == "bash":
         result = tool_bash(p["command"])
