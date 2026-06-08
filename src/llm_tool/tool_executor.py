@@ -4,58 +4,31 @@ from src.llm_tool.cmd_bash import tool_bash
 
 import re
 
+# ======================== XML 标签集中管理 ========================
+# 所有 XML 工具标签（用于标签泄露清理和识别）。
+# 新增工具时必须同步更新这三个常量，其他地方全部引用它们。
+_ALL_XML_TAGS = {"create", "str_replace", "bash", "done", "file_view", "use_skill", "old", "new"}
 
-def _quick_balance_check(text: str) -> int:
-    """快速检查文本的结构平衡性。
+# 容器标签（需要闭合标签的，如 <create>...</create>）
+_CONTAINER_TAGS = {"create", "str_replace", "bash", "done"}
 
-    返回正数表示内容可能不完整（有未闭合的括号/引号）。
-    用于判断一个候选闭标签是否在内容内部（应跳过）还是真正的闭标签。
+# 自闭合标签（如 <file_view path="..."/>）
+_SELF_CLOSING_TAGS = {"file_view", "use_skill"}
 
-    检查：
-    - 括号/花括号/方括号的平衡
-    - 字符串字面量是否闭合（包括三引号）
-    - 若仍在字符串内，判定内容不完整
+
+def _final_clean_xml_tags(content: str) -> str:
+    """最终安全网：移除内容中所有 XML 工具标签残留。
+
+    这是最后一道防线，确保任何漏网之标签都不会被写入文件。
+    使用 _ALL_XML_TAGS 动态构建正则，处理所有已知工具标签。
     """
-    bracket_balance = 0
-    in_string = False
-    string_char = None  # '"', "'", '"""', "'''"
-    i = 0
-    while i < len(text):
-        ch = text[i]
-        if in_string:
-            if ch == '\\':
-                i += 2
-                continue
-            if string_char in ('"""', "'''"):
-                if text[i:i + 3] == string_char:
-                    in_string = False
-                    i += 3
-                    continue
-            elif ch == string_char:
-                in_string = False
-                i += 1
-                continue
-            i += 1
-            continue
-        # 检查三引号开标签
-        if text[i:i + 3] in ('"""', "'''"):
-            in_string = True
-            string_char = text[i:i + 3]
-            i += 3
-            continue
-        if ch in ('"', "'"):
-            in_string = True
-            string_char = ch
-            i += 1
-            continue
-        if ch in ('{', '[', '('):
-            bracket_balance += 1
-        elif ch in ('}', ']', ')'):
-            bracket_balance -= 1
-        i += 1
-    if in_string:
-        return bracket_balance + 1  # 未闭合字符串，内容不完整
-    return bracket_balance
+    if not content:
+        return content
+
+    # 构建匹配所有标签的正则（闭标签 + 开标签/自闭合标签）
+    tags_or = '|'.join(_ALL_XML_TAGS)
+    cleaned = re.sub(r'</?(' + tags_or + r')[^>]*/?>', '', content)
+    return cleaned
 
 
 def _find_container_end(response: str, content_start: int,
@@ -170,8 +143,7 @@ def _parse_str_replace_block(block: str):
     核心策略：
     1. 优先使用嵌套感知的 _extract_subtag_content 提取子标签
     2. 失败时回退到简单正则（兼容 LLM 输出的各种畸形情况）
-    3. 利用 found 标志检测标签泄露（old 闭合但 new 未闭合）
-    4. 从 new_content 末尾剥离泄露的 </old> / </new> / </str_replace>
+    3. 无条件清理：无论提取结果如何，最后都使用 _final_clean_xml_tags 清理
 
     Returns:
         dict 或 None（解析失败时）
@@ -197,31 +169,42 @@ def _parse_str_replace_block(block: str):
         new_match = re.search(r'<new>(.*?)</new>', block, re.DOTALL)
         if new_match:
             new_content = new_match.group(1)
-            new_found = True
+            # new_found = True
         else:
             new_start = block.find('<new>')
             if new_start != -1:
                 new_content = block[new_start + len('<new>'):]
-                new_found = False
+                # new_found = False
             else:
                 return None
 
-    # 4. 标签泄露清理：old 正常闭合但 new 未闭合时
-    if old_found and not new_found:
-        leaked_tags = ["</old>", "</new>", "</str_replace>"]
+    # 4. 标签泄露清理：无条件清理 old/new 中的 XML 标签残留
+    # 使用 _ALL_XML_TAGS 动态构建清理列表，确保所有标签都被处理
+    leaked_tags = [f'</{tag}>' for tag in _ALL_XML_TAGS]
+    leaked_tags.extend([f'<{tag}>' for tag in _ALL_XML_TAGS])
+
+    def _strip_leaked_tags(content: str) -> str:
+        """递归剥离 content 末尾的泄露 XML 标签，并用正则做最终清理。"""
+        if not content:
+            return content
         changed = True
         while changed:
             changed = False
             for tag in leaked_tags:
-                if new_content.endswith(tag):
-                    new_content = new_content[:-len(tag)]
+                if content.endswith(tag):
+                    content = content[:-len(tag)]
                     changed = True
                     break
-            if not changed and new_content:
-                stripped = new_content.rstrip()
-                if stripped != new_content:
-                    new_content = stripped
+            if not changed and content:
+                stripped = content.rstrip()
+                if stripped != content:
+                    content = stripped
                     changed = True
+        # 最终安全网：使用正则彻底清理所有 XML 标签残留
+        return _final_clean_xml_tags(content)
+
+    old_content = _strip_leaked_tags(old_content)
+    new_content = _strip_leaked_tags(new_content)
 
     # 5. 清理子标签内容首尾空白（保留内部格式）
     if old_content.startswith('\n'):
@@ -266,21 +249,19 @@ def parse_tools(response: str, reasoning_content: str = ""):
 
 
 def _parse_tools_strict(response: str):
-    """严格嵌套感知解析（原 parse_tools 的主解析逻辑）。"""
+    """严格嵌套感知解析。所有标签名引用 _CONTAINER_TAGS 和 _SELF_CLOSING_TAGS。"""
     all_matches = []
 
-    # === 非容器工具：正则匹配（自闭合标签，不存在嵌套问题） ===
-    non_container_patterns = [
-        ("file_view", re.compile(r'<file_view\s+path="([^"]*)"[^>]*/>')),
-        ("use_skill", re.compile(r'<use_skill\s+name="([^"]*)"\s*/>')),
-    ]
-    for tool_name, pattern in non_container_patterns:
+    # === 非容器工具（自闭合标签）：正则匹配 ===
+    non_container_patterns = {
+        "file_view": re.compile(r'<file_view\s+path="([^"]*)"[^>]*/>'),
+        "use_skill": re.compile(r'<use_skill\s+name="([^"]*)"\s*/>'),
+    }
+    for tool_name, pattern in non_container_patterns.items():
         for m in pattern.finditer(response):
             all_matches.append((m.start(), m.end(), tool_name, m))
 
     # === 容器工具：嵌套感知解析 ===
-    container_tool_names = ["create", "str_replace", "bash", "done"]
-
     container_open_patterns = {
         "create": re.compile(r'<create\s+path="([^"]*)"(?:\s+summary="([^"]*)")?\s*>'),
         "str_replace": re.compile(r'<str_replace\s+path="([^"]*)"(?:\s+summary="([^"]*)")?\s*>'),
@@ -288,8 +269,21 @@ def _parse_tools_strict(response: str):
         "done": re.compile(r'<done>'),
     }
 
-    for tool_name in container_tool_names:
-        open_pattern = container_open_patterns[tool_name]
+    # 收集所有工具的开标签位置（用于未闭合时的软边界）
+    all_open_positions = []
+    for _, pattern in non_container_patterns.items():
+        for m in pattern.finditer(response):
+            all_open_positions.append(m.start())
+    for tool_name in _CONTAINER_TAGS:
+        if tool_name in container_open_patterns:
+            for m in container_open_patterns[tool_name].finditer(response):
+                all_open_positions.append(m.start())
+    all_open_positions.sort()
+
+    for tool_name in _CONTAINER_TAGS:
+        open_pattern = container_open_patterns.get(tool_name)
+        if open_pattern is None:
+            continue
         close_tag = f'</{tool_name}>'
         open_prefix = f'<{tool_name}'
 
@@ -298,8 +292,14 @@ def _parse_tools_strict(response: str):
             end_pos = _find_container_end(response, content_start, open_prefix, close_tag)
 
             if end_pos == -1:
-                content = response[content_start:]
-                match_end = len(response)
+                # 未闭合：用下个工具开标签作为软边界，防止污染后续块
+                soft_boundary = len(response)
+                for op in all_open_positions:
+                    if op > content_start:
+                        soft_boundary = op
+                        break
+                content = response[content_start:soft_boundary]
+                match_end = soft_boundary
                 is_unclosed = True
             else:
                 content = response[content_start:end_pos - len(close_tag)]
@@ -318,7 +318,7 @@ def _parse_tools_strict(response: str):
     # 识别容器块范围
     container_ranges = []
     for start, end, tool_name, _m in all_matches:
-        if tool_name in container_tool_names:
+        if tool_name in _CONTAINER_TAGS:
             container_ranges.append((start, end))
 
     def _is_inside_container(pos: int) -> bool:
@@ -327,11 +327,10 @@ def _parse_tools_strict(response: str):
                 return True
         return False
 
-    return _build_result(response, all_matches, container_tool_names, _is_inside_container)
+    return _build_result(response, all_matches, _is_inside_container)
 
 
-def _build_result(response: str, all_matches: list, container_tool_names: list,
-                  _is_inside_container):
+def _build_result(response: str, all_matches: list, _is_inside_container):
     """将匹配结果构建为 (remaining_text, tools_list)。"""
     tools = []
     remaining_parts = []
@@ -473,9 +472,9 @@ def _parse_tools_loose(text: str):
         old_match = re.search(r"<old>(.*?)</old>", body, re.DOTALL)
         new_match = re.search(r"<new>(.*?)</new>", body, re.DOTALL)
         if old_match:
-            old_content = old_match.group(1)
+            old_content = _final_clean_xml_tags(old_match.group(1))
         if new_match:
-            new_content = new_match.group(1)
+            new_content = _final_clean_xml_tags(new_match.group(1))
 
         tools.append({
             "llm_tool": "str_replace",
@@ -523,6 +522,11 @@ def execute_code_tool(tool):
                     lines[:30]) + f"\n...（共 {len(lines)} 项，已截断前 30 项。请使用更精确的路径或 limit 参数缩小范围）"
 
     elif name == "create":
+        # 写入前最终清理：确保内容中不含任何 XML 工具标签泄露
+        cleaned_content = _final_clean_xml_tags(p["content"])
+        if cleaned_content != p["content"]:
+            p["content"] = cleaned_content
+            tool["params"]["content"] = cleaned_content
         # 写入文件
         result_detail = file_create(code_output_root, p["path"], p["content"])
 
