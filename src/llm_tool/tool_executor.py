@@ -244,7 +244,7 @@ def _parse_str_replace_block(block: str):
     }
 
 
-def parse_tools(response: str):
+def parse_tools(response: str, reasoning_content: str = ""):
     """
     按顺序解析 AI 响应中的 XML 工具调用。
     返回: (剩余普通文本, 工具列表)
@@ -252,7 +252,21 @@ def parse_tools(response: str):
     所有容器工具（create / str_replace / bash / done）均使用嵌套感知解析器，
     正确处理内容中包含同名闭标签的情况。
     非容器工具（file_view / use_skill）为自闭合标签，使用正则匹配。
+
+    如果主响应中未解析到任何工具，且 reasoning_content 非空，
+    则对 reasoning_content 使用宽松匹配兜底（容忍单引号、无闭合 done 等畸形容器标签）。
     """
+    remaining, tools = _parse_tools_strict(response)
+
+    # 兜底：主响应无工具，且提供了 reasoning_content
+    if not tools and reasoning_content:
+        remaining, tools = _parse_tools_loose(reasoning_content)
+
+    return remaining, tools
+
+
+def _parse_tools_strict(response: str):
+    """严格嵌套感知解析（原 parse_tools 的主解析逻辑）。"""
     all_matches = []
 
     # === 非容器工具：正则匹配（自闭合标签，不存在嵌套问题） ===
@@ -265,8 +279,6 @@ def parse_tools(response: str):
             all_matches.append((m.start(), m.end(), tool_name, m))
 
     # === 容器工具：嵌套感知解析 ===
-    # 所有含开/闭标签对的工具都使用 _find_container_end，
-    # 确保内容中包含同名闭标签时不会截断。
     container_tool_names = ["create", "str_replace", "bash", "done"]
 
     container_open_patterns = {
@@ -286,7 +298,6 @@ def parse_tools(response: str):
             end_pos = _find_container_end(response, content_start, open_prefix, close_tag)
 
             if end_pos == -1:
-                # 未闭合的容器标签（LLM 响应被截断或 done 省略闭合）
                 content = response[content_start:]
                 match_end = len(response)
                 is_unclosed = True
@@ -304,12 +315,11 @@ def parse_tools(response: str):
     # 按位置排序
     all_matches.sort(key=lambda x: x[0])
 
-    # 识别容器块范围（所有容器工具，不仅仅是 create/str_replace）
+    # 识别容器块范围
     container_ranges = []
     for start, end, tool_name, _m in all_matches:
         if tool_name in container_tool_names:
             container_ranges.append((start, end))
-
 
     def _is_inside_container(pos: int) -> bool:
         for cs, ce in container_ranges:
@@ -317,17 +327,18 @@ def parse_tools(response: str):
                 return True
         return False
 
+    return _build_result(response, all_matches, container_tool_names, _is_inside_container)
 
+
+def _build_result(response: str, all_matches: list, container_tool_names: list,
+                  _is_inside_container):
+    """将匹配结果构建为 (remaining_text, tools_list)。"""
     tools = []
     remaining_parts = []
     last_end = 0
 
     for start, end, tool_name, m in all_matches:
-        # 忽略嵌套在容器块内的工具调用（其标签是容器内容的一部分，不是真正的工具调用）
         if _is_inside_container(start):
-            # 但容器本身不能排除自己（start == container_start 的情况）
-            # 这里 start 一定在某个容器内部（cs < start < ce），
-            # 所以如果当前工具就是那个容器，start == cs，不满足 cs < start，不会被排除
             continue
 
         if start > last_end:
@@ -344,7 +355,7 @@ def parse_tools(response: str):
             tools.append({"llm_tool": "file_view", "params": params})
 
         elif tool_name == "create":
-            info = m  # dict: {match, content, is_unclosed}
+            info = m
             content = info["content"]
             if content.startswith('\n'):
                 content = content[1:]
@@ -361,8 +372,7 @@ def parse_tools(response: str):
             })
 
         elif tool_name == "str_replace":
-            info = m  # dict: {match, content, is_unclosed}
-            # 重构完整块文本，交给 _parse_str_replace_block 解析
+            info = m
             if info["is_unclosed"]:
                 block = info["match"].group(0) + info["content"]
             else:
@@ -374,12 +384,12 @@ def parse_tools(response: str):
                 tools.append(tool)
 
         elif tool_name == "bash":
-            info = m  # dict: {match, content, is_unclosed}
+            info = m
             content = info["content"].strip()
             tools.append({"llm_tool": "bash", "params": {"command": content, "_is_unclosed": info["is_unclosed"]}})
 
         elif tool_name == "done":
-            info = m  # dict: {match, content, is_unclosed}
+            info = m
             content = info["content"].strip()
             tools.append({"llm_tool": "done", "params": {"message": content, "_is_unclosed": info["is_unclosed"]}})
 
@@ -395,6 +405,89 @@ def parse_tools(response: str):
     remaining = re.sub(r'\n{3,}', '\n\n', remaining)
 
     return remaining, tools
+
+
+def _parse_tools_loose(text: str):
+    """
+    对 reasoning_content 进行宽松工具标签匹配。
+    容忍单引号、无闭合 done/容器标签等 LLM 思考过程中产生的畸形格式。
+
+    支持的标签（宽松版）：
+    - <create path='...' summary='...'/>  自闭合或容器两种形态
+    - <file_view path='...'/>
+    - <done>...</done> 或裸 <done>（无闭合）
+    - <bash>...</bash>
+    - <str_replace path='...' summary='...'>...</str_replace>
+    - <use_skill name='...'/>
+    """
+    tools = []
+
+    # 1. 自闭合 file_view（单引号或双引号）
+    for m in re.finditer(r"<file_view\s+path=['\"]([^'\"]*)['\"][^>]*/>", text):
+        params = {"path": m.group(1)}
+        limit_match = re.search(r'limit=["\'](\d+)["\']', m.group(0))
+        offset_match = re.search(r'offset=["\'](\d+)["\']', m.group(0))
+        if limit_match:
+            params["limit"] = int(limit_match.group(1))
+        if offset_match:
+            params["offset"] = int(offset_match.group(1))
+        tools.append({"llm_tool": "file_view", "params": params})
+
+    # 2. 自闭合 create（单引号或双引号）
+    for m in re.finditer(r"<create\s+path=['\"]([^'\"]*)['\"][^>]*/>", text):
+        summary_match = re.search(r"summary=['\"]([^'\"]*)['\"]", m.group(0))
+        tools.append({
+            "llm_tool": "create",
+            "params": {
+                "path": m.group(1),
+                "content": "",
+                "summary": summary_match.group(1) if summary_match else "",
+            }
+        })
+
+    # 3. done（可无闭合）
+    for m in re.finditer(r"<done>(.*?)(?:</done>|$)", text):
+        content = m.group(1).strip()
+        tools.append({"llm_tool": "done", "params": {"message": content}})
+
+    # 4. bash
+    for m in re.finditer(r"<bash>(.*?)</bash>", text, re.DOTALL):
+        tools.append({"llm_tool": "bash", "params": {"command": m.group(1).strip()}})
+
+    # 5. use_skill（单引号或双引号）
+    for m in re.finditer(r"<use_skill\s+name=['\"]([^'\"]*)['\"][^>]*/>", text):
+        tools.append({"llm_tool": "use_skill", "params": {"name": m.group(1)}})
+
+    # 6. str_replace 容器（单引号或双引号 path / summary）
+    for m in re.finditer(
+        r"<str_replace\s+path=['\"]([^'\"]*)['\"](?:\s+summary=['\"]([^'\"]*)['\"])?\s*>(.*?)</str_replace>",
+        text, re.DOTALL
+    ):
+        path = m.group(1)
+        summary = m.group(2) or ""
+        body = m.group(3)
+
+        # 尝试提取 old/new 子标签
+        old_content = ""
+        new_content = ""
+        old_match = re.search(r"<old>(.*?)</old>", body, re.DOTALL)
+        new_match = re.search(r"<new>(.*?)</new>", body, re.DOTALL)
+        if old_match:
+            old_content = old_match.group(1)
+        if new_match:
+            new_content = new_match.group(1)
+
+        tools.append({
+            "llm_tool": "str_replace",
+            "params": {
+                "path": path,
+                "old": old_content,
+                "new": new_content,
+                "summary": summary,
+            }
+        })
+
+    return "", tools
 
 
 code_output_root = global_cfg.base_path.code_output_root

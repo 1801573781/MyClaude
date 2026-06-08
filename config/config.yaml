@@ -10,6 +10,10 @@ model_chat:
   max_tokens_limit: 640000   # 单次请求 token 上限，最终值（不会比这个更高的）
   temperature: 0.3           # 创造性程度
 
+# 工具解析配置（独立于模型，与具体模型解耦）
+tool_parse:
+  from_reasoning: False      # 是否在 content 未解析到工具时，从 reasoning_content 宽松匹配工具标签
+
 # 记忆系统存储配置
 memory:
   backend: "memory_2"                                 # 记忆后端: memory_1 / memory_2 / none

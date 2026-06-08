@@ -255,14 +255,11 @@ class QueryLoop:
         else:
             ai_response_show = ai_response
 
-        remaining_text, tools = tool_executor.parse_tools(ai_response_show)
-
-        # 如果 ai_response 中没有工具，尝试从 reasoning_content 宽松提取工具（兜底）
-        if reasoning_content and not tools:
-            _, tools_from_reasoning = tool_executor.parse_tools(reasoning_content)
-            if tools_from_reasoning:
-                tools = tools_from_reasoning
-                remaining_text = ""   # 确保不重复打印
+        # 根据全局开关决定是否启用 reasoning_content 兜底解析
+        if global_cfg.tool_parse.from_reasoning:
+            remaining_text, tools = tool_executor.parse_tools(ai_response_show, reasoning_content)
+        else:
+            remaining_text, tools = tool_executor.parse_tools(ai_response_show)
 
         # 打印部分 LLM response（有些内容不打印，显示一分神秘感）
         self._print_info(f"Thinking-{turn}, 开始时间：{thinking_begin}")
