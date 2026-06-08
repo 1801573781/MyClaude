@@ -13,14 +13,15 @@ import time
 import traceback
 from pathlib import Path
 
-from .models import UnitTestResult, TestStatus
-from .judge import LLMJudge
+from src.A2A_EX.system_test.models import UnitTestResult, TestStatus
+from src.A2A_EX.system_test.judge import LLMJudge
 
 logger = logging.getLogger(__name__)
 
 
-class UnitTestRunner:
+class UnitTestRunner_2:
     """单元测试用例执行器"""
+
 
     def __init__(self, judge: LLMJudge):
         self._judge = judge
@@ -56,6 +57,7 @@ class UnitTestRunner:
             )
 
             # 2. 调用评判 LLM
+
             verdict_result = self._judge.evaluate(
                 expected=case["expected_behavior"],
                 actual_output=actual_output,
@@ -114,7 +116,7 @@ class UnitTestRunner:
         func = getattr(mod, target_function)
 
         # 构造参数（根据 test_input 解析）
-        args, kwargs = UnitTestRunner._build_args(test_input, target_function)
+        args, kwargs = UnitTestRunner_2._build_args(test_input, target_function)
 
         # 调用函数
         result = func(*args, **kwargs)
@@ -164,3 +166,45 @@ class UnitTestRunner:
 
         # 默认：test_input 作为单参数字符串传入
         return [test_input], {}
+
+
+if __name__ == "__main__":
+    # 配置日志输出到控制台和文件
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        handlers=[
+            logging.StreamHandler(),
+            logging.FileHandler(
+                Path(__file__).resolve().parent / "unit_test_runner_test.log",
+                encoding="utf-8",
+            ),
+        ],
+    )
+
+    judege = LLMJudge()
+    ut = UnitTestRunner_2(judge=judege)
+
+    ut_test_cases = [
+          {
+            "id": "UT-TP-009",
+            "description": "str_replace 的 new 块以 </old> 闭合时 parse_tools 容错降级",
+            "target_module": "src.llm_tool.tool_executor",
+            "target_function": "parse_tools",
+            "test_input": "<str_replace path='D:/test.py' summary='测试'><old>x=1</old><new>y=2</old></str_replace>",
+            "expected_behavior": "parse_tools 应能容错解析此畸形的 str_replace 标签，new 块以 </old> 错误闭合时降级识别，返回 new 内容为 'y=2' 而非 'y=2</old>'。不应抛出异常或丢失 str_replace 工具调用。"
+          },
+          {
+            "id": "UT-TP-011",
+            "description": "主响应无工具时从 reasoning_content 兜底提取工具调用",
+            "target_module": "src.llm_tool.tool_executor",
+            "target_function": "parse_tools",
+            "test_input": "根据需求，我将创建一个文件。这个文件包含一个简单的 Python 函数，用于计算斐波那契数列。",
+            "reasoning_input": "用户要求写一个斐波那契函数。我需要创建一个 Python 文件来实现这个功能。让我使用 create 工具。\n<create path='D:/AI/MyClaude/code_output/fib.py' summary='斐波那契数列函数'>\ndef fib(n):\n    if n <= 1:\n        return n\n    a, b = 0, 1\n    for _ in range(2, n + 1):\n        a, b = b, a + b\n    return b\n</create>\n任务完成，输出 done。\n<done>已完成</done>",
+            "expected_behavior": "parse_tools 在主 content（test_input）中未解析到工具时，应从 reasoning_content 中兜底提取工具。返回的 tools_list 应包含 create 和 done 两个工具调用。remaining_text 为 test_input 的原文（即 '根据需求，我将创建一个文件...'）。不应因主 content 无工具而返回空的 tools_list。"
+          },
+    ]
+
+    myclaude_root_path = 'd:/ai/myclaude/'
+
+    ut.execute(test_cases=ut_test_cases, myclaude_root=myclaude_root_path)
