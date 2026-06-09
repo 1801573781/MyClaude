@@ -19,7 +19,7 @@ from src.A2A_EX.system_test.judge import LLMJudge
 logger = logging.getLogger(__name__)
 
 
-class UnitTestRunner_2:
+class UnitTestRunner:
     """单元测试用例执行器"""
 
 
@@ -37,6 +37,8 @@ class UnitTestRunner_2:
         for case in test_cases:
             logger.info("Running unit-test case [id=%s] %s", case["id"], case["description"])
             result = self._run_one(case, myclaude_root)
+            # 注入原始用例数据，供 Excel 报告使用
+            result._case = case
             results.append(result)
             logger.info("Case [id=%s] -> %s", case["id"], result.status)
 
@@ -52,7 +54,8 @@ class UnitTestRunner_2:
             actual_output = self._invoke_target(
                 target_module=case["target_module"],
                 target_function=case["target_function"],
-                test_input=case.get("test_input", case.get("test_reasoning", "")),
+                test_input=case.get("test_input", ""),
+                reasoning_input=case.get("reasoning_input", ""),
                 myclaude_root=myclaude_root,
             )
 
@@ -73,6 +76,7 @@ class UnitTestRunner_2:
                 description=case["description"],
                 status=status,
                 actual_output=actual_output[:500],
+                reason=verdict_result.get("reason", ""),
                 duration_seconds=elapsed,
             )
 
@@ -84,6 +88,7 @@ class UnitTestRunner_2:
                 description=case["description"],
                 status=TestStatus.ERROR,
                 actual_output=traceback.format_exc()[:500],
+                reason=str(exc)[:200],
                 duration_seconds=elapsed,
             )
 
@@ -93,13 +98,15 @@ class UnitTestRunner_2:
     def _invoke_target(target_module: str,
                        target_function: str,
                        test_input: str,
-                       myclaude_root: str | None) -> str:
+                       reasoning_input: str = "",
+                       myclaude_root: str | None = None) -> str:
         """动态导入被测模块并调用函数，返回 repr(result) 或异常字符串。
 
         Args:
             target_module: 如 'src.utility.file_tool'
             target_function: 如 'resolve_path'
             test_input: 测试说明字符串，复杂参数需 Runner 内部构造（见 _build_args）
+            reasoning_input: reasoning_content 参数（如 parse_tools 的第二个参数）
             myclaude_root: MyClaude 源码根目录
 
         Returns:
@@ -115,8 +122,10 @@ class UnitTestRunner_2:
         mod = importlib.import_module(target_module)
         func = getattr(mod, target_function)
 
-        # 构造参数（根据 test_input 解析）
-        args, kwargs = UnitTestRunner_2._build_args(test_input, target_function)
+        # 构造参数（根据 test_input / reasoning_input 解析）
+        args, kwargs = UnitTestRunner._build_args(
+            test_input, target_function, reasoning_input
+        )
 
         # 调用函数
         result = func(*args, **kwargs)
@@ -127,8 +136,10 @@ class UnitTestRunner_2:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _build_args(test_input: str, target_function: str) -> tuple[list, dict]:
-        """根据 test_input 描述构造函数参数。
+    def _build_args(test_input: str,
+                    target_function: str,
+                    reasoning_input: str = "") -> tuple[list, dict]:
+        """根据 test_input / reasoning_input 描述构造函数参数。
 
         目前支持常见场景的简单解析，复杂用例可按需扩展。
         """
@@ -140,8 +151,11 @@ class UnitTestRunner_2:
                 return paths, {}
             return paths, {}
 
-        # parse_tools: test_input 是完整的 LLM 输出文本
+        # parse_tools: test_input 是主 content，reasoning_input 是 reasoning_content
+        # 当 reasoning_input 非空时传两个参数，否则传一个参数
         if target_function == "parse_tools":
+            if reasoning_input:
+                return [test_input, reasoning_input], {}
             return [test_input], {}
 
         # file_create: test_input 描述创建流程
@@ -149,9 +163,8 @@ class UnitTestRunner_2:
             import re
             paths = re.findall(r"([A-Za-z]:/\S+\.py)", test_input)
             if len(paths) >= 2:
-                # 第一次创建用第一个路径和 v1 内容，返回第一次结果；
-                # 但单次调用只能测一个，这里先调用第二次（目标路径）看 BLOCKED
                 return [paths[0], "print('v2')"], {}
+            return [test_input], {}
 
         # append_tool_exec_result: test_input 描述构建场景
         if target_function == "append_tool_exec_result":
@@ -183,7 +196,7 @@ if __name__ == "__main__":
     )
 
     judege = LLMJudge()
-    ut = UnitTestRunner_2(judge=judege)
+    ut = UnitTestRunner(judge=judege)
 
     ut_test_cases = [
           {

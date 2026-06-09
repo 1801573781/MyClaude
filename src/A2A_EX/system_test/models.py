@@ -107,6 +107,7 @@ class UnitTestResult(BaseModel):
     description: str
     status: TestStatus
     actual_output: str = ""
+    reason: str = ""
     duration_seconds: float = 0.0
 
 
