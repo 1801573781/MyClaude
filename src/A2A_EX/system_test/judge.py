@@ -9,7 +9,7 @@ import json
 import logging
 import os
 
-from utility.config_loader import global_cfg
+from src.utility.config_loader import global_cfg
 from .models import TestStatus
 
 logger = logging.getLogger(__name__)
@@ -115,7 +115,11 @@ class LLMJudge:
             temperature=0.0,
             max_tokens=256,
         )
-        return resp.choices[0].message.content or ""
+        content = resp.choices[0].message.content
+        if not content:
+            logger.warning("Judge LLM returned empty content, using fallback")
+            return '{"verdict": "INCONCLUSIVE", "reason": "LLM returned empty response"}'
+        return content
 
     # ------------------------------------------------------------------
 

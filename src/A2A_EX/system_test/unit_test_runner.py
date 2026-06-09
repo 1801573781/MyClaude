@@ -70,13 +70,14 @@ class UnitTestRunner:
 
             status = TestStatus.PASS if verdict_result.get("pass") else TestStatus.FAIL
             elapsed = round(time.perf_counter() - t0, 2)
+            reason = verdict_result.get("reason", "") or "（评判 LLM 未返回理由）"
 
             return UnitTestResult(
                 test_id=case["id"],
                 description=case["description"],
                 status=status,
                 actual_output=actual_output[:500],
-                reason=verdict_result.get("reason", ""),
+                reason=reason,
                 duration_seconds=elapsed,
             )
 
@@ -129,6 +130,7 @@ class UnitTestRunner:
 
         try:
             import openpyxl
+            from openpyxl.styles import Alignment, Border, Side, PatternFill
         except ImportError:
             logger.error("openpyxl not installed, cannot generate Excel report")
             return filepath
@@ -136,6 +138,9 @@ class UnitTestRunner:
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "Unit Test Report"
+
+        # 设置默认行高为 15，使内容更易阅读
+        ws.sheet_format.defaultRowHeight = 15
 
         # 表头：用例原始列 + 测试结果列
         headers = [
@@ -162,14 +167,51 @@ class UnitTestRunner:
             ]
             ws.append(row)
 
-        # 自动调整列宽
+        # --- 样式定义 ---
+        yahei_font = openpyxl.styles.Font(name="微软雅黑", size=11)
+        header_font = openpyxl.styles.Font(name="微软雅黑", size=11, bold=True)
+        header_fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")  # 浅灰
+        center_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        left_align = Alignment(horizontal="left", vertical="center", wrap_text=True)
+        thin_border = Border(
+            left=Side(style="thin"),
+            right=Side(style="thin"),
+            top=Side(style="thin"),
+            bottom=Side(style="thin"),
+        )
+
+        # --- 应用全局样式：所有单元格上下居中 + 自动换行 + 微软雅黑 + 四面框线 ---
+        for row_cells in ws.iter_rows(min_row=1, max_row=ws.max_row, max_col=ws.max_column):
+            for cell in row_cells:
+                cell.font = yahei_font
+                cell.alignment = Alignment(vertical="center", wrap_text=True)
+                cell.border = thin_border
+
+        # --- 首行样式：居中、加粗、浅灰底色 ---
+        for cell in ws[1]:
+            cell.font = header_font
+            cell.alignment = center_align
+            cell.fill = header_fill
+
+        # --- A列(1)、H列(8)、K列(11) 左右居中 ---
+        center_columns = [1, 8, 11]
+        for col_idx in center_columns:
+            col_letter = openpyxl.utils.get_column_letter(col_idx)
+            for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=col_idx, max_col=col_idx):
+                for cell in row:
+                    cell.alignment = center_align
+
+        # --- 冻结首行 ---
+        ws.freeze_panes = "A2"
+
+        # --- 自动调整列宽 ---
         for col_cells in ws.columns:
             max_length = 0
             col_letter = col_cells[0].column_letter
             for cell in col_cells:
                 if cell.value:
                     max_length = max(max_length, len(str(cell.value)))
-            ws.column_dimensions[col_letter].width = min(max_length + 2, 50)
+            ws.column_dimensions[col_letter].width = min(max_length + 4, 50)
 
         wb.save(filepath)
         logger.info("Excel report saved to %s", filepath)
@@ -266,7 +308,7 @@ class UnitTestRunner:
 
 if __name__ == "__main__":
     # 配置日志输出到控制台和文件
-    from utility.config_loader import global_cfg
+    from src.utility.config_loader import global_cfg
 
     logs_root = Path(global_cfg.base_path.logs_root)
     logs_root.mkdir(parents=True, exist_ok=True)
@@ -275,7 +317,6 @@ if __name__ == "__main__":
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         handlers=[
-            logging.StreamHandler(),
             logging.FileHandler(
                 logs_root / "unit_test_runner.log",
                 encoding="utf-8",
