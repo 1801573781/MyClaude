@@ -95,6 +95,89 @@ class UnitTestRunner:
     # ------------------------------------------------------------------
 
     @staticmethod
+    def generate_excel_report(results: list[UnitTestResult],
+                              myclaude_root: str | None = None,
+                              output_dir: str | None = None) -> Path:
+        """根据测试结果生成 Excel 报告，输出到 logs_root 目录。
+
+        Args:
+            results: UnitTestResult 列表（每个元素需携带 _case 原始用例数据）
+            myclaude_root: MyClaude 源码根目录（用于定位 config，output_dir 提供时优先使用）
+            output_dir: 输出目录（优先使用；未提供时从 config 读取 logs_root）
+
+        Returns:
+            生成的 .xlsx 文件路径
+        """
+        import sys
+        from datetime import datetime
+        from pathlib import Path
+
+        if output_dir:
+            logs_root = Path(output_dir)
+        else:
+            root = myclaude_root or str(Path(__file__).resolve().parents[3])
+            if root not in sys.path:
+                sys.path.insert(0, root)
+            from utility.config_loader import global_cfg
+            logs_root = Path(global_cfg.base_path.logs_root)
+
+        logs_root.mkdir(parents=True, exist_ok=True)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"MyClaude_Unit_Test_Report_{timestamp}.xlsx"
+        filepath = logs_root / filename
+
+        try:
+            import openpyxl
+        except ImportError:
+            logger.error("openpyxl not installed, cannot generate Excel report")
+            return filepath
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Unit Test Report"
+
+        # 表头：用例原始列 + 测试结果列
+        headers = [
+            "id", "description", "target_module", "target_function",
+            "test_input", "expected_behavior", "reasoning_input",
+            "status", "actual_output", "reason", "duration_seconds",
+        ]
+        ws.append(headers)
+
+        for result in results:
+            case = getattr(result, "_case", {})
+            row = [
+                case.get("id", result.test_id),
+                case.get("description", result.description),
+                case.get("target_module", ""),
+                case.get("target_function", ""),
+                case.get("test_input", ""),
+                case.get("expected_behavior", ""),
+                case.get("reasoning_input", ""),
+                result.status.value if hasattr(result.status, "value") else str(result.status),
+                result.actual_output,
+                result.reason,
+                result.duration_seconds,
+            ]
+            ws.append(row)
+
+        # 自动调整列宽
+        for col_cells in ws.columns:
+            max_length = 0
+            col_letter = col_cells[0].column_letter
+            for cell in col_cells:
+                if cell.value:
+                    max_length = max(max_length, len(str(cell.value)))
+            ws.column_dimensions[col_letter].width = min(max_length + 2, 50)
+
+        wb.save(filepath)
+        logger.info("Excel report saved to %s", filepath)
+        return filepath
+
+    # ------------------------------------------------------------------
+
+    @staticmethod
     def _invoke_target(target_module: str,
                        target_function: str,
                        test_input: str,
@@ -183,13 +266,18 @@ class UnitTestRunner:
 
 if __name__ == "__main__":
     # 配置日志输出到控制台和文件
+    from utility.config_loader import global_cfg
+
+    logs_root = Path(global_cfg.base_path.logs_root)
+    logs_root.mkdir(parents=True, exist_ok=True)
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         handlers=[
             logging.StreamHandler(),
             logging.FileHandler(
-                Path(__file__).resolve().parent / "unit_test_runner_test.log",
+                logs_root / "unit_test_runner.log",
                 encoding="utf-8",
             ),
         ],
@@ -218,6 +306,12 @@ if __name__ == "__main__":
           },
     ]
 
-    myclaude_root_path = 'd:/ai/myclaude/'
+    myclaude_root_path = global_cfg.base_path.project_root
 
-    ut.execute(test_cases=ut_test_cases, myclaude_root=myclaude_root_path)
+    results = ut.execute(test_cases=ut_test_cases, myclaude_root=myclaude_root_path)
+
+    # 生成 Excel 报告，输出到 logs_root
+    report_path = UnitTestRunner.generate_excel_report(
+        results, output_dir=str(logs_root)
+    )
+    print(f"Excel report saved to: {report_path}")
