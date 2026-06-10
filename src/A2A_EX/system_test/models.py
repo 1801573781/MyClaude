@@ -99,6 +99,7 @@ class UnitTestCase(BaseModel):
     target_function: str = ""
     test_input: str = ""
     expected_behavior: str = ""
+    check_type: str = "general"
 
 
 class UnitTestResult(BaseModel):

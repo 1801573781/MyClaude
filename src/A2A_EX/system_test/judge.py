@@ -82,7 +82,17 @@ class LLMJudge:
         try:
             response = self._call_llm(prompt)
             verdict = self._parse_verdict(response)
-            return {"pass": verdict == TestStatus.PASS, "reason": response[:200]}
+            # 从 response JSON 中提取 reason 字段，而非整段原始响应
+            reason = ""
+            try:
+                start = response.find("{")
+                end = response.rfind("}") + 1
+                if 0 <= start < end:
+                    data = json.loads(response[start:end])
+                    reason = data.get("reason", "")[:200]
+            except (json.JSONDecodeError, ValueError):
+                reason = response[:200]
+            return {"pass": verdict == TestStatus.PASS, "reason": reason}
         except (ConnectionError, TimeoutError, OSError) as exc:
             logger.exception("Judge LLM call failed, defaulting to INCONCLUSIVE")
             return {"pass": False, "reason": str(exc)}

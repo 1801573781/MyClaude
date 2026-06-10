@@ -65,7 +65,7 @@ class UnitTestRunner:
                 expected=case["expected_behavior"],
                 actual_output=actual_output,
                 context=case["description"],
-                check_type="general",
+                check_type=case.get("check_type", "general"),
             )
 
             status = TestStatus.PASS if verdict_result.get("pass") else TestStatus.FAIL
