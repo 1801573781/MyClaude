@@ -50,13 +50,13 @@ class MyClaudeCLI:
             # /r mem — 清除所有记忆（短期 + 长期 + 工作记忆）
             total = self.query_loop.clear_memory()
             if total == 0:
-                cli_print.print_error("记忆模块未启用，无法执行此操作。")
+                cli_print.print_info("当前没有记忆。")
             else:
                 cli_print.print_info(f"已清除所有记忆（共 {total} 条）。")
             return True
 
-        elif cmd.startswith('/pt'):
-            # /pt — 创建 MyClaude 项目工程树
+        elif cmd.startswith('/init'):
+            # /init — 创建 MyClaude 项目工程树
             from src.cli.tree_visualizer import create_project_tree
             success = create_project_tree()
             if success:

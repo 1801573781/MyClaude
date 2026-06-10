@@ -678,7 +678,8 @@ MyClaude 通过 `--test-output <path>` 输出的 JSON 文件结构如下：
   "target_module": "src.llm_tool.tool_executor",
   "target_function": "parse_tools",
   "test_input": "<create path='D:/test.py' summary='test'/>...\n<done>任务完成\n",
-  "expected_behavior": "parse_tools 应返回 tools_list 中包含 done 工具调用，remaining_text 不含 <done> 标签。不因缺少 </done> 闭合标签而抛出异常或死循环。"
+  "expected_behavior": "parse_tools 应返回 tools_list 中包含 done 工具调用，remaining_text 不含 <done> 标签。不因缺少 </done> 闭合标签而抛出异常或死循环。",
+  "check_type": "tool_chain"
 }
 ```
 
