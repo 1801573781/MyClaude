@@ -13,8 +13,8 @@ import time
 import traceback
 from pathlib import Path
 
-from src.A2A_EX.system_test.models import UnitTestResult, TestStatus
-from src.A2A_EX.system_test.judge import LLMJudge
+from src.A2A_EX.test.models import UnitTestResult, TestStatus
+from src.A2A_EX.test.judge import LLMJudge
 
 logger = logging.getLogger(__name__)
 

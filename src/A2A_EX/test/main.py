@@ -53,7 +53,7 @@ async def serve_agent_card():
 async def health():
     return {
         "status": "ok",
-        "service": "system_test",
+        "service": "test",
         "docker_available": sandbox_mgr.is_available(),
     }
 
@@ -165,7 +165,7 @@ async def run_unit_tests(req: RunUnitTestRequest):
 async def metrics():
     """Prometheus 指标端点（简化版）"""
     return JSONResponse(content={
-        "service": "system_test",
+        "service": "test",
         "uptime_seconds": time.perf_counter(),
         "docker_available": sandbox_mgr.is_available(),
     })
