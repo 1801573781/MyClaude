@@ -16,10 +16,10 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from python_a2a import A2AServer
 
-from src.A2A_EX.myorch.agent_card import get_agent_card
-from src.A2A_EX.myorch.context_store import ContextStore
-from src.A2A_EX.myorch.models import HealthResponse
-from src.A2A_EX.myorch.orchestrator import MyOrchestrator
+from src.A2A.myorch.agent_card import get_agent_card
+from src.A2A.myorch.context_store import ContextStore
+from src.A2A.myorch.models import HealthResponse
+from src.A2A.myorch.orchestrator import MyOrchestrator
 
 """
 # 确保项目根目录在 sys.path 中
@@ -33,7 +33,7 @@ if str(_project_root) not in sys.path:
 # ============================================================
 
 app = FastAPI(
-    title="MyOrch - A2A_EX 验证编排服务",
+    title="MyOrch - A2A 验证编排服务",
     version="1.0.0",
     docs_url="/docs",
 )
@@ -66,7 +66,7 @@ async def validate(request: Request):
     接收 MyClaude 的进化验证请求，执行回归测试和新功能测试，
     返回 PASS / FAIL / ERROR 判定。
     """
-    from src.A2A_EX.shared.models import (
+    from src.A2A.shared.models import (
         EvolutionSpec,
         TestCase,
         ValidationRequest,
@@ -141,10 +141,10 @@ async def metrics():
 
 if __name__ == "__main__":
     import uvicorn
-    from src.A2A_EX.shared.config import a2a_global_cfg
+    from src.A2A.shared.config import a2a_global_cfg
 
     uvicorn.run(
-        "src.A2A_EX.myorch.main:app",
+        "src.A2A.myorch.main:app",
         host=a2a_global_cfg.myorch.host,
         port=a2a_global_cfg.myorch.port,
         reload=True,

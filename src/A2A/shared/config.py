@@ -1,5 +1,5 @@
 """
-A2A_EX 配置模块
+A2A 配置模块
 
 从环境变量加载配置，提供统一的全局配置命名空间。
 """
@@ -14,7 +14,7 @@ def _env(key: str, default: str = "") -> str:
 
 
 def load_config() -> SimpleNamespace:
-    """加载 A2A_EX 全局配置。
+    """加载 A2A 全局配置。
 
     Returns:
         SimpleNamespace: 配置命名空间。

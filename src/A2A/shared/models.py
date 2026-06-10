@@ -1,5 +1,5 @@
 """
-A2A_EX 共享数据模型
+A2A 共享数据模型
 
 定义 MyOrch 和 SystemTest 共用的 Pydantic 数据模型。
 """

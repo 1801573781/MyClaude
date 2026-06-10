@@ -12,8 +12,8 @@ from typing import Optional
 
 import httpx
 
-from src.A2A_EX.shared.config import a2a_global_cfg
-from src.A2A_EX.shared.models import (
+from src.A2A.shared.config import a2a_global_cfg
+from src.A2A.shared.models import (
     NewFeatureTestRequest,
     RegressionRequest,
     TestSuiteReport,
@@ -22,7 +22,7 @@ from src.A2A_EX.shared.models import (
     ValidationStatus,
     generate_task_id,
 )
-from src.A2A_EX.myorch.context_store import ContextStore
+from src.A2A.myorch.context_store import ContextStore
 
 
 class MyOrchestrator:
@@ -192,7 +192,7 @@ class MyOrchestrator:
             return TestSuiteReport(**data)
         except Exception as e:
             # SystemTest 不可用时返回空结果
-            from src.A2A_EX.shared.models import TestDetail, TestResult
+            from src.A2A.shared.models import TestDetail, TestResult
 
             return TestSuiteReport(
                 passed=0,
@@ -213,7 +213,7 @@ class MyOrchestrator:
     ) -> TestSuiteReport:
         """调用 SystemTest 执行新功能测试。"""
         if not request.test_cases:
-            from src.A2A_EX.shared.models import TestDetail, TestResult
+            from src.A2A.shared.models import TestDetail, TestResult
 
             return TestSuiteReport(
                 passed=0,
@@ -238,7 +238,7 @@ class MyOrchestrator:
             data = resp.json()
             return TestSuiteReport(**data)
         except Exception as e:
-            from src.A2A_EX.shared.models import TestDetail, TestResult
+            from src.A2A.shared.models import TestDetail, TestResult
 
             return TestSuiteReport(
                 passed=0,

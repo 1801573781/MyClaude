@@ -2,7 +2,7 @@ import re
 
 # 示例响应文本（包含符合正则的字符串）
 response = """
-<str_replace path="D:/AI/MyClaude/tests/system_test_cases_03.json" summary="将测试用例改为 A2A_EX TestCase 兼容格式">
+<str_replace path="D:/AI/MyClaude/tests/system_test_cases_03.json" summary="将测试用例改为 A2A TestCase 兼容格式">
 <old>[
   {
     "id": "TC-SL-001",

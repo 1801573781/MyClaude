@@ -13,13 +13,13 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from src.A2A_EX.shared.config import a2a_global_cfg
-from src.A2A_EX.shared.models import (
+from src.A2A.shared.config import a2a_global_cfg
+from src.A2A.shared.models import (
     ValidationReport,
     ValidationRequest,
     ValidationStatus,
 )
-from src.A2A_EX.myorch.models import ValidationTask
+from src.A2A.myorch.models import ValidationTask
 
 
 class ContextStore:
@@ -140,7 +140,7 @@ class ContextStore:
         if meta is None:
             return None
 
-        from src.A2A_EX.shared.models import EvolutionSpec, TestCase
+        from src.A2A.shared.models import EvolutionSpec, TestCase
 
         evo_spec = EvolutionSpec(**meta["evolution_spec"])
         test_cases_data = self._read_json(task_dir / "test_cases.json")

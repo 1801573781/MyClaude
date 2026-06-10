@@ -11,7 +11,7 @@ from typing import List, Optional
 
 from pydantic import BaseModel
 
-from src.A2A_EX.shared.models import (
+from src.A2A.shared.models import (
     TestCase,
     TestDetail,
     TestResult as SharedTestResult,

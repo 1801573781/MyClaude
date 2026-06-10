@@ -21,9 +21,9 @@ import logging
 import time
 from typing import List, Optional
 
-from src.A2A_EX.shared.models import TestDetail, TestResult, TestSuiteReport
-from src.A2A_EX.test.sandbox import SandboxManager
-from src.A2A_EX.test.judge import LLMJudge
+from src.A2A.shared.models import TestDetail, TestResult, TestSuiteReport
+from src.A2A.test.sandbox import SandboxManager
+from src.A2A.test.judge import LLMJudge
 
 logger = logging.getLogger(__name__)
 
