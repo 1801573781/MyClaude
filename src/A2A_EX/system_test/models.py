@@ -98,6 +98,7 @@ class UnitTestCase(BaseModel):
     target_module: str = ""
     target_function: str = ""
     test_input: str = ""
+    reasoning_input: str = ""
     expected_behavior: str = ""
     check_type: str = "general"
 

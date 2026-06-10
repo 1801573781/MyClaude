@@ -28,6 +28,7 @@ tests/*
 !context/.gitkeep
 !log/.gitkeep
 !spec/.gitkeep
+!spec/myclaude_test_spec.md
 !memory_storage/.gitkeep
 !tests/.gitkeep
 
