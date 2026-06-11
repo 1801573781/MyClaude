@@ -169,3 +169,83 @@ async def metrics():
         "uptime_seconds": time.perf_counter(),
         "docker_available": sandbox_mgr.is_available(),
     })
+
+
+# ========================================================================
+# CLI 模式：python -m src.A2A.test.main --json D:/.../u9.json
+# ========================================================================
+
+if __name__ == "__main__":
+    import argparse
+    import json
+    import sys
+    from pathlib import Path
+
+    from src.utility.config_loader import global_cfg
+
+    parser = argparse.ArgumentParser(
+        description="SystemTest CLI — 直接加载 JSON 执行单元测试"
+    )
+    parser.add_argument(
+        "--json",
+        required=True,
+        help="单元测试用例 JSON 文件路径（如 D:/AI/MyClaude/tests/u9.json）",
+    )
+    parser.add_argument(
+        "--output",
+        default=None,
+        help="Excel 报告输出目录（默认使用 config 中 logs_root）",
+    )
+    args = parser.parse_args()
+
+    # ── 配置日志 ──────────────────────────────────────────────────
+    logs_root = Path(args.output) if args.output else Path(global_cfg.base_path.logs_root)
+    logs_root.mkdir(parents=True, exist_ok=True)
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        handlers=[
+            logging.StreamHandler(sys.stdout),
+            logging.FileHandler(
+                logs_root / "unit_test_cli.log",
+                encoding="utf-8",
+            ),
+        ],
+    )
+
+    # ── 加载测试用例 ──────────────────────────────────────────────
+    json_path = Path(args.json)
+    if not json_path.exists():
+        logger.error("JSON 文件不存在: %s", json_path)
+        sys.exit(1)
+
+    with open(json_path, encoding="utf-8") as f:
+        test_cases = json.load(f)
+
+    logger.info("从 %s 加载了 %d 条测试用例", json_path, len(test_cases))
+
+    # ── 执行测试 ──────────────────────────────────────────────────
+    judge = LLMJudge()
+    runner = UnitTestRunner(judge=judge)
+    results = runner.execute(
+        test_cases=test_cases,
+        myclaude_root=global_cfg.base_path.project_root,
+    )
+
+    # ── 生成报告 ──────────────────────────────────────────────────
+    report_path = UnitTestRunner.generate_excel_report(
+        results,
+        output_dir=str(logs_root),
+    )
+
+    # ── 打印摘要 ──────────────────────────────────────────────────
+    passed = sum(1 for r in results if r.status == TestStatus.PASS)
+    total = len(results)
+    failed = total - passed
+    print(f"\n{'=' * 60}")
+    print(f"  单元测试完成")
+    print(f"  通过: {passed}  失败: {failed}  合计: {total}")
+    print(f"  通过率: {passed / total * 100:.1f}%" if total else "  无测试用例")
+    print(f"  Excel 报告: {report_path}")
+    print(f"{'=' * 60}")

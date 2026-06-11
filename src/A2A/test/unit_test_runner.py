@@ -88,8 +88,8 @@ class UnitTestRunner:
                 test_id=case["id"],
                 description=case["description"],
                 status=TestStatus.ERROR,
-                actual_output=traceback.format_exc()[:500],
-                reason=str(exc)[:200],
+                actual_output=traceback.format_exc(),
+                reason=str(exc),
                 duration_seconds=elapsed,
             )
 
@@ -283,6 +283,27 @@ class UnitTestRunner:
                 return [test_input, reasoning_input], {}
             return [test_input], {}
 
+        # execute_code_tool: test_input 描述工具调用，需构造 tool dict
+        if target_function == "execute_code_tool":
+            import re
+            # 从 test_input 解析工具名和参数
+            tool_match = re.search(r'(\w+)\s+工具调用', test_input)
+            tool_name = tool_match.group(1) if tool_match else "file_view"
+            # 提取 path 参数
+            path_match = re.search(r"path=['\"]([^'\"]+)['\"]", test_input)
+            tool_params = {}
+            if path_match:
+                tool_params["path"] = path_match.group(1)
+            # 提取 limit/offset 等可选参数
+            limit_match = re.search(r"limit=['\"]?(\d+)", test_input)
+            if limit_match:
+                tool_params["limit"] = int(limit_match.group(1))
+            offset_match = re.search(r"offset=['\"]?(\d+)", test_input)
+            if offset_match:
+                tool_params["offset"] = int(offset_match.group(1))
+            tool_dict = {"llm_tool": tool_name, "params": tool_params}
+            return [tool_dict], {}
+
         # file_create: test_input 描述创建流程
         if target_function == "file_create":
             import re
@@ -328,23 +349,15 @@ if __name__ == "__main__":
     ut = UnitTestRunner(judge=judege)
 
     ut_test_cases = [
-          {
-            "id": "UT-TP-009",
-            "description": "str_replace 的 new 块以 </old> 闭合时 parse_tools 容错降级",
+        {
+            "id": "UT-TP-012",
+            "description": "execute_code_tool 返回结果格式为 role=user 的单条消息",
             "target_module": "src.llm_tool.tool_executor",
-            "target_function": "parse_tools",
-            "test_input": "<str_replace path='D:/test.py' summary='测试'><old>x=1</old><new>y=2</old></str_replace>",
-            "expected_behavior": "parse_tools 应能容错解析此畸形的 str_replace 标签，new 块以 </old> 错误闭合时降级识别，返回 new 内容为 'y=2' 而非 'y=2</old>'。不应抛出异常或丢失 str_replace 工具调用。"
-          },
-          {
-            "id": "UT-TP-011",
-            "description": "主响应无工具时从 reasoning_content 兜底提取工具调用",
-            "target_module": "src.llm_tool.tool_executor",
-            "target_function": "parse_tools",
-            "test_input": "根据需求，我将创建一个文件。这个文件包含一个简单的 Python 函数，用于计算斐波那契数列。",
-            "reasoning_input": "用户要求写一个斐波那契函数。我需要创建一个 Python 文件来实现这个功能。让我使用 create 工具。\n<create path='D:/AI/MyClaude/code_output/fib.py' summary='斐波那契数列函数'>\ndef fib(n):\n    if n <= 1:\n        return n\n    a, b = 0, 1\n    for _ in range(2, n + 1):\n        a, b = b, a + b\n    return b\n</create>\n任务完成，输出 done。\n<done>已完成</done>",
-            "expected_behavior": "parse_tools 在主 content（test_input）中未解析到工具时，应从 reasoning_content 中兜底提取工具。返回的 tools_list 应包含 create 和 done 两个工具调用。remaining_text 为 test_input 的原文（即 '根据需求，我将创建一个文件...'）。不应因主 content 无工具而返回空的 tools_list。"
-          },
+            "target_function": "execute_code_tool",
+            "test_input": "调用 execute_code_tool 执行一个 file_view 工具调用（参数：path='D:/AI/MyClaude/spec/myclaude_test_spec.md'），检查返回结果的 role 和 content 格式",
+            "expected_behavior": "返回结果应为 dict，包含 role='user' 和以 '[file_view] 工具执行结果：' 开头的 content 字段。不返回 list 类型。覆盖需求：TP-012, QL-006（工具结果格式）",
+            "check_type": "tool_chain"
+        },
     ]
 
     myclaude_root_path = global_cfg.base_path.project_root
