@@ -41,6 +41,7 @@ class UnitTestRunner:
             result._case = case
             results.append(result)
             logger.info("Case [id=%s] -> %s", case["id"], result.status)
+            logger.info("\n\n")
 
         return results
 
@@ -287,11 +288,13 @@ class UnitTestRunner:
         if target_function == "execute_code_tool":
             import re
             # 从 test_input 解析工具名和参数
-            tool_match = re.search(r'(\w+)\s+工具调用', test_input)
+            tool_match = re.search(r'(file_view|create|str_replace|bash|done|use_skill)', test_input)
             tool_name = tool_match.group(1) if tool_match else "file_view"
+
+            tool_params = {}
+
             # 提取 path 参数
             path_match = re.search(r"path=['\"]([^'\"]+)['\"]", test_input)
-            tool_params = {}
             if path_match:
                 tool_params["path"] = path_match.group(1)
             # 提取 limit/offset 等可选参数
@@ -301,6 +304,36 @@ class UnitTestRunner:
             offset_match = re.search(r"offset=['\"]?(\d+)", test_input)
             if offset_match:
                 tool_params["offset"] = int(offset_match.group(1))
+            # 提取 summary（create / str_replace 共用）
+            summary_match = re.search(r"summary=['\"]([^'\"]*)['\"]", test_input)
+            if summary_match:
+                tool_params["summary"] = summary_match.group(1)
+
+            # create 工具：提取 body/content
+            if tool_name == "create":
+                body_match = re.search(
+                    r"(?:body|content)=['\"]([^'\"]+)['\"]", test_input
+                )
+                if body_match:
+                    tool_params["content"] = body_match.group(1)
+                else:
+                    tool_params["content"] = ""
+
+            # str_replace 工具：提取 old 和 new 参数
+            if tool_name == "str_replace":
+                old_match = re.search(r"old=['\"]([^'\"]*)['\"]", test_input)
+                new_match = re.search(r"new=['\"]([^'\"]*)['\"]", test_input)
+                if old_match:
+                    tool_params["old"] = old_match.group(1)
+                if new_match:
+                    tool_params["new"] = new_match.group(1)
+
+            # use_skill 工具：提取 name 参数
+            if tool_name == "use_skill":
+                name_match = re.search(r"name=['\"]([^'\"]+)['\"]", test_input)
+                if name_match:
+                    tool_params["name"] = name_match.group(1)
+
             tool_dict = {"llm_tool": tool_name, "params": tool_params}
             return [tool_dict], {}
 
@@ -350,13 +383,13 @@ if __name__ == "__main__":
 
     ut_test_cases = [
         {
-            "id": "UT-TP-012",
-            "description": "execute_code_tool 返回结果格式为 role=user 的单条消息",
-            "target_module": "src.llm_tool.tool_executor",
-            "target_function": "execute_code_tool",
-            "test_input": "调用 execute_code_tool 执行一个 file_view 工具调用（参数：path='D:/AI/MyClaude/spec/myclaude_test_spec.md'），检查返回结果的 role 和 content 格式",
-            "expected_behavior": "返回结果应为 dict，包含 role='user' 和以 '[file_view] 工具执行结果：' 开头的 content 字段。不返回 list 类型。覆盖需求：TP-012, QL-006（工具结果格式）",
-            "check_type": "tool_chain"
+            "id": "UT-FO-001",
+            "description": "file_create 在文件不存在时成功创建新文件",
+            "target_module": "src.utility.file_tool",
+            "target_function": "file_create",
+            "test_input": "绝对路径 'D:/AI/MyClaude/code_output/test_fo001.py' 和内容 'x = 1'",
+            "expected_behavior": "file_create 应在 D:/AI/MyClaude/code_output/ 目录下创建 test_fo001.py 文件，文件内容为 'x = 1'。返回结果不应包含 [BLOCKED] 或 [ERROR]，应包含成功创建的信息。",
+            "check_type": "file_created"
         },
     ]
 

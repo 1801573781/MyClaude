@@ -609,7 +609,7 @@ MyClaude 通过 `--test-output <path>` 输出的 JSON 文件结构如下：
 > - `execute_code_tool` → `tool_chain`
 > - `get_context_for_query` / `add` / `search` → `memory_aware`
 > - `load_full_skill` → `skill_triggered`
-> - `cmd_bash` → `path_safety`（如涉及路径安全）或 `general`（纯命令执行）
+> - `tool_bash` → `general`（纯命令执行，如涉及路径安全则用 `path_safety`）
 > - `strip_thinking` / `normal_utility` → `general`
 > - 配置加载 / 初始化函数 → `startup`
 
@@ -628,6 +628,78 @@ MyClaude 通过 `--test-output <path>` 输出的 JSON 文件结构如下：
 | 其他通用逻辑验证 | `general` | 字符串处理、状态切换等 |
 
 **严禁行为**：不对被测函数做任何分析，直接填写 `"general"`。这属于测试用例缺陷。
+
+⚠️ **UT-009 test_input 格式强制规范（Mandatory）—— 极其重要，必须逐字阅读**
+
+`test_input` 不是自由格式的描述性文本。`unit_test_runner._build_args()` 对不同 `target_function` 有严格的不同解析逻辑。**格式化错误的 `test_input` 将导致 `KeyError`、`TypeError` 等崩溃**，使测试用例无法运行。
+
+> 🔴 **致命警告**：`test_input` 必须使用 `_build_args` 明确的能够解析的格式，**严禁使用 JSON 对象字符串**（如 `{"path": "...", "content": "..."}`）作为 `test_input`。`_build_args` 不支持解析嵌套 JSON 字符串。你必须根据被测函数不同，采用对应的正确格式。
+
+**各 target_function 的 test_input 正确格式**：
+
+> **parse_tools**（src.llm_tool.tool_executor）：`test_input` 是包含 XML 工具标签的**纯文本字符串**（模拟 LLM 输出的 content）。例如：
+>   - 含工具：`"print('hello')\n任务完成"`
+>   - 不含工具（需配合 reasoning_input）：`"根据需求，我将创建文件。"`
+>   - **严禁**使用 `{"llm_tool": "...", "params": {...}}` 等 JSON 格式。`parse_tools` 接收的是 LLM 原始文本，不是已解析的工具 dict。
+
+> **execute_code_tool**（src.llm_tool.tool_executor）：`test_input` 是包含工具信息的**字符串**。`_build_args` 通过正则（`re.search(r'(file_view|create|str_replace|bash|done|use_skill)', test_input)`）提取工具名，并通过 `path='...'`、`summary='...'`、`name='...'`、`old='...'`、`new='...'` 等键值对提取参数。`content`/`body` 参数也通过类似键值对提取。例如：
+>   - `"调用 execute_code_tool 执行 create 工具（path='D:/test.py', summary='测试', content='print(123)'）"`
+>   - **严禁**使用 `{"llm_tool": "create", "params": {...}}` 等 JSON 对象字符串。`_build_args` 的 execute_code_tool 分支**不解析 JSON 对象字符串**，它只通过正则提取键值对和工具名。
+
+> **file_create**（src.utility.file_tool）：`test_input` 是包含路径等信息的字符串。例如：
+>   - `"绝对路径 'D:/AI/MyClaude/code_output/test.py' 和内容 'print(123)'"`
+>   - **严禁**使用 `{"path": "...", "content": "..."}` 等 JSON 对象字符串。`file_create` 接收的 `(root, path, content)` 是三个独立的位置参数，不是 dict。`_build_args` 需要从中提取 `path` 和 `content` 等独立的值。
+
+> **file_str_replace**（src.utility.file_tool）：同 file_create 规则。例如：
+>   - `"文件 'D:/AI/MyClaude/code_output/test.py'，old='x=1'，new='x=2'"`
+
+> **file_view**（src.utility.file_tool）：`test_input` 是包含路径字符串的文本。例如：
+>   - `"路径 'D:/AI/MyClaude/README.md'"`
+>   - 可选：`"路径 'D:/AI/MyClaude/AGENTS.md'，limit=10，offset=5"`
+
+> **tool_bash**（src.llm_tool.cmd_bash）：`test_input` 是命令字符串，如 `"dir C:\\"`。**注意**：函数名是 `tool_bash`，不是 `cmd_bash`。
+
+> **strip_thinking**（src.utility.normal_utility）：`test_input` 是包含 thinking 标签的纯文本字符串。
+
+> **stream_chat**（src.query.chat_llm）：`test_input` 是消息描述字符串。
+
+> **其他函数**：`test_input` 作为单参数字符串传入被测函数。每次新增被测函数时，必须先阅读 `_build_args` 确认该函数的解析逻辑。
+
+**错误示例（严禁）**：
+```json
+{
+  "id": "UT-TP-012",
+  "test_input": "{\"llm_tool\": \"create\", \"params\": {\"path\": \"D:/test.py\"}}"
+}
+```
+ ← 这种 JSON 对象字符串格式会导致 `KeyError: 'path'`，因为 `_build_args` 的 `execute_code_tool` 分支不解析 JSON 对象。
+
+**正确示例**：
+```json
+{
+  "id": "UT-TP-012",
+  "test_input": "调用 execute_code_tool 执行 create 工具（path='D:/AI/MyClaude/code_output/test.py', summary='测试文件', content='print(123)'）"
+}
+```
+ ← `_build_args` 能通过正则正确提取 `path`、`summary`、`content` 等参数。
+
+⚠️ **UT-013 target_function 强制校验规则（Mandatory）—— 极其重要，必须逐字阅读**
+
+`target_function` 必须是目标模块中**实际导出的函数或方法名**，一个字符都不能错。**填错函数名将导致 `AttributeError`，测试用例直接崩溃**。
+
+> 🔴 **致命警告**：以下函数名在源码中不存在，必须使用右侧的正确名称：
+>
+> | ❌ 错误名称（会崩溃） | ✅ 正确名称 | 说明 |
+> |---------------------|------------|------|
+> | `cmd_bash` | `tool_bash` | `src/llm_tool/cmd_bash.py` 中定义的是 `tool_bash()` |
+> | `load_full_skill` | **不可作为 `target_function`** | `load_full_skill()` 是 `SkillLoader` 类的实例方法，不是模块级函数。`_build_args` 无法构造类实例。此类测试必须降级为手动编写的 pytest 文件，不能放入 JSON 单元测试用例中 |
+> | 任何大小写不一致的名称 | 与源码完全一致的名称 | Python 区分大小写，`File_Create` ≠ `file_create` |
+
+**生成测试用例前必须执行的校验步骤**：
+1. 打开目标模块的源码文件（通过 ``）
+2. 搜索 `def 目标函数名(` 确认函数确实存在
+3. 如果是类方法（`def method(self, ...)`），该函数**不可作为 JSON 测试用例的 `target_function`**——必须降级为手动 pytest 文件
+4. 确认无误后方可填写 `target_function`
 
 ⚠️ **UT-012 reasoning_input 强制检查规则（Mandatory）**
 
