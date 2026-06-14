@@ -56,7 +56,6 @@ class UnitTestRunner:
                 target_module=case["target_module"],
                 target_function=case["target_function"],
                 test_input=case.get("test_input", ""),
-                reasoning_input=case.get("reasoning_input", ""),
                 myclaude_root=myclaude_root,
             )
 
@@ -146,7 +145,7 @@ class UnitTestRunner:
         # 表头：用例原始列 + 测试结果列
         headers = [
             "id", "description", "target_module", "target_function",
-            "test_input", "expected_behavior", "reasoning_input",
+            "test_input", "expected_behavior",
             "status", "actual_output", "reason", "duration_seconds",
         ]
         ws.append(headers)
@@ -160,7 +159,6 @@ class UnitTestRunner:
                 case.get("target_function", ""),
                 case.get("test_input", ""),
                 case.get("expected_behavior", ""),
-                case.get("reasoning_input", ""),
                 result.status.value if hasattr(result.status, "value") else str(result.status),
                 result.actual_output,
                 result.reason,
@@ -194,8 +192,8 @@ class UnitTestRunner:
             cell.alignment = center_align
             cell.fill = header_fill
 
-        # --- A列(1)、H列(8)、K列(11) 左右居中 ---
-        center_columns = [1, 8, 11]
+        # --- A列(1)、G列(7)、J列(10) 左右居中 ---
+        center_columns = [1, 7, 10]
         for col_idx in center_columns:
             col_letter = openpyxl.utils.get_column_letter(col_idx)
             for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=col_idx, max_col=col_idx):
@@ -224,7 +222,6 @@ class UnitTestRunner:
     def _invoke_target(target_module: str,
                        target_function: str,
                        test_input: str,
-                       reasoning_input: str = "",
                        myclaude_root: str | None = None) -> str:
         """动态导入被测模块并调用函数，返回 repr(result) 或异常字符串。
 
@@ -232,7 +229,6 @@ class UnitTestRunner:
             target_module: 如 'src.utility.file_tool'
             target_function: 如 'resolve_path'
             test_input: 测试说明字符串，复杂参数需 Runner 内部构造（见 _build_args）
-            reasoning_input: reasoning_content 参数（如 parse_tools 的第二个参数）
             myclaude_root: MyClaude 源码根目录
 
         Returns:
@@ -248,9 +244,9 @@ class UnitTestRunner:
         mod = importlib.import_module(target_module)
         func = getattr(mod, target_function)
 
-        # 构造参数（根据 test_input / reasoning_input 解析）
+        # 构造参数（根据 test_input 解析）
         args, kwargs = UnitTestRunner._build_args(
-            test_input, target_function, reasoning_input
+            test_input, target_function
         )
 
         # 调用函数
@@ -263,63 +259,43 @@ class UnitTestRunner:
 
     @staticmethod
     def _build_args(test_input: str,
-                    target_function: str,
-                    reasoning_input: str = "") -> tuple[list, dict]:
-        """根据 test_input / reasoning_input 描述构造函数参数。
+                    target_function: str) -> tuple[list, dict]:
+        """根据 test_input 描述构造函数参数。
 
-        目前支持常见场景的简单解析，复杂用例可按需扩展。
+        优先尝试统一的键值对格式：'key1' : 'value1', 'key2' : 'value2'
+        键名对应被测函数的参数名。解析成功后全部以关键字参数形式传递。
+        如果无法解析为键值对，回退到函数特定的旧格式解析逻辑。
         """
-        # resolve_path: test_input 形如 "绝对路径 'D:/...' 和相对路径 'test.py'"
-        if target_function == "resolve_path":
-            import re
-            paths = re.findall(r"['\"]([^'\"]+)['\"]", test_input)
-            if len(paths) >= 2:
-                return paths, {}
-            return paths, {}
+        import re
 
-        # parse_tools: test_input 是主 content，reasoning_input 是 reasoning_content
-        # 当 reasoning_input 非空时传两个参数，否则传一个参数
-        if target_function == "parse_tools":
-            if reasoning_input:
-                return [test_input, reasoning_input], {}
-            return [test_input], {}
+        # ── 特殊处理：参数结构复杂的函数（不适合键值对格式） ──
 
-        # execute_code_tool: test_input 描述工具调用，需构造 tool dict
+        # execute_code_tool: test_input 描述工具调用，需构造复合 tool_dict
         if target_function == "execute_code_tool":
-            import re
-            # 从 test_input 解析工具名和参数
             tool_match = re.search(r'(file_view|create|str_replace|bash|done|use_skill)', test_input)
             tool_name = tool_match.group(1) if tool_match else "file_view"
 
             tool_params = {}
 
-            # 提取 path 参数
             path_match = re.search(r"path=['\"]([^'\"]+)['\"]", test_input)
             if path_match:
                 tool_params["path"] = path_match.group(1)
-            # 提取 limit/offset 等可选参数
             limit_match = re.search(r"limit=['\"]?(\d+)", test_input)
             if limit_match:
                 tool_params["limit"] = int(limit_match.group(1))
             offset_match = re.search(r"offset=['\"]?(\d+)", test_input)
             if offset_match:
                 tool_params["offset"] = int(offset_match.group(1))
-            # 提取 summary（create / str_replace 共用）
             summary_match = re.search(r"summary=['\"]([^'\"]*)['\"]", test_input)
             if summary_match:
                 tool_params["summary"] = summary_match.group(1)
 
-            # create 工具：提取 body/content
             if tool_name == "create":
                 body_match = re.search(
                     r"(?:body|content)=['\"]([^'\"]+)['\"]", test_input
                 )
-                if body_match:
-                    tool_params["content"] = body_match.group(1)
-                else:
-                    tool_params["content"] = ""
+                tool_params["content"] = body_match.group(1) if body_match else ""
 
-            # str_replace 工具：提取 old 和 new 参数
             if tool_name == "str_replace":
                 old_match = re.search(r"old=['\"]([^'\"]*)['\"]", test_input)
                 new_match = re.search(r"new=['\"]([^'\"]*)['\"]", test_input)
@@ -328,7 +304,6 @@ class UnitTestRunner:
                 if new_match:
                     tool_params["new"] = new_match.group(1)
 
-            # use_skill 工具：提取 name 参数
             if tool_name == "use_skill":
                 name_match = re.search(r"name=['\"]([^'\"]+)['\"]", test_input)
                 if name_match:
@@ -337,20 +312,45 @@ class UnitTestRunner:
             tool_dict = {"llm_tool": tool_name, "params": tool_params}
             return [tool_dict], {}
 
-        # file_create: test_input 描述创建流程
-        if target_function == "file_create":
-            import re
-            paths = re.findall(r"([A-Za-z]:/\S+\.py)", test_input)
-            if len(paths) >= 2:
-                return [paths[0], "print('v2')"], {}
-            return [test_input], {}
-
-        # append_tool_exec_result: test_input 描述构建场景
+        # append_tool_exec_result: 参数是嵌套列表/字典，不适合键值对
         if target_function == "append_tool_exec_result":
             return [], {"api_messages": [
                 {"role": "system", "content": "初始系统提示词"},
                 {"role": "user", "content": "用户输入"},
             ], "tool_exec_result": {"role": "user", "content": "工具执行结果"}}
+
+        # ── 通用键值对解析：'key' : 'value', ... ──
+        kv_pattern = r"""['"]([^'"]+)['"]\s*:\s*['"]([^'"]+)['"]"""
+        kv_matches = re.findall(kv_pattern, test_input)
+
+        if kv_matches:
+            kwargs = {}
+            for k, v in kv_matches:
+                # 已知整数类型的参数
+                if k in ("limit", "offset"):
+                    kwargs[k] = int(v) if v else None
+                else:
+                    kwargs[k] = v
+
+            return [], kwargs
+
+        # ── 回退：旧格式的函数特定解析 ──
+
+        # resolve_path: test_input 形如 "绝对路径 'D:/...' 和相对路径 'test.py'"
+        if target_function == "resolve_path":
+            paths = re.findall(r"['\"]([^'\"]+)['\"]", test_input)
+            return paths, {}
+
+        # parse_tools: test_input 是主 content
+        if target_function == "parse_tools":
+            return [test_input], {}
+
+        # file_create: 旧自然语言格式回退
+        if target_function == "file_create":
+            paths = re.findall(r"([A-Za-z]:/\S+\.py)", test_input)
+            if len(paths) >= 2:
+                return [paths[0], "print('v2')"], {}
+            return [test_input], {}
 
         # strip_thinking: test_input 是待处理的文本
         if target_function == "strip_thinking":
@@ -387,7 +387,7 @@ if __name__ == "__main__":
             "description": "file_create 在文件不存在时成功创建新文件",
             "target_module": "src.utility.file_tool",
             "target_function": "file_create",
-            "test_input": "绝对路径 'D:/AI/MyClaude/code_output/test_fo001.py' 和内容 'x = 1'",
+            "test_input": "'root' : 'D:/AI/MyClaude/code_output', 'path' : 'test_fo001.py', 'content' : 'x = 1'",
             "expected_behavior": "file_create 应在 D:/AI/MyClaude/code_output/ 目录下创建 test_fo001.py 文件，文件内容为 'x = 1'。返回结果不应包含 [BLOCKED] 或 [ERROR]，应包含成功创建的信息。",
             "check_type": "file_created"
         },

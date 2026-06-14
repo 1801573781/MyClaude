@@ -586,8 +586,8 @@ MyClaude 通过 `--test-output <path>` 输出的 JSON 文件结构如下：
 | `description` | string | 测试用例名称与简要描述 |
 | `target_module` | string | 被测模块的 Python 导入路径，如 `src.llm_tool.tool_executor` |
 | `target_function` | string | 被测函数名，如 `parse_tools` |
-| `test_input` | string | 传递给被测函数的主输入参数（如 LLM 响应的 `content` 文本）。如果被测场景的 content 为空或无关，该字段可设为空字符串 `""`。**严禁将 reasoning_content 的值写入此字段** |
-| `reasoning_input` | string（必填，条件触发） | **强制规则**：所有被测函数为 `parse_tools` 的测试用例，若其 `test_input`（主 content）不含任何 XML 工具标签（`<create>`、`<str_replace>`、`<file_view>`、`<bash>`、`<done>`），则 `reasoning_input` **必须**包含含工具标签的 reasoning 文本。反之，若 `test_input` 已含完整工具标签，`reasoning_input` 可省略。其他被测函数按需设置。**严禁应设未设，导致 reasoning_content 兜底解析场景被遗漏。违反此规则即为测试用例缺陷** |
+| `test_input` | string | 传递给被测函数的主输入参数。**统一使用键值对格式** `'key1' : 'value1', 'key2' : 'value2'`，键名对应被测函数的参数名。例如：`parse_tools` 使用 `'response' : '...', 'reasoning_content' : '...'`；`file_create` 使用 `'root' : '...', 'path' : '...', 'content' : '...'`；`execute_code_tool` 使用 `'llm_tool' : 'create', 'path' : '...'`。格式详情见下方 **UT-009 强制规范**。严禁使用自然语言描述或 JSON 对象字符串。 |
+
 | `expected_behavior` | string | 期望行为描述，供 pytest 测试代码参考。应包含明确的通过/失败判定标准（如返回的 tools_list 应包含哪些工具、remaining_text 应不含哪些标签等） |
 | `check_type` | string（**必填**） | 评判类型提示。可选值：`file_created`（文件创建）、`file_modified`（文件修改）、`tool_chain`（工具链完整性）、`log_generated`（日志生成）、`startup`（启动检查）、`memory_aware`（记忆感知）、`skill_triggered`（技能触发）、`path_safety`（路径安全）、`general`（通用）。与 `judge.py` 的 `check_hints` 强关联。**严禁省略此字段，严禁填错——错误的 check_type 会导致 judge 使用不匹配的评判维度，造成误判。** |
 
@@ -637,39 +637,50 @@ MyClaude 通过 `--test-output <path>` 输出的 JSON 文件结构如下：
 
 **各 target_function 的 test_input 正确格式**：
 
-> **parse_tools**（src.llm_tool.tool_executor）：`test_input` 是包含 XML 工具标签的**纯文本字符串**（模拟 LLM 输出的 content）。例如：
->   - 含工具：`"print('hello')\n任务完成"`
->   - 不含工具（需配合 reasoning_input）：`"根据需求，我将创建文件。"`
+> **parse_tools**（src.llm_tool.tool_executor）：使用键值对格式，键名对应函数参数名 `(response, reasoning_content)`，`reasoning_content` 可省略（有默认值 `""`）。例如：
+>   - 仅含 response：`"'response' : '...\n任务完成\n'"`
+>   - 含 reasoning_content（用于测试 TP-011 兜底解析）：`"'response' : '根据需求，我将创建文件。', 'reasoning_content' : '用户要求创建文件...让我使用 create 工具。...'"`
 >   - **严禁**使用 `{"llm_tool": "...", "params": {...}}` 等 JSON 格式。`parse_tools` 接收的是 LLM 原始文本，不是已解析的工具 dict。
 
 > **execute_code_tool**（src.llm_tool.tool_executor）：`test_input` 是包含工具信息的**字符串**。`_build_args` 通过正则（`re.search(r'(file_view|create|str_replace|bash|done|use_skill)', test_input)`）提取工具名，并通过 `path='...'`、`summary='...'`、`name='...'`、`old='...'`、`new='...'` 等键值对提取参数。`content`/`body` 参数也通过类似键值对提取。例如：
 >   - `"调用 execute_code_tool 执行 create 工具（path='D:/test.py', summary='测试', content='print(123)'）"`
 >   - **严禁**使用 `{"llm_tool": "create", "params": {...}}` 等 JSON 对象字符串。`_build_args` 的 execute_code_tool 分支**不解析 JSON 对象字符串**，它只通过正则提取键值对和工具名。
 
-> **file_create**（src.utility.file_tool）：`test_input` 是包含路径等信息的字符串。例如：
->   - `"绝对路径 'D:/AI/MyClaude/code_output/test.py' 和内容 'print(123)'"`
->   - **严禁**使用 `{"path": "...", "content": "..."}` 等 JSON 对象字符串。`file_create` 接收的 `(root, path, content)` 是三个独立的位置参数，不是 dict。`_build_args` 需要从中提取 `path` 和 `content` 等独立的值。
+> **file_create**（src.utility.file_tool）：使用键值对格式，键名对应函数参数名 `(root, path, content)`：
+>   - 正确：`"'root' : 'D:/AI/MyClaude/code_output', 'path' : 'test_fo001.py', 'content' : 'x = 1'"`
+>   - 错误：`"绝对路径 'D:/...' 和内容 'x = 1'"`（自然语言，`_build_args` 无法解析）
 
-> **file_str_replace**（src.utility.file_tool）：同 file_create 规则。例如：
->   - `"文件 'D:/AI/MyClaude/code_output/test.py'，old='x=1'，new='x=2'"`
+> **file_str_replace**（src.utility.file_tool）：键值对格式，键名对应参数名 `(root, path, old, new)`：
+>   - `"'root' : 'D:/AI/MyClaude/code_output', 'path' : 'test.py', 'old' : 'x=1', 'new' : 'x=2'"`
 
-> **file_view**（src.utility.file_tool）：`test_input` 是包含路径字符串的文本。例如：
->   - `"路径 'D:/AI/MyClaude/README.md'"`
->   - 可选：`"路径 'D:/AI/MyClaude/AGENTS.md'，limit=10，offset=5"`
+> **file_view**（src.utility.file_tool）：键值对格式，键名对应参数名 `(root, path, limit, offset)`：
+>   - `"'root' : 'D:/AI/MyClaude', 'path' : 'README.md'"`
+>   - 可选参数：`"'root' : 'D:/AI/MyClaude', 'path' : 'AGENTS.md', 'limit' : 10, 'offset' : 5"`
 
-> **tool_bash**（src.llm_tool.cmd_bash）：`test_input` 是命令字符串，如 `"dir C:\\"`。**注意**：函数名是 `tool_bash`，不是 `cmd_bash`。
+> **resolve_path**（src.utility.file_tool）：键值对格式 `(root, path)`：
+>   - `"'root' : 'D:/AI/MyClaude/code_output', 'path' : 'test.py'"`
 
-> **strip_thinking**（src.utility.normal_utility）：`test_input` 是包含 thinking 标签的纯文本字符串。
+> **tool_bash**（src.llm_tool.cmd_bash）：键值对格式，键 `command`：
+>   - `"'command' : 'dir C:\\'"`
 
-> **stream_chat**（src.query.chat_llm）：`test_input` 是消息描述字符串。
+> **strip_thinking**（src.utility.normal_utility）：键值对格式，键 `content`：
+>   - `"'content' : 'thinking...actual output'"`
 
-> **其他函数**：`test_input` 作为单参数字符串传入被测函数。每次新增被测函数时，必须先阅读 `_build_args` 确认该函数的解析逻辑。
+> **stream_chat**（src.query.chat_llm）：键值对格式，键 `messages`：
+>   - `"'messages' : 'hello'"`
+
+> **其他函数**：统一使用键值对格式 `'key1' : 'value1', 'key2' : 'value2'`，键名对应函数参数名。`_build_args` 自动按函数签名映射为位置参数和关键字参数。
 
 **错误示例（严禁）**：
 ```json
 {
   "id": "UT-TP-012",
-  "test_input": "{\"llm_tool\": \"create\", \"params\": {\"path\": \"D:/test.py\"}}"
+  "description": "execute_code_tool 执行 create 创建文件",
+  "target_module": "src.llm_tool.tool_executor",
+  "target_function": "execute_code_tool",
+  "test_input": "{'llm_tool': 'create', 'params': {'path': 'D:/test.py'}}",
+  "expected_behavior": "execute_code_tool 应创建文件 D:/test.py",
+  "check_type": "tool_chain"
 }
 ```
  ← 这种 JSON 对象字符串格式会导致 `KeyError: 'path'`，因为 `_build_args` 的 `execute_code_tool` 分支不解析 JSON 对象。
@@ -678,10 +689,15 @@ MyClaude 通过 `--test-output <path>` 输出的 JSON 文件结构如下：
 ```json
 {
   "id": "UT-TP-012",
-  "test_input": "调用 execute_code_tool 执行 create 工具（path='D:/AI/MyClaude/code_output/test.py', summary='测试文件', content='print(123)'）"
+  "description": "execute_code_tool 执行 create 工具创建测试文件",
+  "target_module": "src.llm_tool.tool_executor",
+  "target_function": "execute_code_tool",
+  "test_input": "'llm_tool' : 'create', 'path' : 'D:/AI/MyClaude/code_output/test.py', 'summary' : 'test', 'content' : 'print(123)'",
+  "expected_behavior": "execute_code_tool 应解析键值对参数，调用 file_create 在 D:/AI/MyClaude/code_output/ 下创建 test.py，内容为 'print(123)'。返回结果包含成功创建信息。",
+  "check_type": "tool_chain"
 }
 ```
- ← `_build_args` 能通过正则正确提取 `path`、`summary`、`content` 等参数。
+ ← `_build_args` 通过键值对解析出 `llm_tool`、`path`、`summary`、`content`，构造 `tool_dict` 和参数。
 
 ⚠️ **UT-013 target_function 强制校验规则（Mandatory）—— 极其重要，必须逐字阅读**
 
@@ -689,7 +705,7 @@ MyClaude 通过 `--test-output <path>` 输出的 JSON 文件结构如下：
 
 > 🔴 **致命警告**：以下函数名在源码中不存在，必须使用右侧的正确名称：
 >
-> | ❌ 错误名称（会崩溃） | ✅ 正确名称 | 说明 |
+| ❌ 错误名称（会崩溃） | ✅ 正确名称 | 说明 |
 > |---------------------|------------|------|
 > | `cmd_bash` | `tool_bash` | `src/llm_tool/cmd_bash.py` 中定义的是 `tool_bash()` |
 > | `load_full_skill` | **不可作为 `target_function`** | `load_full_skill()` 是 `SkillLoader` 类的实例方法，不是模块级函数。`_build_args` 无法构造类实例。此类测试必须降级为手动编写的 pytest 文件，不能放入 JSON 单元测试用例中 |
@@ -706,9 +722,7 @@ MyClaude 通过 `--test-output <path>` 输出的 JSON 文件结构如下：
 在生成单元测试用例 JSON 时，必须执行以下自检步骤：
 1. 扫描所有 `target_function` 为 `parse_tools` 的用例
 2. 检查每个用例的 `test_input` 字段——是否包含任何 XML 工具标签（`<create>`、`<str_replace>`、`<file_view>`、`<bash>`、`<done>`）
-3. 若 `test_input` **不包含**任何工具标签，且该用例未设置 `reasoning_input` → **缺陷**，必须补齐 `reasoning_input`
-4. `reasoning_input` 的内容必须是完整、真实的 reasoning 文本，**严禁**使用空字符串或占位文本
-5. 完成以上检查后方可输出最终 JSON 文件
+3. 完成以上检查后方可输出最终 JSON 文件
 
  **违反此规则的后果**：生成的测试用例将遗漏 `reasoning_content` 兜底解析场景，导致 TP-011 需求无法被覆盖，属于严重缺陷。
 
@@ -719,8 +733,7 @@ MyClaude 通过 `--test-output <path>` 输出的 JSON 文件结构如下：
    "description": "主响应无工具时从 reasoning_content 兜底提取工具调用",
    "target_module": "src.llm_tool.tool_executor",
    "target_function": "parse_tools",
-   "test_input": "根据需求，我将创建文件。",
-   "reasoning_input": "用户要求创建文件...让我使用 create 工具。<create path='D:/AI/MyClaude/code_output/test.py' summary='测试文件'>print('hello')</create>",
+   "test_input": "'response' : '根据需求，我将创建文件。', 'reasoning_content' : '用户要求创建文件...让我使用 create 工具。<create path='D:/AI/MyClaude/code_output/test.py' summary='测试文件'>print('hello')</create>'",   
    "expected_behavior": "...",
    "check_type": "tool_chain"
  }
@@ -732,7 +745,7 @@ MyClaude 通过 `--test-output <path>` 输出的 JSON 文件结构如下：
    "description": "主响应无工具时从 reasoning_content 兜底提取工具调用",
    "target_module": "src.llm_tool.tool_executor",
    "target_function": "parse_tools",
-   "test_input": "根据需求，我将创建文件。",
+   "test_input": "'response' : '根据需求，我将创建文件。', 'reasoning_content' : '用户要求创建文件...让我使用 create 工具。<create path='D:/AI/MyClaude/code_output/test.py' summary='测试文件'>print('hello')</create>'",
    "expected_behavior": "...",
    "check_type": "tool_chain"
 }
@@ -748,8 +761,8 @@ MyClaude 通过 `--test-output <path>` 输出的 JSON 文件结构如下：
   "id": "UT-TP-010",
   "description": "done 标签省略闭合标签时 parse_tools 仍能正确识别",
   "target_module": "src.llm_tool.tool_executor",
-  "target_function": "parse_tools",
-  "test_input": "<create path='D:/test.py' summary='test'/>...\n<done>任务完成\n",
+  "target_function": "parse_tools",  
+  "test_input": "'response' : '<create path='D:/test.py' summary='test'/>...\n<done>任务完成\n', 'reasoning_content' : ''",
   "expected_behavior": "parse_tools 应返回 tools_list 中包含 done 工具调用，remaining_text 不含 <done> 标签。不因缺少 </done> 闭合标签而抛出异常或死循环。",
   "check_type": "tool_chain"
 }
@@ -757,13 +770,13 @@ MyClaude 通过 `--test-output <path>` 输出的 JSON 文件结构如下：
 
 ```json
 {
-  "id": "UT-MM-002",
-  "description": "验证 api_messages 中首轮之后不含 role=system 消息",
-  "target_module": "src.utility.llm_api_msg",
-  "target_function": "LLMAPIMessage.append_tool_exec_result",
-  "test_input": "构造一轮对话后调用 append_tool_exec_result({'role': 'user', 'content': 'test'})",
-  "expected_behavior": "追加的消息 role 为 'user'，整个 api_messages 列表中首轮之后没有任何 role=system 的条目。",
-  "check_type": "general"
+  "id": "UT-FO-001",
+  "description": "file_create 在文件不存在时成功创建新文件",
+  "target_module": "src.utility.file_tool",
+  "target_function": "file_create",
+  "test_input": "'root' : 'D:/AI/MyClaude/code_output', 'path' : 'test_fo001.py', 'content' : 'x = 1'",
+  "expected_behavior": "file_create 应在 D:/AI/MyClaude/code_output/ 目录下创建 test_fo001.py 文件，文件内容为 'x = 1'。返回结果不应包含 [BLOCKED] 或 [ERROR]，应包含成功创建的信息。",
+  "check_type": "file_created"
 }
 ```
 
@@ -773,8 +786,7 @@ MyClaude 通过 `--test-output <path>` 输出的 JSON 文件结构如下：
   "description": "主响应无工具时从 reasoning_content 兜底提取工具调用",
   "target_module": "src.llm_tool.tool_executor",
   "target_function": "parse_tools",
-  "test_input": "根据需求，我将创建文件。",
-  "reasoning_input": "用户要求创建文件...让我使用 create 工具。<create path='D:/AI/MyClaude/code_output/test.py' summary='测试文件'>print('hello')</create>",
+  "test_input": "'response' : '根据需求，我将创建文件。', 'reasoning_content' : '用户要求创建文件...让我使用 create 工具。<create path='D:/AI/MyClaude/code_output/test.py' summary='测试文件'>print('hello')</create>'",
   "expected_behavior": "parse_tools 在主 content 中未解析到工具时，应从 reasoning_content 中兜底提取工具。返回的 tools_list 应包含一个 create 工具调用，remaining_text 为原 content 文本。不因主 content 无工具而返回空的 tools_list。",
   "check_type": "tool_chain"
 }
