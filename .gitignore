@@ -29,6 +29,8 @@ tests/*
 !log/.gitkeep
 !spec/.gitkeep
 !spec/myclaude_test_spec.md
+!spec/unit_test_case_generator_spec.md
+!spec/unit_test_spec_origin.txt
 !memory_storage/.gitkeep
 !tests/.gitkeep
 

@@ -1,0 +1,82 @@
+一、总体需求
+
+1、请根据以下原始需求，生成一篇需求规格文档，markdown格式，文件名是：D:\AI\MyClaude\spec\unit_test_case_generator_spec.md。
+2、将来，需要根据 unit_test_case_generator_spec.md，生成的代码名称是：D:\AI\MyClaude\src\tools\unit_test_generator_ex.py
+3、这次只生成 unit_test_case_generator_spec.md。
+
+
+二、原始需求
+
+1、所生成的代码 unit_test_generator_ex.py，的作用是生成单元测试用例
+
+2、单元测试用例文件是json格式，不要一句废话，全是单元测试用例
+
+2、unit_test_generator_ex.py 跟 D:\AI\MyClaude\src\cli\tree_visualizer.py 有很多相似的地方：
+（1）可以独立运行
+（2）有一个参数， --root，表示一个python项目的根目录
+（3）有一个参数，--output，代表所输出测试用例的文件名称
+
+3、单元测试用例的生成大纲：
+（1）root目录之下，递归遍历模块/目录、.py文件，每个.py文件中的函数，获取方法，是全面使用jedi的能力
+（2）按照 root目录之下的 .gitignore 文件，忽略掉相关的 .py文件
+（3）只考虑 class 中的静态函数，或者全局函数/独立函数/模块级函数
+（4）注意，一定要首先全面使用jedi的能力，然后才是自己编码
+
+4、(一个)单元测试用例格式：（举例）
+
+{
+    "id": "UT-FO-002",
+    "description": "file_create 在目标文件已存在且非空时返回 BLOCKED",
+    "target_module": "src.utility.file_tool",
+    "target_function": "file_create",
+    "test_input": "'root' : 'D:/AI/MyClaude/code_output', 'path' : 'existing.py', 'content' : 'new content'",
+    "expected_behavior": "file_create 检测到 existing.py 已存在且非空，返回包含 [BLOCKED] 的警告信息，并拒绝覆盖。原始文件内容保持不变。",
+  },
+
+其中，
+
+| 字段名 | 类型 | 说明 |
+|-------|------|------|
+| `id` | string | 唯一标识符，如 `UT-TP-010`，格式为 `UT-{模块缩写}-{序号}` |
+| `description` | string | 测试用例名称与简要描述 |
+| `target_module` | string | 被测模块的 Python 导入路径，如 `src.llm_tool.tool_executor` |
+| `target_function` | string | 被测函数名，如 `parse_tools` |
+| `test_input` | string | 传递给被测函数的主输入参数。**统一使用键值对格式** `'key1' : 'value1', 'key2' : 'value2'`，键名对应被测函数的参数名。例如：`parse_tools` 使用 `'response' : '...', 'reasoning_content' : '...'`；`file_create` 使用 `'root' : '...', 'path' : '...', 'content' : '...'`；`execute_code_tool` 使用 `'llm_tool' : 'create', 'path' : '...'`。格式详情见下方 **UT-009 强制规范**。严禁使用自然语言描述或 JSON 对象字符串。 |
+| `expected_behavior` | string | 期望行为描述，供 pytest 测试代码参考。应包含明确的通过/失败判定标准（如返回的 tools_list 应包含哪些工具、remaining_text 应不含哪些标签等） |
+
+5、单元测试用例的生成算法：
+（1）id、target_module、target_function，由unit_test_generator_ex.py直接生成，不必劳烦LLM
+（2）test_input中的key, 由unit_test_generator_ex.py直接生成，不必劳烦LLM
+（3）test_input中的value，由unit_test_generator_ex.py调用LLM生成
+（4）description、expected_behavior，由unit_test_generator_ex.py调用LLM生成
+
+6、LLM调用的基本方法
+
+（1）基本参数，参考如下代码：
+
+    model_provider = global_cfg.model.provider
+    provider_cfg = getattr(global_cfg, model_provider)
+    api_key = provider_cfg.api_key
+    base_url = provider_cfg.base_url
+    model_name = provider_cfg.model_name
+
+（2）是一个用例调用LLM一次，还是所有用例，调用LLM一次，你自己判断，哪个效率更高，使用哪个
+
+7、LLM的prompt注意事项
+（1）需要LLM理解相关待测试的函数
+（2）只有理解以后，才能更好地生成test_input中的value，以及description、expected_behavior
+（3）还要考虑“异常”，test_input中的value，不仅仅是正常值，还要包括异常值，这样才能更加全方位地测试被测函数
+（4）而且，expected_behavior，一定要根据test_input中的value，表达正确。如果expected_behavior都错了，那么这个单元测试用例就失去了意义
+（5）根据以上信息，考虑unit_test_generator_ex.py中的LLM的prompt到底该怎么写
+
+8、unit_test_generator_ex.py的兜底作用
+test_input中的value、description、expected_behavior，有LLM生成之后，unit_test_generator_ex.py，就构建了完整的测试用例，此时它不能直接输出，需要做个兜底检查
+（1）单元测试用例的格式是否正确
+（2）LLM生成的test_input中的value，是否完整，数据类型是否正确
+（3）其他需要兜底的地方，你帮忙再琢磨琢磨，还有哪些
+（4）如果发现不正确的地方，需要修改正确。如果是LLM生成错误，需要将错误信息报告给LLM，让LLM重新生成
+（5）最后，错误的测试用例，需要另外存储一个“error”文件里
+
+
+
+
