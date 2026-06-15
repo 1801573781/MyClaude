@@ -416,7 +416,7 @@ def _call_llm(
             model=model,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=max_tokens,
-            temperature=0.3,
+            temperature=0,
         )
         content = resp.choices[0].message.content or ""
         return _extract_json(content)
@@ -526,49 +526,93 @@ def _validate_single_case(
 def _parse_test_input_keys(ti: str) -> Optional[Dict[str, str]]:
     """
     解析 test_input 键值对字符串。
-    格式: 'key1' : 'value1', 'key2' : 'value2'
-    返回键值对字典，value 保留原始字符串（保留外层引号）。
-    注意：大括号 {} 内的内容不进行分割，避免嵌套 dict 被误解析。
+    格式: 'key1' : value1, 'key2' : value2
+    返回键值对字典，value 保留原始字符串（含外层引号/括号等）。
+    支持 value 内部含有逗号、嵌套引号、各种括号（{}、[]、()）。
+    空值（如 'key' : 后无内容）在解析时 value 为空字符串。
     """
     if not ti or not isinstance(ti, str):
         return None
+
     result: Dict[str, str] = {}
-    # 先剥离最外层大括号保护区域
-    brace_depth = 0
-    guarded = list(ti)
-    for i, ch in enumerate(guarded):
-        if ch == '{':
-            brace_depth += 1
-        elif ch == '}':
-            brace_depth -= 1
-        elif ch == ',' and brace_depth > 0:
-            guarded[i] = '\x00'  # 用哨兵替换大括号内的逗号
-    safe_ti = ''.join(guarded)
+    pos = 0
+    n = len(ti)
 
-    pattern = r"""'([^']+)'\s*:\s*(.+)"""
-    # 按逗号分割后再匹配
-    segments = safe_ti.split(',')
+    while pos < n:
+        # 跳过空白
+        while pos < n and ti[pos].isspace():
+            pos += 1
+        if pos >= n:
+            break
 
-    parts: List[str] = []
-    for seg in segments:
-        seg = seg.strip()
-        if not seg:
-            continue
-        parts.append(seg)
-
-    for part in parts:
-        m = re.match(pattern, part.strip())
+        # 匹配 key: 'key' :
+        m = re.match(r"'([^']+)'\s*:\s*", ti[pos:])
         if not m:
-            # 可能是上一个 value 被逗号截断了，拼接回去
-            continue
+            return result if result else None
         key = m.group(1)
-        val = m.group(2).strip()
-        # 还原哨兵为逗号
-        val = val.replace('\x00', ',')
-        result[key] = val
-    if not result:
-        return None
-    return result
+        pos += m.end()
+
+        # 逐字符解析 value，在深度 0 的逗号或串尾处终止
+        value_chars: List[str] = []
+        depth_brace = 0    # {}
+        depth_bracket = 0  # []
+        depth_paren = 0    # ()
+        quote_char: Optional[str] = None  # ' 或 "
+
+        while pos < n:
+            ch = ti[pos]
+
+            if quote_char is not None:
+                # 在引号内：转义处理，遇匹配引号退出
+                value_chars.append(ch)
+                pos += 1
+                if ch == '\\':
+                    if pos < n:
+                        value_chars.append(ti[pos])
+                        pos += 1
+                elif ch == quote_char:
+                    quote_char = None
+            elif ch in ("'", '"'):
+                # 进入引号字符串
+                quote_char = ch
+                value_chars.append(ch)
+                pos += 1
+            elif ch == '{':
+                depth_brace += 1
+                value_chars.append(ch)
+                pos += 1
+            elif ch == '}':
+                depth_brace = max(0, depth_brace - 1)
+                value_chars.append(ch)
+                pos += 1
+            elif ch == '[':
+                depth_bracket += 1
+                value_chars.append(ch)
+                pos += 1
+            elif ch == ']':
+                depth_bracket = max(0, depth_bracket - 1)
+                value_chars.append(ch)
+                pos += 1
+            elif ch == '(':
+                depth_paren += 1
+                value_chars.append(ch)
+                pos += 1
+            elif ch == ')':
+                depth_paren = max(0, depth_paren - 1)
+                value_chars.append(ch)
+                pos += 1
+            elif ch == ',' and depth_brace == 0 and depth_bracket == 0 and depth_paren == 0:
+                # 遇到深度 0 的逗号，当前键值对结束
+                pos += 1  # 跳过逗号
+                break
+            else:
+                value_chars.append(ch)
+                pos += 1
+
+        value = ''.join(value_chars).strip()
+        result[key] = value
+
+    return result if result else None
 
 
 def _check_type_compatibility(value: str, type_hint: str) -> bool:
@@ -869,12 +913,21 @@ def main() -> None:
 
     valid_cases, error_cases = validate_all_cases(all_raw_cases, funcs_map, seen_ids)
 
-    # 错误用例清理 _func_index 后再保存
+    # 错误用例清理 _func_index 后保存（用集合去重，key 为 (module, function, test_input)）
+    def _error_key(err: Dict[str, Any]) -> tuple:
+        oc = err["original_case"]
+        return (oc.get("target_module", ""), oc.get("target_function", ""), oc.get("test_input", ""))
+
+    seen_error_keys: set = set()
     final_errors: List[Dict[str, Any]] = []
     for ec in error_cases:
         oc = ec["original_case"].copy()
         oc.pop("_func_index", None)
-        final_errors.append({"original_case": oc, "errors": ec["errors"]})
+        err_entry = {"original_case": oc, "errors": ec["errors"]}
+        ek = _error_key(err_entry)
+        if ek not in seen_error_keys:
+            seen_error_keys.add(ek)
+            final_errors.append(err_entry)
 
     for retry in range(1, max_retries + 1):
         if not error_cases:
@@ -897,7 +950,11 @@ def main() -> None:
         for ec in error_cases:
             oc = ec["original_case"].copy()
             oc.pop("_func_index", None)
-            final_errors.append({"original_case": oc, "errors": ec["errors"]})
+            err_entry = {"original_case": oc, "errors": ec["errors"]}
+            ek = _error_key(err_entry)
+            if ek not in seen_error_keys:
+                seen_error_keys.add(ek)
+                final_errors.append(err_entry)
         print(f"    修正后: {len(new_valid)} 个有效, {len(new_errors)} 个仍错误")
     print(f"  最终: {len(valid_cases)} 个有效, {len(final_errors)} 个错误")
 
