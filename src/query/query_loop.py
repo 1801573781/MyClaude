@@ -51,6 +51,9 @@ class QueryLoop:
         self.prompt_cache_miss = 0   # 输入（未命中缓存）
         self.completion_tokens = 0   # 输出
 
+        # 追问无工具兜底计数器
+        self._no_tool_retry = 0
+
 
     def _init_memory(self):
         """通过工厂函数创建记忆实例，容错降级为 NoopMemory。"""
@@ -115,6 +118,7 @@ class QueryLoop:
         self.api_messages = llm_api_msg.LLMAPIMessage(role=self.role)
         self.session = SessionLog()
         self.max_turns = global_cfg.cli.max_turns
+        self._no_tool_retry = 0  # 每次新 session 重置追问计数器
         self.is_chat_mode = True
 
         # 新任务开始，执行记忆维护（遗忘过期记忆，不删除持久化数据）
@@ -255,11 +259,8 @@ class QueryLoop:
         else:
             ai_response_show = ai_response
 
-        # 根据全局开关决定是否启用 reasoning_content 兜底解析
-        if global_cfg.tool_parse.from_reasoning:
-            remaining_text, tools = tool_executor.parse_tools(ai_response_show, reasoning_content)
-        else:
-            remaining_text, tools = tool_executor.parse_tools(ai_response_show)
+        # 仅从 ai_response 解析工具（不 fallback 到 reasoning_content）
+        remaining_text, tools = tool_executor.parse_tools(ai_response_show)
 
         # 打印部分 LLM response（有些内容不打印，显示一分神秘感）
         self._print_info(f"Thinking-{turn}, 开始时间：{thinking_begin}")
@@ -281,18 +282,71 @@ class QueryLoop:
         return tools, remaining_text
 
 
+    def _follow_up_for_tools(self):
+        """无工具时追问 LLM 最多 3 次，尝试获取工具列表。
+
+        核心设计：使用临时消息副本，绝不污染正式的 api_messages 对话历史。
+        因为追问是"元操作"——它不应该成为 LLM 对话记忆的一部分。
+
+        Returns:
+            解析到的工具列表；若 3 次追问仍无工具，返回空列表。
+        """
+        import copy
+
+        if self._no_tool_retry >= 3:
+            return []
+
+        self._no_tool_retry += 1
+        prompt = (
+            "[系统提醒] 我注意到你既没有输出任何工具调用，也没有输出 done。"
+            "请明确告诉我接下来应该执行什么工具，或者如果你认为任务已完成，请输出 done。"
+        )
+        self._print_info(f"[追问 {self._no_tool_retry}/3] {prompt}")
+
+        try:
+            # 构建临时消息列表（深拷贝，不污染正式对话历史）
+            temp_msgs = copy.deepcopy(self.api_messages.get_msg())
+            temp_msgs.append({"role": "user", "content": prompt})
+
+            ai_response, is_truncated, reasoning_content, usage = chat_llm.chat_with_retry(temp_msgs)
+
+            # 记录追问对话到 session（用于日志审计）
+            self.session.log_turn(-self._no_tool_retry)  # 负数 turn 表示追问
+            self.session.log_llm_req(temp_msgs)
+            self.session.log_llm_rsp(ai_response)
+            self.session.log_reasoning_content(reasoning_content)
+        except Exception as e:
+            logger.error(f"追问 LLM 失败: {e}")
+            return []
+
+        # 解析工具（仅从 ai_response，不回退到 reasoning_content）
+        ai_response_clean = strip_thinking(ai_response)
+        _, tools = tool_executor.parse_tools(ai_response_clean)
+
+        if tools:
+            self._print_info(f"[追问结果] 成功获取到 {len(tools)} 个工具，进入执行")
+        else:
+            self._print_info(f"[追问结果] 第 {self._no_tool_retry}/3 次仍未获得工具")
+
+        return tools
+
+
     def _handle_tools(self, tools):
         """执行工具并返回 (quit_chat, tool_exec_info)。
         tool_exec_info 为列表，每个元素是 {"tool": 工具名, "params": 参数, "result": 结果文本}。
         """
-        # 1. 如果 LLM response 中没有工具，那么直接会话结束
+        # 1. 如果 LLM response 中没有工具
         if not tools:
-            # 如果是非聊天模式（那就是编码模式），须提示用户一句：流程结束了；如果是聊天模式，那就直接结束
-            if not self.is_chat_mode:
+            # 无工具时一律追问 LLM（最多 3 次），不再区分聊天/编码模式
+            tools = self._follow_up_for_tools()
+            if not tools:
+                # 追问无果，兜底结束
                 self._print_info("LLM 未调用 done 工具，但已无后续操作，自动结束")
                 self.session.log_dict_info({"role": "system", "content": "LLM 未调用 done 工具，但已无后续操作，自动结束"})
-
-            return ChatOrNot.QuitByNoneTool, []
+                return ChatOrNot.QuitByNoneTool, []
+            # 追问得到了工具，重置计数器
+            self._no_tool_retry = 0
+            # 继续往下执行（会进入后面的 exec_tools / done_tools 处理）
 
         # 如果 LLM response 中有工具，那就不是单纯的聊天
         self.is_chat_mode = False
@@ -311,7 +365,14 @@ class QueryLoop:
                 self._print_tool_call(t["llm_tool"], t["params"])  # 打印：工具名称，工具参数
                 self.session.log_tool_call(t["llm_tool"], t["params"])
 
-                result_msg = tool_executor.execute_code_tool(t)  # 工具执行
+                try:
+                    result_msg = tool_executor.execute_code_tool(t)  # 工具执行
+                except Exception as e:
+                    logger.error(f"工具执行异常 [{t['llm_tool']}]: {e}")
+                    result_msg = {
+                        "role": "user",
+                        "content": f"[ERROR] 工具 {t['llm_tool']} 执行失败: {e}"
+                    }
 
                 self._print_tool_result(t["llm_tool"], result_msg.get("content", ""))  # 打印：工具执行结果
                 self.session.log_tool_result(t["llm_tool"], result_msg)

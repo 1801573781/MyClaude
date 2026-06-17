@@ -249,7 +249,11 @@ def parse_tools(response: str, reasoning_content: str = ""):
     """
     remaining, tools = _parse_tools_strict(response)
 
-    # 兜底：主响应无工具，且提供了 reasoning_content
+    # 兜底1：严格解析无工具，对同一 response 尝试宽松解析（处理畸形标签）
+    if not tools and response.strip():
+        remaining, tools = _parse_tools_loose(response)
+
+    # 兜底2：仍无工具，且额外提供了 reasoning_content
     if not tools and reasoning_content:
         remaining, tools = _parse_tools_loose(reasoning_content)
 

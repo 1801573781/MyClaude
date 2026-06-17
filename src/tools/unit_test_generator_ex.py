@@ -480,8 +480,8 @@ def _validate_single_case(
     if not isinstance(ti, str):
         errors.append("test_input 必须是字符串")
     else:
-        # 解析键值对
-        parsed = _parse_test_input_keys(ti)
+        # 解析键值对（使用参数名精确匹配，避免 value 内部结构干扰）
+        parsed = _parse_test_input_by_params(ti, expected_param_names)
         if parsed is None:
             errors.append(
                 f"test_input 格式错误，必须是键值对格式 'key1':'value1', 'key2':'value2'，"  # noqa
@@ -521,6 +521,51 @@ def _validate_single_case(
         errors.append("expected_behavior 不能为空")
 
     return errors
+
+
+def _parse_test_input_by_params(ti: str, param_names: List[str]) -> Optional[Dict[str, str]]:
+    """基于已知参数名列表解析 test_input，返回键值对字典。
+
+    与 _parse_test_input_keys 不同：本函数利用参数名先验知识，
+    避免 value 内部的键值对结构（如 'a': 'b', 'c': 'd'）被误判为外层键值对，
+    导致 validate 阶段出现"多余参数"的误报。
+    """
+    if not ti or not isinstance(ti, str):
+        return None
+
+    result: Dict[str, str] = {}
+    remaining = ti
+
+    for i, pname in enumerate(param_names):
+        # 跳过前导空白
+        remaining = remaining.lstrip()
+        # 匹配 '参数名' : 或 '参数名':
+        prefix = f"'{pname}' : "
+        if remaining.startswith(prefix):
+            remaining = remaining[len(prefix):]
+        elif remaining.startswith(f"'{pname}':"):
+            remaining = remaining[len(f"'{pname}':"):]
+        else:
+            return None  # 格式不匹配
+
+        # 确定 value 的结束位置
+        if i + 1 < len(param_names):
+            # 查找下一个参数名的起始位置: , '下个参数名'
+            next_prefix = f", '{param_names[i + 1]}'"
+            pos = remaining.find(next_prefix)
+            if pos >= 0:
+                value = remaining[:pos].strip()
+                remaining = remaining[pos + 1:]  # 跳过逗号
+            else:
+                return None
+        else:
+            # 最后一个参数，剩余全部是值
+            value = remaining.strip()
+            remaining = ""
+
+        result[pname] = value
+
+    return result if result else None
 
 
 def _parse_test_input_keys(ti: str) -> Optional[Dict[str, str]]:
@@ -602,9 +647,25 @@ def _parse_test_input_keys(ti: str) -> Optional[Dict[str, str]]:
                 value_chars.append(ch)
                 pos += 1
             elif ch == ',' and depth_brace == 0 and depth_bracket == 0 and depth_paren == 0:
-                # 遇到深度 0 的逗号，当前键值对结束
-                pos += 1  # 跳过逗号
-                break
+                # 遇到深度 0 的逗号，peek 后续是否为新的键值对起点
+                peek_pos = pos + 1
+                # 跳过空白
+                while peek_pos < n and ti[peek_pos].isspace():
+                    peek_pos += 1
+                # 检查后续是否为 'key' : 模式
+                next_is_kv = bool(
+                    peek_pos < n
+                    and ti[peek_pos] == "'"
+                    and re.match(r"'([^']+)'\s*:\s*", ti[peek_pos:])
+                )
+                if next_is_kv:
+                    # 确认为新键值对分隔符，当前键值对结束
+                    pos += 1  # 跳过逗号
+                    break
+                else:
+                    # 逗号是 value 的一部分，继续累积
+                    value_chars.append(ch)
+                    pos += 1
             else:
                 value_chars.append(ch)
                 pos += 1
@@ -787,6 +848,9 @@ def _find_project_root(search_root: Path) -> Path:
 def main() -> None:
     from datetime import datetime
 
+    start_time = datetime.now()
+    print(f"任务开始时间: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+
     # 先加载配置以获取默认值
     cfg = _load_global_config()
     args = parse_args()
@@ -874,7 +938,11 @@ def main() -> None:
         batch = all_funcs[i: i + batch_size]  # noqa
         for local_i, f in enumerate(batch):
             funcs_with_index[global_func_index + local_i] = f
-        print(f"  处理第 {i // batch_size + 1} 批 ({len(batch)} 个函数)...")
+        batch_num = i // batch_size + 1
+        func_names = [f"{f['target_module']}.{f['name']}" for f in batch]
+        print(f"  处理第 {batch_num} 批 ({len(batch)} 个函数):")
+        for fn in func_names:
+            print(f"    - {fn}")
         prompt = _build_batch_prompt(batch)
         result = _call_llm(client, model_name, prompt, max_tokens=8192)
         if result:
@@ -981,6 +1049,10 @@ def main() -> None:
     else:
         print("  无错误用例")
 
+    end_time = datetime.now()
+    elapsed = end_time - start_time
+    print(f"任务结束时间: {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"总耗时: {elapsed}")
     print("完成！")
 
 
