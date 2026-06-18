@@ -301,7 +301,16 @@ class QueryLoop:
             "[系统提醒] 我注意到你既没有输出任何工具调用，也没有输出 done。"
             "请明确告诉我接下来应该执行什么工具，或者如果你认为任务已完成，请输出 done。"
         )
-        self._print_info(f"[追问 {self._no_tool_retry}/3] {prompt}")
+        # 获取当前使用的 LLM 名称
+        try:
+            llm_name = global_cfg.model.model_name
+        except Exception:
+            llm_name = "LLM"
+        user_msg = (
+            f"[系统提醒] 系统注意到{llm_name}既没有输出任何工具调用，也没有输出 done。"
+            f"系统会追问{llm_name}，接下来应该执行什么工具，或者如果{llm_name}认为任务已完成，也会请{llm_name}输出 done。"
+        )
+        self._print_info(f"[追问 {self._no_tool_retry}/3] {user_msg}")
 
         try:
             # 构建临时消息列表（深拷贝，不污染正式对话历史）
@@ -337,7 +346,12 @@ class QueryLoop:
         """
         # 1. 如果 LLM response 中没有工具
         if not tools:
-            # 无工具时一律追问 LLM（最多 3 次），不再区分聊天/编码模式
+            # 聊天/问答模式：直接结束，不需要追问
+            if self.is_chat_mode:
+                self._print_info("LLM 未调用 done 工具，但已无后续操作，自动结束")
+                self.session.log_dict_info({"role": "system", "content": "LLM 未调用 done 工具，但已无后续操作，自动结束"})
+                return ChatOrNot.QuitByNoneTool, []
+            # 编码模式：无工具时追问 LLM（最多 3 次）
             tools = self._follow_up_for_tools()
             if not tools:
                 # 追问无果，兜底结束

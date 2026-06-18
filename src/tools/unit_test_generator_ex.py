@@ -67,7 +67,7 @@ def parse_args() -> argparse.Namespace:
         "--output",
         type=str,
         default=None,
-        help="输出测试用例文件的路径（绝对路径），默认输出到 logs_root/MyClaude_unit_test_case_时间戳.json",
+        help="输出测试用例文件的路径（绝对路径），默认输出到 root/tests/unit_test_cases_时间戳.json",
     )
     return parser.parse_args()
 
@@ -315,7 +315,7 @@ def _module_abbr(module: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _build_batch_prompt(funcs: List[Dict[str, Any]]) -> str:
-    """为一批函数构建 LLM prompt，要求生成测试用例的 values/description/expected_behavior。"""
+    """为一批函数构建 LLM prompt，要求生成测试条目（func_index / values / description / expected_behavior）。"""
     func_descriptions: List[str] = []
     for idx, f in enumerate(funcs):
         params_str = ", ".join(
@@ -426,18 +426,18 @@ def _call_llm(
 
 
 def _assemble_cases(
-    triplets: List[Dict[str, Any]],
+    raw_items: List[Dict[str, Any]],
     funcs_batch: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    """将 LLM 返回的三元组组装成完整测试用例（不含 ID）。"""
+    """将 LLM 返回的测试条目组装成完整测试用例（不含 ID）。"""
     cases: List[Dict[str, Any]] = []
-    for tp in triplets:
-        idx = tp.get("func_index", -1)
+    for item in raw_items:
+        idx = item.get("func_index", -1)
         if not isinstance(idx, int) or idx < 0 or idx >= len(funcs_batch):
             continue
         func = funcs_batch[idx]
         params = [p["name"] for p in func["params"]]
-        values = tp.get("values", [])
+        values = item.get("values", [])
         if not isinstance(values, list) or len(values) != len(params):
             continue
         # 构建 test_input
@@ -448,8 +448,8 @@ def _assemble_cases(
             "target_module": func["target_module"],
             "target_function": func["name"],
             "test_input": test_input,
-            "description": tp.get("description", ""),
-            "expected_behavior": tp.get("expected_behavior", ""),
+            "description": item.get("description", ""),
+            "expected_behavior": item.get("expected_behavior", ""),
             "_func_index": idx,  # 临时字段，纠错时使用
         })
     return cases
@@ -864,17 +864,12 @@ def main() -> None:
         print("错误: 未指定 --root 且无法加载全局配置获取默认值")
         sys.exit(1)
 
-    # 确定 output 路径
+    # 确定 output 路径（默认输出到 root/tests/ 目录）
     if args.output is not None:
         output_path = Path(args.output).resolve()
-    elif cfg is not None:
-        logs_root = cfg.base_path.logs_root
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_path = Path(logs_root) / f"MyClaude_unit_test_case_{timestamp}.json"
-        output_path = output_path.resolve()
     else:
-        print("错误: 未指定 --output 且无法加载全局配置获取默认值")
-        sys.exit(1)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_path = (root / "tests" / f"unit_test_cases_{timestamp}.json").resolve()
 
     error_output_path = output_path.with_suffix("")  # 去掉后缀后再加
     error_output_path = Path(str(error_output_path) + "_errors.json")
@@ -928,10 +923,10 @@ def main() -> None:
         key = (f["target_module"], f["name"])
         funcs_map[key] = f
 
-    # LLM 批量生成三要素
+    # LLM 批量生成测试条目
     print("[4/7] 调用 LLM 生成测试用例...")
     batch_size = 5  # 每批最多 5 个函数
-    all_triplets: List[Dict[str, Any]] = []
+    all_raw_items: List[Dict[str, Any]] = []
     funcs_with_index: Dict[int, Dict[str, Any]] = {}  # 全局索引→函数信息
     global_func_index = 0
     for i in range(0, len(all_funcs), batch_size):
@@ -950,25 +945,28 @@ def main() -> None:
             for item in result:
                 if isinstance(item, dict) and "func_index" in item:
                     item["func_index"] = item["func_index"] + global_func_index
-            all_triplets.extend(result)
-            print(f"    生成 {len(result)} 个三要素")
+            all_raw_items.extend(result)
+            print(f"    LLM 返回 {len(result)} 条")
         else:
             print(f"    本批生成失败，跳过")
         global_func_index += len(batch)
 
-    if not all_triplets:
+    if not all_raw_items:
         print("LLM 未能生成任何用例，退出。")
         output_path.write_text("[]", encoding="utf-8")
         return
-    print(f"  共生成 {len(all_triplets)} 个三要素")
 
-    # 组装完整用例（target_module/target_function/test_input key 由代码确定）
-    all_raw_cases = _assemble_cases(all_triplets, all_funcs)
+    # 组装完整用例（target_module/target_function/test_input 由代码确定）
+    all_raw_cases = _assemble_cases(all_raw_items, all_funcs)
     if not all_raw_cases:
         print("组装后无有效用例，退出。")
         output_path.write_text("[]", encoding="utf-8")
         return
-    print(f"  组装 {len(all_raw_cases)} 个用例")
+    filtered_count = len(all_raw_items) - len(all_raw_cases)
+    if filtered_count > 0:
+        print(f"  LLM 返回 {len(all_raw_items)} 条，组装成功 {len(all_raw_cases)} 个用例（过滤 {filtered_count} 条格式不匹配）")
+    else:
+        print(f"  组装 {len(all_raw_cases)} 个用例")
 
     # 生成 ID
     print("[5/7] 生成用例 ID...")
