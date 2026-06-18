@@ -7,13 +7,13 @@ import re
 # ======================== XML 标签集中管理 ========================
 # 所有 XML 工具标签（用于标签泄露清理和识别）。
 # 新增工具时必须同步更新这三个常量，其他地方全部引用它们。
-_ALL_XML_TAGS = {"create", "str_replace", "bash", "done", "file_view", "use_skill", "old", "new"}
+_ALL_XML_TAGS = {"create", "str_replace", "bash", "done", "file_view", "excel_view", "use_skill", "old", "new"}
 
 # 容器标签（需要闭合标签的，如 <create>...</create>）
 _CONTAINER_TAGS = {"create", "str_replace", "bash", "done"}
 
 # 自闭合标签（如 <file_view path="..."/>）
-_SELF_CLOSING_TAGS = {"file_view", "use_skill"}
+_SELF_CLOSING_TAGS = {"file_view", "excel_view", "use_skill"}
 
 
 def _final_clean_xml_tags(content: str) -> str:
@@ -251,11 +251,16 @@ def parse_tools(response: str, reasoning_content: str = ""):
 
     # 兜底1：严格解析无工具，对同一 response 尝试宽松解析（处理畸形标签）
     if not tools and response.strip():
-        remaining, tools = _parse_tools_loose(response)
+        loose_rem, loose_tools = _parse_tools_loose(response)
+        # 宽松解析找到了工具才采纳其结果；否则保留严格解析的 remaining（防止文本丢失）
+        if loose_tools:
+            remaining, tools = loose_rem, loose_tools
 
     # 兜底2：仍无工具，且额外提供了 reasoning_content
     if not tools and reasoning_content:
-        remaining, tools = _parse_tools_loose(reasoning_content)
+        loose_rem, loose_tools = _parse_tools_loose(reasoning_content)
+        if loose_tools:
+            remaining, tools = loose_rem, loose_tools
 
     return remaining, tools
 
@@ -365,6 +370,26 @@ def _build_result(response: str, all_matches: list, _is_inside_container):
                 params["offset"] = int(offset_match.group(1))
             tools.append({"llm_tool": "file_view", "params": params})
 
+        elif tool_name == "excel_view":
+            params = {"path": m.group(1)}
+            # 可选属性
+            sheet_match = re.search(r'sheet="([^"]*)"', m.group(0))
+            start_row_match = re.search(r'start_row="(\d+)"', m.group(0))
+            end_row_match = re.search(r'end_row="(\d+)"', m.group(0))
+            start_col_match = re.search(r'start_col="(\d+)"', m.group(0))
+            end_col_match = re.search(r'end_col="(\d+)"', m.group(0))
+            if sheet_match:
+                params["sheet"] = sheet_match.group(1)
+            if start_row_match:
+                params["start_row"] = int(start_row_match.group(1))
+            if end_row_match:
+                params["end_row"] = int(end_row_match.group(1))
+            if start_col_match:
+                params["start_col"] = int(start_col_match.group(1))
+            if end_col_match:
+                params["end_col"] = int(end_col_match.group(1))
+            tools.append({"llm_tool": "excel_view", "params": params})
+
         elif tool_name == "create":
             info = m
             content = info["content"]
@@ -455,7 +480,27 @@ def _parse_tools_loose(text: str):
             params["offset"] = int(offset_match.group(1))
         tools.append({"llm_tool": "file_view", "params": params})
 
-    # 2. 自闭合 create（单引号或双引号）
+    # 2. 自闭合 excel_view（单引号或双引号）
+    for m in re.finditer(r"<excel_view\s+path=['\"]([^'\"]*)['\"][^>]*/>", text):
+        params = {"path": m.group(1)}
+        sheet_match = re.search(r"sheet=['\"]([^'\"]*)['\"]", m.group(0))
+        start_row_match = re.search(r'start_row=["\'](\d+)["\']', m.group(0))
+        end_row_match = re.search(r'end_row=["\'](\d+)["\']', m.group(0))
+        start_col_match = re.search(r'start_col=["\'](\d+)["\']', m.group(0))
+        end_col_match = re.search(r'end_col=["\'](\d+)["\']', m.group(0))
+        if sheet_match:
+            params["sheet"] = sheet_match.group(1)
+        if start_row_match:
+            params["start_row"] = int(start_row_match.group(1))
+        if end_row_match:
+            params["end_row"] = int(end_row_match.group(1))
+        if start_col_match:
+            params["start_col"] = int(start_col_match.group(1))
+        if end_col_match:
+            params["end_col"] = int(end_col_match.group(1))
+        tools.append({"llm_tool": "excel_view", "params": params})
+
+    # 3. 自闭合 create（单引号或双引号）
     for m in re.finditer(r"<create\s+path=['\"]([^'\"]*)['\"][^>]*/>", text):
         summary_match = re.search(r"summary=['\"]([^'\"]*)['\"]", m.group(0))
         tools.append({
@@ -588,8 +633,42 @@ def execute_code_tool(tool):
                 else:
                     result = result_detail
 
-    elif name == "bash":
-        result = tool_bash(p["command"])
+    elif name == "excel_view":
+        from src.utility.excel_view import view_excel
+        file_path = p.get("path", "")
+        sheet_name = p.get("sheet", "")
+        start_row = p.get("start_row")
+        end_row = p.get("end_row")
+        start_col = p.get("start_col")
+        end_col = p.get("end_col")
+
+        excel_output = view_excel(
+            file_path=file_path,
+            sheet_name=sheet_name,
+            start_row=start_row,
+            end_row=end_row,
+            start_col=start_col,
+            end_col=end_col,
+        )
+
+        # 错误/空表直接返回
+        if excel_output.startswith("[错误]") or excel_output.startswith("[空表]") or excel_output.startswith("[范围无效]") or excel_output.startswith("[空范围]"):
+            result = excel_output
+        else:
+            lines = excel_output.split("\n")
+            data_lines = lines[2:] if len(lines) > 2 else []
+            row_count = len(data_lines)
+            if lines:
+                col_count = lines[0].count("|") - 1
+            else:
+                col_count = 0
+            range_info = []
+            if start_row or end_row or start_col or end_col:
+                range_info.append(f"范围: 行{start_row or 1}~{end_row or '末'} 列{start_col or 1}~{end_col or '末'}")
+            range_str = f" ({'; '.join(range_info)})" if range_info else ""
+            sheet_info = f"工作表: {sheet_name}" if sheet_name else "工作表: 第1个"
+            summary = f"Excel 文件已读取：{file_path}，{sheet_info}，共 {row_count} 行 × {col_count} 列{range_str}"
+            result = f"{summary}\n\n{excel_output}"
 
     elif name == "use_skill":
         skill_name = p["name"]

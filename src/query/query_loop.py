@@ -241,6 +241,11 @@ class QueryLoop:
         # 去除thinking部分（针对 Claude 风格，DeepSeek 无此部分）
         ai_response_clean = strip_thinking(ai_response)
 
+        # 如果实际响应为空但推理内容存在，使用推理内容作为有效响应
+        # （某些 LLM 将所有内容放在思考过程中，实际响应为空）
+        if not ai_response_clean.strip() and reasoning_content:
+            ai_response_clean = reasoning_content.strip()
+
         '''
         # ---------- 新增：压缩 assistant 消息 ----------
         compressed_response = self._compress_assistant_message(ai_response_clean)
@@ -351,15 +356,19 @@ class QueryLoop:
                 self._print_info("LLM 未调用 done 工具，但已无后续操作，自动结束")
                 self.session.log_dict_info({"role": "system", "content": "LLM 未调用 done 工具，但已无后续操作，自动结束"})
                 return ChatOrNot.QuitByNoneTool, []
-            # 编码模式：无工具时追问 LLM（最多 3 次）
-            tools = self._follow_up_for_tools()
+            # 编码模式：无工具时循环追问 LLM（最多 3 次）
+            while self._no_tool_retry < 3:
+                tools = self._follow_up_for_tools()
+                if tools:
+                    # 追问得到了工具，重置计数器
+                    self._no_tool_retry = 0
+                    break
+                # 未获得工具，_follow_up_for_tools 已自增 _no_tool_retry，继续循环追问
             if not tools:
-                # 追问无果，兜底结束
+                # 追问 3 次无果，兜底结束
                 self._print_info("LLM 未调用 done 工具，但已无后续操作，自动结束")
                 self.session.log_dict_info({"role": "system", "content": "LLM 未调用 done 工具，但已无后续操作，自动结束"})
                 return ChatOrNot.QuitByNoneTool, []
-            # 追问得到了工具，重置计数器
-            self._no_tool_retry = 0
             # 继续往下执行（会进入后面的 exec_tools / done_tools 处理）
 
         # 如果 LLM response 中有工具，那就不是单纯的聊天
