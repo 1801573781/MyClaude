@@ -48,7 +48,10 @@ COLORS = {
     "muted": "#94A3B8",  # 次要文本
 }
 
-console = Console()
+# 强制 Rich 走 UTF-8 模式，避免在 Docker 沙箱/旧控制台等环境中回退到 GBK legacy 渲染器
+# 引发 UnicodeEncodeError（如 emoji ❌✅ 无法被 GBK 编码）
+os.environ["PYTHONIOENCODING"] = "utf-8"
+console = Console(force_terminal=True, legacy_windows=False)
 
 
 def _append_html(html_fragment: str):
@@ -471,8 +474,8 @@ def print_tool_result(tool_name: str, content: str):
         _append_html('<p style="margin:4px 0 4px 40px; color:#f59e0b;">⚠ 无输出</p>')
         return
 
-    # 对于 file_view 和 use_skill，不打印详细内容，只输出简洁提示
-    if tool_name in ("file_view", "use_skill"):
+    # 对于 file_view、use_skill、excel_view，不打印详细内容，只输出简洁提示
+    if tool_name in ("file_view", "use_skill", "excel_view"):
         # 注意：不要转义颜色标记部分，只转义可能出现在固定文本中的方括号（但这里固定文本没有方括号，所以无需转义）
         console.print(f"    [green]✓[/green] [{tool_name}]工具执行结果：详细内容略", markup=True)
         _append_html(f'<p style="margin:4px 0 4px 40px; color:#4ade80;">✓ [{tool_name}] 工具执行结果</p>')

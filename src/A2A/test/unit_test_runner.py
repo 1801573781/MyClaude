@@ -56,6 +56,7 @@ class UnitTestRunner:
                 target_module=case["target_module"],
                 target_function=case["target_function"],
                 test_input=case.get("test_input", ""),
+                param_types=case.get("param_types", {}),
                 myclaude_root=myclaude_root,
             )
 
@@ -222,6 +223,7 @@ class UnitTestRunner:
     def _invoke_target(target_module: str,
                        target_function: str,
                        test_input: str,
+                       param_types: dict | None = None,
                        myclaude_root: str | None = None) -> str:
         """动态导入被测模块并调用函数，返回 repr(result) 或异常字符串。
 
@@ -229,6 +231,7 @@ class UnitTestRunner:
             target_module: 如 'src.utility.file_tool'
             target_function: 如 'resolve_path'
             test_input: 测试说明字符串，复杂参数需 Runner 内部构造（见 _build_args）
+            param_types: 参数名→类型提示的映射字典，用于类型强制转换
             myclaude_root: MyClaude 源码根目录
 
         Returns:
@@ -246,7 +249,7 @@ class UnitTestRunner:
 
         # 构造参数（根据 test_input 解析）
         args, kwargs = UnitTestRunner._build_args(
-            test_input, target_function
+            test_input, target_function, param_types or {}
         )
 
         # 调用函数
@@ -259,14 +262,62 @@ class UnitTestRunner:
 
     @staticmethod
     def _build_args(test_input: str,
-                    target_function: str) -> tuple[list, dict]:
+                    target_function: str,
+                    param_types: dict | None = None) -> tuple[list, dict]:
         """根据 test_input 描述构造函数参数。
 
         优先尝试统一的键值对格式：'key1' : 'value1', 'key2' : 'value2'
         键名对应被测函数的参数名。解析成功后全部以关键字参数形式传递。
+        根据 param_types 进行类型强制转换（int/float/bool/Path/NoneType）。
         如果无法解析为键值对，回退到函数特定的旧格式解析逻辑。
         """
         import re
+
+        if param_types is None:
+            param_types = {}
+
+        # ── 类型强制转换辅助函数 ──
+        def _coerce_value(key: str, val: str):
+            """根据 param_types 将字符串值转为对应 Python 类型。"""
+            hint = param_types.get(key, "")
+            hint_lower = hint.lower().strip()
+            # 剥离 Optional/Union 包装
+            hint_lower = re.sub(r"^optional\[(.*)\]$", r"\1", hint_lower, flags=re.IGNORECASE)
+            hint_lower = re.sub(r"^union\[(.*)\]$", r"\1", hint_lower, flags=re.IGNORECASE)
+
+            # 如果 hint 包含 None 且值为 None → 返回 None
+            if "none" in hint_lower.split(","):
+                if val.strip().lower() == "none":
+                    return None
+
+            base_types = [t.strip().strip("[]") for t in hint_lower.split(",")]
+
+            for bt in base_types:
+                bt_lower = bt.lower()
+                if bt_lower in ("int", "integer"):
+                    try:
+                        return int(float(val))
+                    except (ValueError, TypeError):
+                        pass
+                elif bt_lower in ("float", "number"):
+                    try:
+                        return float(val)
+                    except (ValueError, TypeError):
+                        pass
+                elif bt_lower in ("bool", "boolean"):
+                    v_lower = val.strip().lower()
+                    if v_lower in ("true", "1"):
+                        return True
+                    elif v_lower in ("false", "0"):
+                        return False
+                    # 非标准值，保持原值
+                elif bt_lower in ("str", "string"):
+                    return str(val)
+                elif bt_lower in ("path", "pathlike", "purepath"):
+                    from pathlib import Path
+                    return Path(val) if val else None
+                # 列表、字典等保持字符串，由函数本身处理
+            return val  # 无法匹配任何类型，保留原字符串
 
         # ── 特殊处理：参数结构复杂的函数（不适合键值对格式） ──
 
@@ -326,11 +377,7 @@ class UnitTestRunner:
         if kv_matches:
             kwargs = {}
             for k, v in kv_matches:
-                # 已知整数类型的参数
-                if k in ("limit", "offset"):
-                    kwargs[k] = int(v) if v else None
-                else:
-                    kwargs[k] = v
+                kwargs[k] = _coerce_value(k, v)
 
             return [], kwargs
 

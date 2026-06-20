@@ -145,6 +145,19 @@ def _path_to_module(file_path: Path, root: Path) -> str:
     return ".".join(parts)
 
 
+def _extract_type_hint(param) -> Optional[str]:
+    """从 Jedi 参数对象中提取类型提示字符串。"""
+    desc = getattr(param, "description", "") or ""
+    # description 格式: "param name: type" 或 "param name: type = default"
+    # 去掉默认值部分
+    before_default = desc.split("=")[0] if "=" in desc else desc
+    if ":" in before_default:
+        type_part = before_default.split(":", 1)[-1].strip()
+        if type_part:
+            return type_part
+    return None
+
+
 def analyze_file_with_jedi(file_path: Path, root: Path) -> List[Dict[str, Any]]:
     """
     使用 Jedi 分析单个 .py 文件，提取全局函数和类中的静态方法。
@@ -230,15 +243,8 @@ def analyze_file_with_jedi(file_path: Path, root: Path) -> List[Dict[str, Any]]:
                         "default": param.description.split("=")[-1].strip()
                         if "=" in (param.description or "")
                         else None,
-                        "type_hint": None,
+                        "type_hint": _extract_type_hint(param),
                     }
-                    # 尝试获取类型提示
-                    try:
-                        if hasattr(param, "infer"):
-                            # jedi 0.18+
-                            pass
-                    except Exception:
-                        pass
                     if param.name in ("self", "cls"):
                         continue
                     params.append(param_info)
@@ -443,11 +449,19 @@ def _assemble_cases(
         # 构建 test_input
         kv_pairs = [f"'{key}' : {val}" for key, val in zip(params, values)]  # noqa
         test_input = ", ".join(kv_pairs)
+
+        # 构建 param_types 字典
+        param_types = {}
+        for p in func["params"]:
+            if p.get("type_hint"):
+                param_types[p["name"]] = p["type_hint"]
+
         cases.append({
             "id": "",  # 后续 generate_ids 统一生成
             "target_module": func["target_module"],
             "target_function": func["name"],
             "test_input": test_input,
+            "param_types": param_types,
             "description": item.get("description", ""),
             "expected_behavior": item.get("expected_behavior", ""),
             "_func_index": idx,  # 临时字段，纠错时使用
