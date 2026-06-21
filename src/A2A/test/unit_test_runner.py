@@ -69,7 +69,11 @@ class UnitTestRunner:
                 check_type=case.get("check_type", "general"),
             )
 
-            status = TestStatus.PASS if verdict_result.get("pass") else TestStatus.FAIL
+            verdict = verdict_result.get("verdict")
+            if verdict and verdict in (TestStatus.PASS, TestStatus.FAIL, TestStatus.INCONCLUSIVE, TestStatus.ERROR):
+                status = verdict
+            else:
+                status = TestStatus.PASS if verdict_result.get("pass") else TestStatus.FAIL
             elapsed = round(time.perf_counter() - t0, 2)
             reason = verdict_result.get("reason", "") or "（评判 LLM 未返回理由）"
 
@@ -371,7 +375,8 @@ class UnitTestRunner:
             ], "tool_exec_result": {"role": "user", "content": "工具执行结果"}}
 
         # ── 通用键值对解析：'key' : 'value', ... ──
-        kv_pattern = r"""['"]([^'"]+)['"]\s*:\s*['"]([^'"]+)['"]"""
+        # 值部分允许空字符串（如 's' : '' 或 'name' : ""）
+        kv_pattern = r"""['"]([^'"]+)['"]\s*:\s*['"]([^'"]*)['"]"""
         kv_matches = re.findall(kv_pattern, test_input)
 
         if kv_matches:

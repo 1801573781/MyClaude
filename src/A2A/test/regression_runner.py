@@ -170,16 +170,26 @@ class RegressionRunner:
 
                 t_elapsed = time.time() - t_start
 
+                verdict = judge_result.get("verdict")
+                if verdict and verdict == TestResult.INCONCLUSIVE:
+                    test_result = TestResult.INCONCLUSIVE
+                elif verdict and verdict == TestResult.ERROR:
+                    test_result = TestResult.ERROR
+                elif judge_result.get("pass"):
+                    test_result = TestResult.PASS
+                else:
+                    test_result = TestResult.FAIL
+
                 detail = TestDetail(
                     test_id=test_case["id"],
                     description=test_case["description"],
-                    result=TestResult.PASS if judge_result["pass"] else TestResult.FAIL,
+                    result=test_result,
                     message=judge_result.get("reason", ""),
                     execution_time_seconds=t_elapsed,
                     raw_output=raw_output,
                 )
 
-                if judge_result["pass"]:
+                if judge_result.get("pass"):
                     passed += 1
 
             except Exception as e:

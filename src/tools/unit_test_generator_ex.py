@@ -354,6 +354,12 @@ def _build_batch_prompt(funcs: List[Dict[str, Any]]) -> str:
 - "description": 测试用例名称与描述（字符串）
 - "expected_behavior": 期望行为描述（字符串），精确反映给定输入下函数的预期行为
 
+### expected_behavior 编写规范（重要）
+- 必须包含**具体的、可验证的**返回值或状态描述，不能模糊笼统
+- 正确示例：「返回值类型为 bool，值为 True」「返回字符串包含 'success'」「抛出 TypeError，提示缺少参数」
+- 错误示例：「正常执行」「处理成功」「返回结果」（这些太模糊，评判 LLM 无法判定）
+- 边界/异常用例必须说明**期望的异常类型或返回值**，如「抛出 ValueError，错误信息包含 'invalid'」「返回 None 而不崩溃」
+
 ### values 格式规则
 - values 是字符串列表，顺序与函数参数列表严格一致
 - 每个值都用引号包裹，如 ["'D:/tmp'", "'test.py'", "None"]
@@ -369,7 +375,7 @@ def _build_batch_prompt(funcs: List[Dict[str, Any]]) -> str:
         "func_index": 0,
         "values": ["'/tmp'", "'new.py'", "'print(1)'"],
         "description": "正常创建文件",
-        "expected_behavior": "文件创建成功，返回成功信息"
+        "expected_behavior": "返回字符串，包含文件创建成功信息，不含 [BLOCKED] 或 [ERROR]"
     }}
 ]
 """

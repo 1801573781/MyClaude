@@ -66,7 +66,13 @@ class NewFeatureRunner:
                     context=case.description,
                     check_type=check_type,
                 )
-                if verdict_result.get("pass"):
+                judge_verdict = verdict_result.get("verdict")
+                if judge_verdict and judge_verdict in (
+                    TestStatus.PASS, TestStatus.FAIL,
+                    TestStatus.INCONCLUSIVE, TestStatus.ERROR,
+                ):
+                    verdict = judge_verdict
+                elif verdict_result.get("pass"):
                     verdict = TestStatus.PASS
                 else:
                     verdict = TestStatus.FAIL

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
-import os
+import time
 
 from src.utility.config_loader import global_cfg
 from .models import TestStatus
@@ -29,10 +29,11 @@ _JUDGE_PROMPT = """你是一个测试评判助手。根据以下信息，判断�
 ## 评判规则
 - 如果实际输出体现了期望行为，输出 PASS（即使输出格式不完全一致）。
 - 如果实际输出明显不满足期望行为，输出 FAIL。
-- 如果无法确定（输出被截断、模糊不清），输出 INCONCLUSIVE。
+- 如果无法确定（输出被截断、模糊不清、信息不足），输出 INCONCLUSIVE。
+- **重要**：即使信息有限，也必须输出一个最佳判断的 JSON，不要返回空响应。
 
-## 输出格式（严格 JSON）
-{{"verdict": "PASS" | "FAIL" | "INCONCLUSIVE", "reason": "简短理由"}}
+## 输出格式（严格 JSON，不要输出任何其他文字）
+{{"verdict": "PASS" | "FAIL" | "INCONCLUSIVE", "reason": "简短理由（中文，≤50字）"}}
 """
 
 
@@ -92,21 +93,29 @@ class LLMJudge:
                     reason = data.get("reason", "")[:200]
             except (json.JSONDecodeError, ValueError):
                 reason = response[:200]
-            return {"pass": verdict == TestStatus.PASS, "reason": reason}
+            return {
+                "pass": verdict == TestStatus.PASS,
+                "verdict": verdict,
+                "reason": reason,
+            }
         except (ConnectionError, TimeoutError, OSError) as exc:
             logger.exception("Judge LLM call failed, defaulting to INCONCLUSIVE")
-            return {"pass": False, "reason": str(exc)}
+            return {
+                "pass": False,
+                "verdict": TestStatus.INCONCLUSIVE,
+                "reason": str(exc),
+            }
 
     # ------------------------------------------------------------------
 
     def _call_llm(self, prompt: str) -> str:
-        """调用评判 LLM"""
+        """调用评判 LLM，最多重试 3 次对付空响应。"""
         if not self._api_key:
             logger.warning("No judge API key configured, using heuristic fallback")
             return '{"verdict": "INCONCLUSIVE", "reason": "no judge API key"}'
 
         try:
-            from openai import OpenAI
+            from openai import OpenAI, APIError, APIConnectionError
         except ImportError:
             logger.warning("openai not installed, using heuristic fallback")
             return '{"verdict": "INCONCLUSIVE", "reason": "openai not installed"}'
@@ -116,20 +125,59 @@ class LLMJudge:
             client_kwargs["base_url"] = self._base_url
 
         client = OpenAI(**client_kwargs)
-        resp = client.chat.completions.create(
-            model=self._model,
-            messages=[
-                {"role": "system", "content": "你是测试评判专家，输出严格JSON。"},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.0,
-            max_tokens=256,
-        )
-        content = resp.choices[0].message.content
-        if not content:
-            logger.warning("Judge LLM returned empty content, using fallback")
-            return '{"verdict": "INCONCLUSIVE", "reason": "LLM returned empty response"}'
-        return content
+
+        max_retries = 3
+        base_max_tokens = 8192
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                resp = client.chat.completions.create(
+                    model=self._model,
+                    messages=[
+                        {"role": "system", "content": "你是测试评判专家。无论信息多少都必须输出严格JSON，不要返回空响应。"},
+                        {"role": "user", "content": prompt},
+                    ],
+                    temperature=0.0,
+                    max_tokens=base_max_tokens * attempt,
+                )
+                content = resp.choices[0].message.content
+                if content and content.strip():
+                    # 检查是否为有效 JSON
+                    if self._is_parsable_verdict(content):
+                        return content
+                    else:
+                        logger.warning(
+                            "Judge LLM 返回非 JSON 内容 (attempt %d/%d): %.120s",
+                            attempt, max_retries, content
+                        )
+                else:
+                    logger.warning(
+                        "Judge LLM returned empty content (attempt %d/%d)",
+                        attempt, max_retries
+                    )
+            except (APIConnectionError, APIError) as exc:
+                logger.warning("Judge LLM API error (attempt %d/%d): %s", attempt, max_retries, exc)
+            except Exception as exc:
+                logger.warning("Judge LLM unexpected error (attempt %d/%d): %s", attempt, max_retries, exc)
+
+            if attempt < max_retries:
+                time.sleep(0.5 * attempt)
+
+        return '{"verdict": "INCONCLUSIVE", "reason": "LLM 多次返回空或无效响应"}'
+
+    @staticmethod
+    def _is_parsable_verdict(raw: str) -> bool:
+        """检查字符串是否包含可解析的 verdict JSON。"""
+        try:
+            start = raw.find("{")
+            end = raw.rfind("}") + 1
+            if 0 <= start < end:
+                data = json.loads(raw[start:end])
+                if "verdict" in data:
+                    return True
+        except (json.JSONDecodeError, ValueError):
+            pass
+        return False
 
     # ------------------------------------------------------------------
 
