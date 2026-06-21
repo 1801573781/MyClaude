@@ -71,7 +71,7 @@ class MyClaudeCLI:
             # 参数值如果包含空格，用双引号或单引号包裹
             import shlex
             try:
-                args = shlex.split(command[4:].strip())
+                args = shlex.split(command[4:].strip(), posix=False)
             except ValueError as e:
                 cli_print.print_error(f"参数解析错误: {e}")
                 return True
@@ -125,7 +125,7 @@ class MyClaudeCLI:
             if extra_args:
                 import shlex
                 try:
-                    parsed = shlex.split(extra_args)
+                    parsed = shlex.split(extra_args, posix=False)
                     cmd_list.extend(parsed)
                 except ValueError as e:
                     cli_print.print_error(f"参数解析错误: {e}")
@@ -160,7 +160,7 @@ class MyClaudeCLI:
             # 执行单元测试用例，打印进度、时间和总结
             import shlex
             try:
-                ut_args = shlex.split(command[5:].strip())
+                ut_args = shlex.split(command[5:].strip(), posix=False)
             except ValueError as e:
                 cli_print.print_error(f"参数解析错误: {e}")
                 return True

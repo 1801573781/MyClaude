@@ -697,37 +697,54 @@ def _parse_test_input_keys(ti: str) -> Optional[Dict[str, str]]:
 
 
 def _check_type_compatibility(value: str, type_hint: str) -> bool:
-    """检查值字符串是否与类型提示兼容（简易检查）。"""
+    """检查值字符串是否与类型提示兼容（简易检查）。
+
+    所有 test_input 中的值都是字符串形式（来自 LLM JSON），需要先剥离外层引号再比对。
+    对类型不匹配保持宽松：只有极明显的不兼容（如非 Optional 类型传 None）才报错，
+    避免将「故意传错类型以测试异常处理」的用例误判为错误。
+    """
+    # ---------- 1. 剥离值的外层引号 ----------
+    v_raw = value.strip()
+    # 去掉可能包裹在值外层的引号：'hello' → hello ; "world" → world
+    if len(v_raw) >= 2 and v_raw[0] == v_raw[-1] and v_raw[0] in ("'", '"'):
+        v = v_raw[1:-1]
+    else:
+        v = v_raw
+
+    # 快速路径：空值总是兼容
+    if v == "":
+        return True
+
+    # ---------- 2. 检查原始类型提示（保留 Optional / Union 信息）----------
     hint_lower = type_hint.lower().strip()
-    # 标准化
-    hint_lower = re.sub(r"^optional\[(.*)\]$", r"\1", hint_lower)
-    hint_lower = re.sub(r"^union\[(.*)\]$", r"\1", hint_lower)
 
-    # 如果 hint 包含 None，总是兼容
-    if "none" in hint_lower.split(","):
-        if value.strip().lower() == "none":
-            return True
+    # 2a. 原始提示中是否包含 None / Optional（即允许 None）
+    allows_none = ("none" in hint_lower or "optional" in hint_lower)
 
-    # 基本类型检查
-    base_types = [t.strip() for t in hint_lower.split(",")]
+    if v.lower() == "none":
+        return allows_none
+
+    # 2b. 剥离 Optional/Union 用于精确类型检查
+    hint_core = re.sub(r"^optional\[(.*)\]$", r"\1", hint_lower)
+    hint_core = re.sub(r"^union\[(.*)\]$", r"\1", hint_core)
+
+    # ---------- 3. 基本类型匹配 ----------
+    base_types = [t.strip() for t in hint_core.split(",")]
 
     for bt in base_types:
         bt = bt.strip("[]")
         if bt in ("int", "float", "number"):
-            # 尝试解析为数字
-            v = value.strip()
-            if v.lower() == "none":
-                continue
             try:
                 float(v)
                 return True
             except ValueError:
-                pass
+                # 无法解析为数字，不视为错误（可能是故意传错类型测异常）
+                return True
         elif bt in ("str", "string"):
             return True
         elif bt in ("bool", "boolean"):
-            if value.strip().lower() in ("true", "false", "0", "1"):
-                return True
+            # 宽松匹配：true/false/0/1 或任意字符串都放行
+            return True
         elif bt in ("list", "dict", "tuple", "set"):
             return True
         elif bt in ("path", "pathlike", "purepath"):
@@ -736,8 +753,8 @@ def _check_type_compatibility(value: str, type_hint: str) -> bool:
             # 自定义类型，放宽检查
             return True
 
-    # 默认不兼容
-    return False
+    # 所有类型都匹配不上，仍然放行（保守策略，避免误杀异常测试）
+    return True
 
 
 def validate_all_cases(
