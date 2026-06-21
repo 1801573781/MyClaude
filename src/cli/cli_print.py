@@ -189,6 +189,8 @@ Welcome to MyClaude Code CLI! A beautiful terminal interface for AI Coding.
 - `/r mem` - 清除所有记忆（短期 + 长期 + 工作记忆）
 - `/init` - 创建MyClaude的项目工程树
 - `/cs` - 统计项目代码行数
+- `/ut-c` - 生成单元测试用例（输入 `/ut-c --help` 获取详细信息）
+- `/ut-e <测试用例JSON> <日志文件> [报告目录]` - 执行单元测试用例
 - `/h2m <p1> <p2> [<p3>] [<p4>]` - 将 Session Log HTML 转换为 Markdown（参数值含空格请用引号）
 - `/save <filename> [all]` - Save last interaction (or all with "all" flag) to HTML file
 - `/quit` or `/exit` - Exit the application

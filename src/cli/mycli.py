@@ -1,4 +1,5 @@
 from datetime import datetime
+from pathlib import Path
 from src.cli import cli_print
 from src.query.query_loop import QueryLoop
 from src.cli.cli_print import save_buffer_to_file, reset_reasoning
@@ -97,6 +98,86 @@ class MyClaudeCLI:
             code_statistics()
             return True
 
+        elif cmd.startswith('/ut-c'):
+            # /ut-c [--root <path>] [--output <path>] [--help]
+            # 调用 unit_test_generator_ex.py 生成单元测试用例
+            import sys
+            import subprocess
+            from pathlib import Path
+            from src.utility.config_loader import global_cfg
+
+            parts = command.strip().split(maxsplit=1)
+            extra_args = parts[1] if len(parts) > 1 else ""
+
+            script_path = Path(global_cfg.base_path.project_root) / "src" / "tools" / "unit_test_generator_ex.py"
+
+            if extra_args in ("--help", "-h", "help"):
+                cli_print.print_info("用法: /ut-c [--root <项目根目录>] [--output <输出文件路径>]")
+                cli_print.print_info("  --root    Python 项目根目录（绝对路径），默认从 config.yaml 读取")
+                cli_print.print_info("  --output  输出测试用例 JSON 文件路径（绝对路径），默认 root/tests/unit_test_cases_<时间戳>.json")
+                cli_print.print_info("示例:")
+                cli_print.print_info("  /ut-c")
+                cli_print.print_info("  /ut-c --root D:/AI/MyClaude")
+                cli_print.print_info("  /ut-c --output D:/AI/MyClaude/tests/cases.json")
+                return True
+
+            cmd_list = [sys.executable, str(script_path)]
+            if extra_args:
+                import shlex
+                try:
+                    parsed = shlex.split(extra_args)
+                    cmd_list.extend(parsed)
+                except ValueError as e:
+                    cli_print.print_error(f"参数解析错误: {e}")
+                    return True
+
+            cli_print.print_info(f"执行: {' '.join(cmd_list)}")
+            cli_print.print_info("=" * 60)
+
+            try:
+                process = subprocess.Popen(
+                    cmd_list,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    cwd=str(Path(global_cfg.base_path.project_root)),
+                    bufsize=1
+                )
+                for line in process.stdout:
+                    print(line, end='')
+                process.wait()
+                if process.returncode == 0:
+                    cli_print.print_info("\n单元测试用例生成完成。")
+                else:
+                    cli_print.print_error(f"\n脚本执行失败，退出码: {process.returncode}")
+            except Exception as e:
+                cli_print.print_error(f"执行失败: {e}")
+
+            return True
+
+        elif cmd.startswith('/ut-e'):
+            # /ut-e <测试用例JSON路径> <日志文件路径> [<报告输出目录>]
+            # 执行单元测试用例，打印进度、时间和总结
+            import shlex
+            try:
+                ut_args = shlex.split(command[5:].strip())
+            except ValueError as e:
+                cli_print.print_error(f"参数解析错误: {e}")
+                return True
+
+            if len(ut_args) < 2:
+                cli_print.print_error("缺少必选参数：测试用例JSON路径 和 日志文件路径")
+                cli_print.print_info("用法: /ut-e <测试用例JSON全路径> <日志文件全路径> [<报告输出目录>]")
+                cli_print.print_info("示例: /ut-e D:/AI/MyClaude/tests/cases.json D:/AI/MyClaude/logs/output.txt D:/AI/MyClaude/logs")
+                return True
+
+            p1 = ut_args[0]  # 测试用例 JSON 全路径
+            p2 = ut_args[1]  # 日志文件全路径
+            p3 = ut_args[2] if len(ut_args) > 2 else None  # 报告输出目录（可选）
+
+            self._run_unit_test_exec(p1, p2, p3)
+            return True
+
         elif cmd.startswith('/save'):
             # /save <filename> [all] — 保存屏幕输出到文件（HTML/Word）
             parts = command.strip().split(maxsplit=2)
@@ -144,7 +225,7 @@ class MyClaudeCLI:
             # 记录用户消息
             cli_print.print_user_input(user_input)
 
-            # 每次对话前重置推理历史，避免 /t 命令跨会话显示旧的思考内容
+            # 每次对话前重置推理历史，避免 /t 命令跨会话显示旧的思考内容  # noqa
             cli_print.reset_reasoning()
 
             self.query_loop.run(user_input,
@@ -255,3 +336,168 @@ class MyClaudeCLI:
             cp.print_info(f"[测试模式] JSON 结果已输出到: {output_path}")
 
         cp.print_info("[测试模式] 执行完毕，退出。")
+
+
+    def _run_unit_test_exec(self,
+                            json_path: str,
+                            log_path: str,
+                            report_output_dir: str | None = None):
+        """执行 /ut-e 命令：加载 JSON 测试用例并执行单元测试，打印进度与总结"""
+        import json
+        import sys
+        import time
+        from pathlib import Path
+        from datetime import datetime
+
+        from src.utility.config_loader import global_cfg
+        from src.A2A.test.unit_test_runner import UnitTestRunner
+        from src.A2A.test.judge import LLMJudge
+        from src.A2A.test.models import TestStatus
+
+        # ── 1. 路径解析 ──
+        json_file = Path(json_path)
+        if not json_file.is_absolute():
+            cli_print.print_error(f"测试用例路径必须是绝对路径: {json_path}")
+            return
+
+        log_file = Path(log_path)
+        if not log_file.is_absolute():
+            # 只输入文件名时使用当前工作目录
+            log_file = Path.cwd() / log_file.name
+
+        # 确保日志目录存在
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+
+        # 报告输出目录：优先 p3，其次 config logs_root
+        if report_output_dir:
+            report_dir = Path(report_output_dir)
+        else:
+            report_dir = Path(global_cfg.base_path.logs_root)
+        report_dir.mkdir(parents=True, exist_ok=True)
+
+        cli_print.print_info(f"测试用例文件: {json_file}")
+        cli_print.print_info(f"日志文件: {log_file}")
+        cli_print.print_info(f"报告目录: {report_dir}")
+
+        # ── 2. 检查 JSON 文件 ──
+        if not json_file.exists():
+            cli_print.print_error(f"测试用例 JSON 文件不存在: {json_file}")
+            return
+
+        # ── 3. 加载测试用例 ──
+        try:
+            with open(json_file, encoding="utf-8") as f:
+                test_cases = json.load(f)
+        except Exception as e:
+            cli_print.print_error(f"加载测试用例 JSON 失败: {e}")
+            return
+
+        total_cases = len(test_cases)
+        if total_cases == 0:
+            cli_print.print_info("测试用例数为 0，无需执行。")
+            return
+
+        # ── 4. 重定向标准输出到日志文件（同时保留控制台打印） ──
+        log_fh = open(log_file, "w", encoding="utf-8")
+
+        class TeeWriter:
+            """同时写入控制台和日志文件"""
+            def __init__(self, console, file):
+                self.console = console
+                self.file = file
+
+            def write(self, data):
+                self.console.write(data)
+                self.file.write(data)
+                self.file.flush()
+
+            def flush(self):
+                self.console.flush()
+                self.file.flush()
+
+        original_stdout = sys.stdout
+        original_stderr = sys.stderr
+        sys.stdout = TeeWriter(original_stdout, log_fh)
+        sys.stderr = TeeWriter(original_stderr, log_fh)
+
+        try:
+            # ── 5. 打印开始时间 ──
+            start_time = datetime.now()
+            start_time_str = start_time.strftime("%Y-%m-%d %H:%M:%S")
+            cli_print.print_info(f"单元测试开始时间: {start_time_str}")
+            cli_print.print_info(f"共 {total_cases} 个测试用例")
+
+            # ── 6. 执行测试（带进度回调） ──
+            judge = LLMJudge()
+            runner = UnitTestRunner(judge=judge)
+
+            # 进度行控制变量
+            progress_last_line = [""]
+
+            def _on_progress(completed: int, total: int, results: list):
+                passed = sum(1 for r in results if r.status == TestStatus.PASS)
+                pass_rate = (passed / completed * 100) if completed > 0 else 0.0
+                line = (
+                    f"  进度: {completed}/{total} 已执行 | "
+                    f"通过 {passed}/{completed} ({pass_rate:.1f}%)"
+                )
+                # 覆盖上一行进度信息（用 \r 回到行首）
+                if progress_last_line[0]:
+                    sys.stdout.write("\r" + " " * len(progress_last_line[0]) + "\r")
+                sys.stdout.write(line)
+                sys.stdout.flush()
+                progress_last_line[0] = line
+
+            results = runner.execute(
+                test_cases=test_cases,
+                myclaude_root=global_cfg.base_path.project_root,
+                progress_callback=_on_progress,
+            )
+
+            # 进度行结束，换行
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+
+            # ── 7. 打印结束时间 ──
+            end_time = datetime.now()
+            end_time_str = end_time.strftime("%Y-%m-%d %H:%M:%S")
+            elapsed = end_time - start_time
+            elapsed_str = f"{elapsed.total_seconds():.1f} 秒"
+
+            cli_print.print_info(f"单元测试结束时间: {end_time_str}")
+
+            # ── 8. 生成 Excel 报告 ──
+            report_path = UnitTestRunner.generate_excel_report(
+                results, output_dir=str(report_dir)
+            )
+
+            # ── 9. 打印测试报告总结 ──
+            passed = sum(1 for r in results if r.status == TestStatus.PASS)
+            failed = sum(1 for r in results if r.status == TestStatus.FAIL)
+            error_count = sum(1 for r in results if r.status == TestStatus.ERROR)
+            inconclusive = sum(1 for r in results if r.status == TestStatus.INCONCLUSIVE)
+            total = len(results)
+
+            cli_print.print_info("")
+            cli_print.print_info("=" * 60)
+            cli_print.print_info("  单元测试总结")
+            cli_print.print_info(f"  共执行 {total} 个用例")
+            cli_print.print_info(f"  开始时间: {start_time_str}")
+            cli_print.print_info(f"  结束时间: {end_time_str}")
+            cli_print.print_info(f"  执行耗时: {elapsed_str}")
+            cli_print.print_info(f"  成功: {passed}  失败: {failed}  错误: {error_count}  不确定: {inconclusive}")
+            if total > 0:
+                cli_print.print_info(f"  通过率: {passed / total * 100:.1f}%")
+            cli_print.print_info(f"  测试用例文件: {json_file}")
+            cli_print.print_info(f"  测试日志文件: {log_file}")
+            cli_print.print_info(f"  测试报告文件: {report_path}")
+            cli_print.print_info("  如需获取详细信息，请直接查阅上述文件。")
+            cli_print.print_info("=" * 60)
+
+        except Exception as e:
+            cli_print.print_error(f"单元测试执行异常: {e}")
+        finally:
+            # 恢复标准输出
+            sys.stdout = original_stdout
+            sys.stderr = original_stderr
+            log_fh.close()

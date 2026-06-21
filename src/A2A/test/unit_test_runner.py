@@ -30,11 +30,20 @@ class UnitTestRunner:
 
     def execute(self,
                 test_cases: list,
-                myclaude_root: str | None = None) -> list[UnitTestResult]:
-        """执行全部单元测试用例，返回结果列表"""
-        results: list[UnitTestResult] = []
+                myclaude_root: str | None = None,
+                progress_callback: callable | None = None) -> list[UnitTestResult]:
+        """执行全部单元测试用例，返回结果列表
 
-        for case in test_cases:
+        Args:
+            progress_callback: 可选回调，签名为 callback(idx, total, results)
+                idx: 当前已完成的用例序号（1-based）
+                total: 总用例数
+                results: 已完成用例的结果列表
+        """
+        results: list[UnitTestResult] = []
+        total = len(test_cases)
+
+        for i, case in enumerate(test_cases):
             logger.info("Running unit-test case [id=%s] %s", case["id"], case["description"])
             result = self._run_one(case, myclaude_root)
             # 注入原始用例数据，供 Excel 报告使用
@@ -42,6 +51,9 @@ class UnitTestRunner:
             results.append(result)
             logger.info("Case [id=%s] -> %s", case["id"], result.status)
             logger.info("\n\n")
+
+            if progress_callback:
+                progress_callback(i + 1, total, results)
 
         return results
 
