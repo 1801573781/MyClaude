@@ -116,7 +116,7 @@ class MyClaudeCLI:
                     "用法: /ut-c [--root <项目根目录>] [--output <输出文件路径>]\n"
                     "  --root    Python 项目根目录（绝对路径），默认从 config.yaml 读取\n"
                     "  --output  输出测试用例 JSON 文件路径（绝对路径），默认 root/tests/unit_test_cases_<时间戳>.json\n"
-                    "示例:\n"
+                    "✅ 示例:\n"
                     "  /ut-c\n"
                     "  /ut-c --root D:/AI/MyClaude\n"
                     "  /ut-c --output D:/AI/MyClaude/tests/cases.json"
