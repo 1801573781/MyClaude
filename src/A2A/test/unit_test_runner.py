@@ -263,79 +263,94 @@ class UnitTestRunner:
         mod = importlib.import_module(target_module)
         func = getattr(mod, target_function)
 
+        import io
+
         # 构造参数（根据 test_input 解析）
         args, kwargs = UnitTestRunner._build_args(
-            test_input, target_function, param_types or {}
+            test_input, target_function, param_types or {}, target_module
         )
 
-        # 调用函数
-        result = func(*args, **kwargs)
+        # 判断是否需要捕获 stdout/stderr
+        _PRINT_FUNCTIONS = {
+            "print_error", "print_info", "print_user_input",
+            "print_header", "print_timestamp", "print_welcome",
+            "print_banner", "print_blank", "print_tool_call",
+            "print_tool_result", "print_unknown_cmd",
+            "typewriter_print", "typewriter_then_markdown",
+            "typewriter_then_collapse",
+            "show_history", "show_token_count", "show_status",
+            "print_dir_table", "clear_screen",
+            "_show_reasoning_folded", "_show_reasoning_expanded",
+            "expand_reasoning",
+            "display_progress_bar", "print_separator",
+            "contextmanager",
+        }
+        _cap_stdout = target_function in _PRINT_FUNCTIONS or target_function.startswith("print_")
 
-        # 格式化返回值
-        return f"返回值: {repr(result)}"
+        if _cap_stdout:
+            # 捕获 stdout 和 stderr
+            captured_stdout = io.StringIO()
+            captured_stderr = io.StringIO()
+            import sys
+            old_stdout = sys.stdout
+            old_stderr = sys.stderr
+            sys.stdout = captured_stdout
+            sys.stderr = captured_stderr
+            exc_info = None
+            try:
+                result = func(*args, **kwargs)
+            except Exception as _e:
+                exc_info = _e
+                result = None
+            finally:
+                sys.stdout = old_stdout
+                sys.stderr = old_stderr
+            out_str = captured_stdout.getvalue()
+            err_str = captured_stderr.getvalue()
+            parts = []
+            if out_str:
+                # 截断过长输出
+                if len(out_str) > 500:
+                    out_str = out_str[:500] + "...(截断)"
+                parts.append(f"stdout: {repr(out_str)}")
+            if err_str:
+                if len(err_str) > 500:
+                    err_str = err_str[:500] + "...(截断)"
+                parts.append(f"stderr: {repr(err_str)}")
+            if exc_info is not None:
+                parts.append(f"抛出异常: {type(exc_info).__name__}: {str(exc_info)[:300]}")
+            else:
+                parts.append(f"返回值: {repr(result)}")
+            return " | ".join(parts)
+        else:
+            try:
+                result = func(*args, **kwargs)
+                return f"返回值: {repr(result)}"
+            except Exception as _e:
+                return f"抛出异常: {type(_e).__name__}: {str(_e)[:300]}"
 
     # ------------------------------------------------------------------
 
     @staticmethod
     def _build_args(test_input: str,
                     target_function: str,
-                    param_types: dict | None = None) -> tuple[list, dict]:
+                    param_types: dict | None = None,
+                    target_module: str = "") -> tuple[list, dict]:
         """根据 test_input 描述构造函数参数。
 
-        优先尝试统一的键值对格式：'key1' : 'value1', 'key2' : 'value2'
+        优先尝试统一的键值对格式：'key1' : value1, 'key2' : value2
         键名对应被测函数的参数名。解析成功后全部以关键字参数形式传递。
-        根据 param_types 进行类型强制转换（int/float/bool/Path/NoneType）。
+        根据 param_types 进行类型强制转换（int/float/bool/Path/NoneType/List/Dict）。
         如果无法解析为键值对，回退到函数特定的旧格式解析逻辑。
+        
+        target_module: 被测模块路径，用于解析无引号标识符为实际对象
         """
         import re
 
         if param_types is None:
             param_types = {}
 
-        # ── 类型强制转换辅助函数 ──
-        def _coerce_value(key: str, val: str):
-            """根据 param_types 将字符串值转为对应 Python 类型。"""
-            hint = param_types.get(key, "")
-            hint_lower = hint.lower().strip()
-            # 剥离 Optional/Union 包装
-            hint_lower = re.sub(r"^optional\[(.*)\]$", r"\1", hint_lower, flags=re.IGNORECASE)
-            hint_lower = re.sub(r"^union\[(.*)\]$", r"\1", hint_lower, flags=re.IGNORECASE)
-
-            # 如果 hint 包含 None 且值为 None → 返回 None
-            if "none" in hint_lower.split(","):
-                if val.strip().lower() == "none":
-                    return None
-
-            base_types = [t.strip().strip("[]") for t in hint_lower.split(",")]
-
-            for bt in base_types:
-                bt_lower = bt.lower()
-                if bt_lower in ("int", "integer"):
-                    try:
-                        return int(float(val))
-                    except (ValueError, TypeError):
-                        pass
-                elif bt_lower in ("float", "number"):
-                    try:
-                        return float(val)
-                    except (ValueError, TypeError):
-                        pass
-                elif bt_lower in ("bool", "boolean"):
-                    v_lower = val.strip().lower()
-                    if v_lower in ("true", "1"):
-                        return True
-                    elif v_lower in ("false", "0"):
-                        return False
-                    # 非标准值，保持原值
-                elif bt_lower in ("str", "string"):
-                    return str(val)
-                elif bt_lower in ("path", "pathlike", "purepath"):
-                    from pathlib import Path
-                    return Path(val) if val else None
-                # 列表、字典等保持字符串，由函数本身处理
-            return val  # 无法匹配任何类型，保留原字符串
-
-        # ── 特殊处理：参数结构复杂的函数（不适合键值对格式） ──
+        # ── 内部辅助函数在文件顶部定义 ──
 
         # execute_code_tool: test_input 描述工具调用，需构造复合 tool_dict
         if target_function == "execute_code_tool":
@@ -386,27 +401,31 @@ class UnitTestRunner:
                 {"role": "user", "content": "用户输入"},
             ], "tool_exec_result": {"role": "user", "content": "工具执行结果"}}
 
-        # ── 通用键值对解析：'key' : 'value', ... ──
-        # 值部分允许空字符串（如 's' : '' 或 'name' : ""）
-        kv_pattern = r"""['"]([^'"]+)['"]\s*:\s*['"]([^'"]*)['"]"""
-        kv_matches = re.findall(kv_pattern, test_input)
-
-        if kv_matches:
-            kwargs = {}
-            for k, v in kv_matches:
-                kwargs[k] = _coerce_value(k, v)
-
-            return [], kwargs
-
-        # ── 回退：旧格式的函数特定解析 ──
-
         # resolve_path: test_input 形如 "绝对路径 'D:/...' 和相对路径 'test.py'"
         if target_function == "resolve_path":
             paths = re.findall(r"['\"]([^'\"]+)['\"]", test_input)
-            return paths, {}
+            if paths:
+                return paths, {}
+            # 回退到 KV 解析
+            kwargs = UnitTestRunner._parse_test_input_kv(
+                test_input, param_types
+            )
+            if kwargs:
+                return [], kwargs
+            return [test_input], {}
 
         # parse_tools: test_input 是主 content
         if target_function == "parse_tools":
+            # 如果 test_input 是 KV 格式，检查是否有 'content' 键
+            kwargs = UnitTestRunner._parse_test_input_kv(
+                test_input, param_types
+            )
+            if kwargs:
+                # 可能只有一个 content 参数，尝试展开
+                keys = list(kwargs.keys())
+                if keys == ["content"]:
+                    return [kwargs["content"]], {}
+                return [], kwargs
             return [test_input], {}
 
         # file_create: 旧自然语言格式回退
@@ -414,14 +433,274 @@ class UnitTestRunner:
             paths = re.findall(r"([A-Za-z]:/\S+\.py)", test_input)
             if len(paths) >= 2:
                 return [paths[0], "print('v2')"], {}
+            # 尝试 KV 解析
+            kwargs = UnitTestRunner._parse_test_input_kv(
+                test_input, param_types
+            )
+            if kwargs:
+                return [], kwargs
             return [test_input], {}
 
         # strip_thinking: test_input 是待处理的文本
         if target_function == "strip_thinking":
             return [test_input], {}
 
-        # 默认：test_input 作为单参数字符串传入
+        # ── 通用键值对解析：'key1' : value1, 'key2' : value2 ──
+        kwargs = UnitTestRunner._parse_test_input_kv(
+            test_input, param_types, target_module
+        )
+        if kwargs:
+            return [], kwargs
+
+        # ── 最终回退：test_input 作为单参数字符串传入 ──
         return [test_input], {}
+
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_test_input_kv(test_input: str,
+                             param_types: dict | None = None,
+                             target_module: str = "") -> dict | None:
+        """通用键值对解析器：'key1' : value1, 'key2' : value2
+
+        支持多种 value 格式：
+        - 引号字符串: 'hello', "world", 'it\\'s'
+        - 无引号字面量: None, True, False, 123, -0.5, 3.14
+        - 无引号标识符: generator_func, re_escape_default
+        - 简单列表: [1, 2, 3], [{'a': 1}]
+        - 简单字典: {'key': 'value'}
+        - 表达式: 'A' * 10000
+        - 混合: 各参数值格式可以不同
+
+        Args:
+            test_input: 原始 test_input 字符串
+            param_types: 参数类型提示字典 {param_name: type_hint}
+            target_module: 被测模块路径，用于解析无引号标识符为实际对象
+
+        Returns:
+            解析成功返回 kwargs 字典，失败返回 None
+        """
+        import re
+        import ast
+
+        if param_types is None:
+            param_types = {}
+
+        def _coerce_value(key: str, val_str: str):
+            """根据 param_types 将字符串值转为对应 Python 类型。"""
+            hint = param_types.get(key, "")
+            hint_lower = hint.lower().strip()
+            # 剥离 Optional/Union 包装
+            hint_lower = re.sub(r"^optional\[(.*)\]$", r"\1", hint_lower, flags=re.IGNORECASE)
+            hint_lower = re.sub(r"^union\[(.*)\]$", r"\1", hint_lower, flags=re.IGNORECASE)
+
+            # 如果 hint 包含 None 且值为 None → 返回 None
+            if "none" in hint_lower.split(","):
+                if val_str.strip().lower() == "none":
+                    return None
+
+            base_types = [t.strip().strip("[]") for t in hint_lower.split(",")]
+
+            for bt in base_types:
+                bt_lower = bt.lower()
+                if bt_lower in ("int", "integer"):
+                    try:
+                        return int(float(val_str))
+                    except (ValueError, TypeError):
+                        pass
+                elif bt_lower in ("float", "number"):
+                    try:
+                        return float(val_str)
+                    except (ValueError, TypeError):
+                        pass
+                elif bt_lower in ("bool", "boolean"):
+                    v_lower = val_str.strip().lower()
+                    if v_lower in ("true", "1"):
+                        return True
+                    elif v_lower in ("false", "0"):
+                        return False
+                elif bt_lower in ("str", "string", "anystr"):
+                    return val_str
+                elif bt_lower in ("path", "pathlike", "purepath"):
+                    from pathlib import Path
+                    return Path(val_str) if val_str else None
+            return val_str
+
+        def _parse_value_string(raw_val: str) -> str:
+            """解析引号包裹的字符串值，还原转义字符。
+            
+            处理单引号包围和双引号包围两种格式。
+            如 "'hello'" -> "hello", '"world"' -> "world"
+            """
+            v = raw_val.strip()
+            if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
+                inner = v[1:-1]
+                # 还原常见转义
+                inner = inner.replace("\\n", "\n").replace("\\t", "\t")
+                inner = inner.replace("\\'", "'").replace('\\"', '"')
+                return inner
+            return v
+
+        def _parse_value_any(raw_val: str, key: str = "") -> object:
+            """解析单个 value 字符串为 Python 对象。
+            
+            支持：
+            - None → Python None
+            - True/False → Python bool
+            - 数字 → int 或 float
+            - 引号字符串 → str（去除外层引号）
+            - 无引号标识符 → 尝试从 target_module 解析为实际对象，失败则保留字符串
+            - [...] → 尝试 ast.literal_eval 解析
+            - {...} → 尝试 ast.literal_eval 解析
+            """
+            v = raw_val.strip()
+            if not v:
+                return v
+
+            # None
+            if v.lower() == "none":
+                return None
+
+            # 布尔值
+            if v.lower() == "true":
+                return True
+            if v.lower() == "false":
+                return False
+
+            # 数字
+            try:
+                # 优先尝试 int
+                if re.match(r'^-?\d+$', v):
+                    return int(v)
+            except ValueError:
+                pass
+            try:
+                return float(v)
+            except ValueError:
+                pass
+
+            # 引号字符串
+            if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
+                return _parse_value_string(v)
+
+            # 列表 [...] 或 字典 {...}
+            if (v.startswith("[") and v.endswith("]")) or \
+               (v.startswith("{") and v.endswith("}")):
+                try:
+                    return ast.literal_eval(v)
+                except (ValueError, SyntaxError):
+                    pass
+
+            # 表达式（如 'A' * 10000）或标识符（如 generator_func, regular_func）
+            # 对纯标识符（不含运算符），尝试从 target_module 解析为实际对象
+            if re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', v) and target_module:
+                try:
+                    mod = importlib.import_module(target_module)
+                    resolved = getattr(mod, v, None)
+                    if resolved is not None:
+                        return resolved
+                except (ImportError, AttributeError, ValueError):
+                    pass
+            # 无法解析则保留原字符串
+            return v
+
+        if not test_input or not isinstance(test_input, str):
+            return None
+
+        ti_stripped = test_input.strip()
+        if not ti_stripped:
+            return None
+
+        # ── 步骤1: 按分隔符 'key' : 切分键值对 ──
+        # 匹配模式: 'key' : 或 "key" :
+        # 后面跟任意值，以逗号分隔下一个键值对或到达字符串末尾
+        ti = ti_stripped
+        kwargs = {}
+
+        while ti:
+            ti = ti.lstrip()
+            if not ti:
+                break
+
+            # 匹配键名: 'key' : 或 "key" :
+            key_match = re.match(r"""['"]([^'"]+)['"]\s*:\s*""", ti)
+            if not key_match:
+                return None  # 格式不匹配
+
+            key = key_match.group(1)
+            ti = ti[key_match.end():]
+
+            # ── 步骤2: 解析值 ──
+            # 值以逗号 + 下一个 'key' : 为分界，或用完整个字符串
+            next_kv_pos = -1
+            pos = 0
+            depth_brace = 0    # {}
+            depth_bracket = 0  # []
+            depth_paren = 0    # ()
+            quote_char = None  # ' 或 "
+
+            while pos < len(ti):
+                ch = ti[pos]
+
+                if quote_char is not None:
+                    if ch == '\\':
+                        pos += 1  # 跳过转义字符
+                    elif ch == quote_char:
+                        quote_char = None
+                    pos += 1
+                elif ch in ("'", '"'):
+                    quote_char = ch
+                    pos += 1
+                elif ch == '{':
+                    depth_brace += 1
+                    pos += 1
+                elif ch == '}':
+                    depth_brace = max(0, depth_brace - 1)
+                    pos += 1
+                elif ch == '[':
+                    depth_bracket += 1
+                    pos += 1
+                elif ch == ']':
+                    depth_bracket = max(0, depth_bracket - 1)
+                    pos += 1
+                elif ch == '(':
+                    depth_paren += 1
+                    pos += 1
+                elif ch == ')':
+                    depth_paren = max(0, depth_paren - 1)
+                    pos += 1
+                elif ch == ',' and depth_brace == 0 and depth_bracket == 0 and depth_paren == 0:
+                    # 检查逗号后面是否是新的键值对
+                    peek_pos = pos + 1
+                    while peek_pos < len(ti) and ti[peek_pos].isspace():
+                        peek_pos += 1
+                    if peek_pos < len(ti) and ti[peek_pos] in ("'", '"'):
+                        # 尝试匹配下一个键名
+                        peek_rest = ti[peek_pos:]
+                        if re.match(r"""['"][^'"]+['"]\s*:""", peek_rest):
+                            # 确认是分隔符
+                            next_kv_pos = pos
+                            break
+                    # 逗号是值的一部分
+                    pos += 1
+                else:
+                    pos += 1
+
+            if next_kv_pos >= 0:
+                value_str = ti[:next_kv_pos].strip()
+                ti = ti[next_kv_pos + 1:]  # 跳过逗号
+            else:
+                value_str = ti.strip()
+                ti = ""
+
+            # 解析值
+            parsed_value = _parse_value_any(value_str)
+            # 如果 value 是字符串且 param_types 中有该键，应用类型强制转换
+            if isinstance(parsed_value, str):
+                parsed_value = _coerce_value(key, parsed_value)
+            kwargs[key] = parsed_value
+
+        return kwargs if kwargs else None
 
 
 if __name__ == "__main__":

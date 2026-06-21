@@ -112,13 +112,15 @@ class MyClaudeCLI:
             script_path = Path(global_cfg.base_path.project_root) / "src" / "tools" / "unit_test_generator_ex.py"
 
             if extra_args in ("--help", "-h", "help"):
-                cli_print.print_info("用法: /ut-c [--root <项目根目录>] [--output <输出文件路径>]")
-                cli_print.print_info("  --root    Python 项目根目录（绝对路径），默认从 config.yaml 读取")
-                cli_print.print_info("  --output  输出测试用例 JSON 文件路径（绝对路径），默认 root/tests/unit_test_cases_<时间戳>.json")
-                cli_print.print_info("示例:")
-                cli_print.print_info("  /ut-c")
-                cli_print.print_info("  /ut-c --root D:/AI/MyClaude")
-                cli_print.print_info("  /ut-c --output D:/AI/MyClaude/tests/cases.json")
+                cli_print.print_info(
+                    "用法: /ut-c [--root <项目根目录>] [--output <输出文件路径>]\n"
+                    "  --root    Python 项目根目录（绝对路径），默认从 config.yaml 读取\n"
+                    "  --output  输出测试用例 JSON 文件路径（绝对路径），默认 root/tests/unit_test_cases_<时间戳>.json\n"
+                    "示例:\n"
+                    "  /ut-c\n"
+                    "  /ut-c --root D:/AI/MyClaude\n"
+                    "  /ut-c --output D:/AI/MyClaude/tests/cases.json"
+                )
                 return True
 
             cmd_list = [sys.executable, str(script_path)]
@@ -375,9 +377,11 @@ class MyClaudeCLI:
             report_dir = Path(global_cfg.base_path.logs_root)
         report_dir.mkdir(parents=True, exist_ok=True)
 
-        cli_print.print_info(f"测试用例文件: {json_file}")
-        cli_print.print_info(f"日志文件: {log_file}")
-        cli_print.print_info(f"报告目录: {report_dir}")
+        cli_print.print_info(
+            f"测试用例文件: {json_file}\n"
+            f"日志文件: {log_file}\n"
+            f"报告目录: {report_dir}"
+        )
 
         # ── 2. 检查 JSON 文件 ──
         if not json_file.exists():
@@ -424,8 +428,10 @@ class MyClaudeCLI:
             # ── 5. 打印开始时间 ──
             start_time = datetime.now()
             start_time_str = start_time.strftime("%Y-%m-%d %H:%M:%S")
-            cli_print.print_info(f"单元测试开始时间: {start_time_str}")
-            cli_print.print_info(f"共 {total_cases} 个测试用例")
+            cli_print.print_info(
+                f"单元测试开始时间: {start_time_str}\n"
+                f"共 {total_cases} 个测试用例"
+            )
 
             # ── 6. 执行测试（带进度回调） ──
             judge = LLMJudge()
@@ -477,22 +483,24 @@ class MyClaudeCLI:
             error_count = sum(1 for r in results if r.status == TestStatus.ERROR)
             inconclusive = sum(1 for r in results if r.status == TestStatus.INCONCLUSIVE)
             total = len(results)
+            pass_rate = passed / total * 100 if total > 0 else 0.0
 
-            cli_print.print_info("")
-            cli_print.print_info("=" * 60)
-            cli_print.print_info("  单元测试总结")
-            cli_print.print_info(f"  共执行 {total} 个用例")
-            cli_print.print_info(f"  开始时间: {start_time_str}")
-            cli_print.print_info(f"  结束时间: {end_time_str}")
-            cli_print.print_info(f"  执行耗时: {elapsed_str}")
-            cli_print.print_info(f"  成功: {passed}  失败: {failed}  错误: {error_count}  不确定: {inconclusive}")
-            if total > 0:
-                cli_print.print_info(f"  通过率: {passed / total * 100:.1f}%")
-            cli_print.print_info(f"  测试用例文件: {json_file}")
-            cli_print.print_info(f"  测试日志文件: {log_file}")
-            cli_print.print_info(f"  测试报告文件: {report_path}")
-            cli_print.print_info("  如需获取详细信息，请直接查阅上述文件。")
-            cli_print.print_info("=" * 60)
+            cli_print.print_info(
+                "\n"
+                "=" * 60 + "\n"
+                "  单元测试总结\n"
+                f"  共执行 {total} 个用例\n"
+                f"  开始时间: {start_time_str}\n"
+                f"  结束时间: {end_time_str}\n"
+                f"  执行耗时: {elapsed_str}\n"
+                f"  成功: {passed}  失败: {failed}  错误: {error_count}  不确定: {inconclusive}\n"
+                f"  通过率: {pass_rate:.1f}%\n"
+                f"  测试用例文件: {json_file}\n"
+                f"  测试日志文件: {log_file}\n"
+                f"  测试报告文件: {report_path}\n"
+                f"  如需获取详细信息，请直接查阅上述文件。\n"
+                "=" * 60
+            )
 
         except Exception as e:
             cli_print.print_error(f"单元测试执行异常: {e}")
