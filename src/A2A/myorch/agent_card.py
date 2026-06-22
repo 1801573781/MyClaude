@@ -28,6 +28,12 @@ MYORCH_AGENT_CARD_DATA = {
             "description": "查询验证任务状态",
             "tags": ["validation", "query"],
         },
+        {
+            "id": "run_unit_tests",
+            "name": "run_unit_tests",
+            "description": "编排单元测试执行，委派 SystemTest Agent 执行单元测试用例并返回结果",
+            "tags": ["testing", "unit-test", "orchestration"],
+        },
     ],
 }
 

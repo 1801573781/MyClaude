@@ -243,9 +243,9 @@ if __name__ == "__main__":
     passed = sum(1 for r in results if r.status == TestStatus.PASS)
     total = len(results)
     failed = total - passed
-    print(f"\n{'=' * 60}")
-    print(f"  单元测试完成")
+    print("\n" + "=" * 60)
+    print("  单元测试完成")
     print(f"  通过: {passed}  失败: {failed}  合计: {total}")
     print(f"  通过率: {passed / total * 100:.1f}%" if total else "  无测试用例")
     print(f"  Excel 报告: {report_path}")
-    print(f"{'=' * 60}")
+    print("=" * 60)

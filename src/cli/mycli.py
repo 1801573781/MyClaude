@@ -180,6 +180,27 @@ class MyClaudeCLI:
             self._run_unit_test_exec(p1, p2, p3)
             return True
 
+        elif cmd.startswith('/ut-a2a'):
+            # /ut-a2a <测试用例JSON路径> [<报告输出目录>]
+            # 通过 A2A 协议（MyOrch → SystemTest）执行单元测试
+            import shlex
+            try:
+                ut_args = shlex.split(command[7:].strip(), posix=False)
+            except ValueError as e:
+                cli_print.print_error(f"参数解析错误: {e}")
+                return True
+
+            if len(ut_args) < 1:
+                cli_print.print_error("缺少必选参数：测试用例 JSON 路径")
+                cli_print.print_info("用法: /ut-a2a <测试用例JSON全路径> [<报告输出目录>]")
+                cli_print.print_info("示例: /ut-a2a D:/AI/MyClaude/tests/unit_test_cases.json D:/AI/MyClaude/logs")
+                return True
+
+            p1 = ut_args[0]  # 测试用例 JSON 全路径
+            p2 = ut_args[1] if len(ut_args) > 1 else None  # 报告输出目录（可选）
+            self._run_unit_test_a2a(p1, p2)
+            return True
+
         elif cmd.startswith('/save'):
             # /save <filename> [all] — 保存屏幕输出到文件（HTML/Word）
             parts = command.strip().split(maxsplit=2)
@@ -486,8 +507,7 @@ class MyClaudeCLI:
             pass_rate = passed / total * 100 if total > 0 else 0.0
 
             cli_print.print_info(
-                "\n"
-                "=" * 60 + "\n"
+                "\n" + "=" * 60 + "\n"
                 "  单元测试总结\n"
                 f"  共执行 {total} 个用例\n"
                 f"  开始时间: {start_time_str}\n"
@@ -499,7 +519,7 @@ class MyClaudeCLI:
                 f"  测试日志文件: {log_file}\n"
                 f"  测试报告文件: {report_path}\n"
                 f"  如需获取详细信息，请直接查阅上述文件。\n"
-                "=" * 60
+                + "=" * 60
             )
 
         except Exception as e:
@@ -509,3 +529,108 @@ class MyClaudeCLI:
             sys.stdout = original_stdout
             sys.stderr = original_stderr
             log_fh.close()
+
+
+    def _run_unit_test_a2a(self,
+                           json_path: str,
+                           report_output_dir: str | None = None):
+        """执行 /ut-a2a 命令：通过 A2A 协议（MyOrch → SystemTest）执行单元测试"""
+        import json
+        from pathlib import Path
+        from datetime import datetime
+
+        import httpx
+        from src.utility.config_loader import global_cfg
+        from src.A2A.shared.config import a2a_global_cfg
+
+        # ── 1. 路径解析 ──
+        json_file = Path(json_path)
+        if not json_file.is_absolute():
+            cli_print.print_error(f"测试用例路径必须是绝对路径: {json_path}")
+            return
+
+        # 报告输出目录
+        if report_output_dir:
+            report_dir = Path(report_output_dir)
+        else:
+            report_dir = Path(global_cfg.base_path.logs_root)
+        report_dir.mkdir(parents=True, exist_ok=True)
+
+        cli_print.print_info(
+            f"测试用例文件: {json_file}\n"
+            f"报告目录: {report_dir}"
+        )
+
+        # ── 2. 检查 JSON 文件 ──
+        if not json_file.exists():
+            cli_print.print_error(f"测试用例 JSON 文件不存在: {json_file}")
+            return
+
+        # ── 3. 加载测试用例 ──
+        try:
+            with open(json_file, encoding="utf-8") as f:
+                test_cases = json.load(f)
+        except Exception as e:
+            cli_print.print_error(f"加载测试用例 JSON 失败: {e}")
+            return
+
+        total_cases = len(test_cases)
+        if total_cases == 0:
+            cli_print.print_info("测试用例数为 0，无需执行。")
+            return
+
+        # ── 4. 构造 MyOrch URL ──
+        cfg = a2a_global_cfg
+        myorch_url = f"http://{cfg.myorch.host}:{cfg.myorch.port}/a2a/run_unit_tests"
+
+        cli_print.print_info(
+            f"\n通过 A2A 协议提交单元测试任务...\n"
+            f"MyOrch Agent: {myorch_url}\n"
+            f"共 {total_cases} 个测试用例"
+        )
+
+        # ── 5. 发送请求 ──
+        start_time = datetime.now()
+        start_time_str = start_time.strftime("%Y-%m-%d %H:%M:%S")
+        cli_print.print_info(f"任务开始时间: {start_time_str}")
+
+        try:
+            with httpx.Client(timeout=600) as client:
+                resp = client.post(
+                    myorch_url,
+                    json={
+                        "test_cases": test_cases,
+                        "myclaude_root": str(global_cfg.base_path.project_root),
+                    },
+                )
+                resp.raise_for_status()
+                data = resp.json()
+        except Exception as e:
+            cli_print.print_error(f"A2A 协议调用失败: {e}")
+            return
+
+        end_time = datetime.now()
+        end_time_str = end_time.strftime("%Y-%m-%d %H:%M:%S")
+        elapsed = (end_time - start_time).total_seconds()
+
+        # ── 6. 打印结果 ──
+        status = data.get("status", "UNKNOWN")
+        passed = data.get("passed", 0)
+        total = data.get("total", 0)
+        pass_rate = data.get("pass_rate", 0.0)
+        task_id = data.get("task_id", "")
+
+        cli_print.print_info(
+            "\n" + "=" * 60 + "\n"
+            "  A2A 单元测试编排结果\n"
+            f"  任务 ID: {task_id}\n"
+            f"  共执行 {total} 个用例\n"
+            f"  开始时间: {start_time_str}\n"
+            f"  结束时间: {end_time_str}\n"
+            f"  执行耗时: {elapsed:.1f} 秒\n"
+            f"  状态: {status}\n"
+            f"  成功: {passed}  失败: {total - passed}\n"
+            f"  通过率: {pass_rate * 100:.1f}%\n"
+            f"  测试用例文件: {json_file}\n"
+            + "=" * 60
+        )

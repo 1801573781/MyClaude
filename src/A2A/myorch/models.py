@@ -42,6 +42,31 @@ class HealthResponse(BaseModel):
     service: str = "myorch"
 
 
+# ============================================================
+# 单元测试编排
+# ============================================================
+
+class UnitTestOrchestrationRequest(BaseModel):
+    """单元测试编排请求（CLI → MyOrch）。"""
+    test_cases: list = Field(description="单元测试用例列表（字典格式）")
+    myclaude_root: Optional[str] = Field(
+        default=None,
+        description="MyClaude 项目根目录绝对路径"
+    )
+
+
+class UnitTestOrchestrationResponse(BaseModel):
+    """单元测试编排结果。"""
+    task_id: str
+    status: str  # PASS / FAIL / ERROR
+    passed: int
+    total: int
+    pass_rate: float
+    details: list = Field(default_factory=list)
+    execution_time_seconds: float = 0.0
+    error_message: Optional[str] = None
+
+
 class MetricsResponse(BaseModel):
     """指标响应。"""
     total_validations: int = 0

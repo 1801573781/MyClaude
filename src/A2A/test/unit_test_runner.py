@@ -43,13 +43,18 @@ class UnitTestRunner:
         results: list[UnitTestResult] = []
         total = len(test_cases)
 
-        for i, case in enumerate(test_cases):
-            logger.info("Running unit-test case [id=%s] %s", case["id"], case["description"])
+        for i, raw_case in enumerate(test_cases):
+            # 归一化：dict → UnitTestCase，统一用属性访问
+            if isinstance(raw_case, dict):
+                case = UnitTestCase(**raw_case)
+            else:
+                case = raw_case
+            logger.info("Running unit-test case [id=%s] %s", case.id, case.description)
             result = self._run_one(case, myclaude_root)
             # 注入原始用例数据，供 Excel 报告使用
             result._case = case
             results.append(result)
-            logger.info("Case [id=%s] -> %s", case["id"], result.status)
+            logger.info("Case [id=%s] -> %s", case.id, result.status)
             logger.info("\n\n")
 
             if progress_callback:
@@ -59,26 +64,26 @@ class UnitTestRunner:
 
     # ------------------------------------------------------------------
 
-    def _run_one(self, case, myclaude_root: str | None) -> UnitTestResult:
+    def _run_one(self, case: UnitTestCase, myclaude_root: str | None) -> UnitTestResult:
         t0 = time.perf_counter()
 
         try:
             # 1. 动态导入被测模块并调用函数
             actual_output = self._invoke_target(
-                target_module=case["target_module"],
-                target_function=case["target_function"],
-                test_input=case.get("test_input", ""),
-                param_types=case.get("param_types", {}),
+                target_module=case.target_module,
+                target_function=case.target_function,
+                test_input=case.test_input,
+                param_types=getattr(case, "param_types", {}) or {},
                 myclaude_root=myclaude_root,
             )
 
             # 2. 调用评判 LLM
 
             verdict_result = self._judge.evaluate(
-                expected=case["expected_behavior"],
+                expected=case.expected_behavior,
                 actual_output=actual_output,
-                context=case["description"],
-                check_type=case.get("check_type", "general"),
+                context=case.description,
+                check_type=case.check_type or "general",
             )
 
             verdict = verdict_result.get("verdict")
@@ -90,8 +95,8 @@ class UnitTestRunner:
             reason = verdict_result.get("reason", "") or "（评判 LLM 未返回理由）"
 
             return UnitTestResult(
-                test_id=case["id"],
-                description=case["description"],
+                test_id=case.id,
+                description=case.description,
                 status=status,
                 actual_output=actual_output[:500],
                 reason=reason,
@@ -100,10 +105,10 @@ class UnitTestRunner:
 
         except Exception as exc:
             elapsed = round(time.perf_counter() - t0, 2)
-            logger.exception("Unit-test case [id=%s] crashed", case["id"])
+            logger.exception("Unit-test case [id=%s] crashed", case.id)
             return UnitTestResult(
-                test_id=case["id"],
-                description=case["description"],
+                test_id=case.id,
+                description=case.description,
                 status=TestStatus.ERROR,
                 actual_output=traceback.format_exc(),
                 reason=str(exc),
@@ -168,19 +173,28 @@ class UnitTestRunner:
         ws.append(headers)
 
         for result in results:
-            case = getattr(result, "_case", {})
-            row = [
-                case.get("id", result.test_id),
-                case.get("description", result.description),
-                case.get("target_module", ""),
-                case.get("target_function", ""),
-                case.get("test_input", ""),
-                case.get("expected_behavior", ""),
-                result.status.value if hasattr(result.status, "value") else str(result.status),
-                result.actual_output,
-                result.reason,
-                result.duration_seconds,
-            ]
+            case = getattr(result, "_case", None)
+            if case is None:
+                # 没有原始用例数据，用 result 中的信息填充
+                row = [
+                    result.test_id, result.description, "", "", "", "",
+                    result.status.value if hasattr(result.status, "value") else str(result.status),
+                    result.actual_output, result.reason, result.duration_seconds,
+                ]
+            else:
+                # case 是 UnitTestCase 对象，用属性访问
+                row = [
+                    case.id,
+                    case.description,
+                    case.target_module,
+                    case.target_function,
+                    case.test_input,
+                    case.expected_behavior,
+                    result.status.value if hasattr(result.status, "value") else str(result.status),
+                    result.actual_output,
+                    result.reason,
+                    result.duration_seconds,
+                ]
             ws.append(row)
 
         # --- 样式定义 ---

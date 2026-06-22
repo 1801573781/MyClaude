@@ -22,13 +22,13 @@ def load_config() -> SimpleNamespace:
     cfg = SimpleNamespace(
         # MyOrch 服务配置
         myorch=SimpleNamespace(
-            host=_env("MYORCH_HOST", "0.0.0.0"),
+            host=_env("MYORCH_HOST", "127.0.0.1"),
             port=int(_env("MYORCH_PORT", "8200")),
             auth_token=_env("MYORCH_AUTH_TOKEN", ""),
         ),
         # SystemTest 服务配置
         system_test=SimpleNamespace(
-            host=_env("SYSTEMTEST_HOST", "0.0.0.0"),
+            host=_env("SYSTEMTEST_HOST", "127.0.0.1"),
             port=int(_env("SYSTEMTEST_PORT", "8201")),
             auth_token=_env("SYSTEMTEST_AUTH_TOKEN", ""),
         ),

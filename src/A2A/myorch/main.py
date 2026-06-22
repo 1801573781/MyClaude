@@ -95,6 +95,32 @@ async def validate(request: Request):
     return JSONResponse(content=result)
 
 
+@app.post("/a2a/run_unit_tests")
+async def run_unit_tests(request: Request):
+    """提交单元测试编排任务。
+
+    接收 CLI 发送的单元测试用例 JSON，委派给 SystemTest Agent 执行，
+    返回 PASS / FAIL / ERROR 判定。
+    """
+    from src.A2A.myorch.models import UnitTestOrchestrationRequest
+
+    body = await request.json()
+
+    try:
+        orch_req = UnitTestOrchestrationRequest(**body)
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"请求参数校验失败：{str(e)}",
+        )
+
+    result = orchestrator.run_unit_test_orchestration(
+        test_cases=orch_req.test_cases,
+        myclaude_root=orch_req.myclaude_root or "",
+    )
+    return JSONResponse(content=result)
+
+
 @app.get("/a2a/validations/{task_id}")
 async def get_validation_status(task_id: str):
     """查询验证任务状态。"""
