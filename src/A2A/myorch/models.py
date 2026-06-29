@@ -53,6 +53,10 @@ class UnitTestOrchestrationRequest(BaseModel):
         default=None,
         description="MyClaude 项目根目录绝对路径"
     )
+    report_output_dir: Optional[str] = Field(
+        default=None,
+        description="测试报告输出目录绝对路径"
+    )
 
 
 class UnitTestOrchestrationResponse(BaseModel):
@@ -64,6 +68,7 @@ class UnitTestOrchestrationResponse(BaseModel):
     pass_rate: float
     details: list = Field(default_factory=list)
     execution_time_seconds: float = 0.0
+    report_path: Optional[str] = None
     error_message: Optional[str] = None
 
 

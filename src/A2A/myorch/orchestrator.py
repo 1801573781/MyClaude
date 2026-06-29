@@ -258,12 +258,14 @@ class MyOrchestrator:
     # 辅助方法
     # ============================================================
 
-    def run_unit_test_orchestration(self, test_cases: list, myclaude_root: str) -> dict:
+    def run_unit_test_orchestration(self, test_cases: list, myclaude_root: str,
+                                     report_output_dir: str | None = None) -> dict:
         """执行单元测试编排流程。
 
         Args:
             test_cases: 单元测试用例列表（字典格式）。
             myclaude_root: MyClaude 项目根目录。
+            report_output_dir: 测试报告输出目录（绝对路径），传递给 SystemTest。
 
         Returns:
             包含 task_id, status, passed, total, pass_rate, details 的字典。
@@ -296,6 +298,7 @@ class MyOrchestrator:
                 task_id=task_id,
                 test_cases=unit_test_cases,
                 myclaude_root=myclaude_root or a2a_global_cfg.myclaude_root,
+                report_output_dir=report_output_dir,
             )
 
             # 通过 A2A 协议委派任务给 SystemTest Agent
@@ -309,6 +312,7 @@ class MyOrchestrator:
             passed = data.get("passed", 0)
             total = data.get("total", 0)
             pass_rate = data.get("pass_rate", 0.0)
+            report_path = data.get("report_path")
 
             status = "PASS" if pass_rate >= 1.0 else "FAIL"
             execution_time = time.time() - start_time
@@ -321,6 +325,7 @@ class MyOrchestrator:
                 "pass_rate": pass_rate,
                 "details": data.get("details", []),
                 "execution_time_seconds": execution_time,
+                "report_path": report_path,
             }
 
         except Exception as e:

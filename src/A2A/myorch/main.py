@@ -117,6 +117,7 @@ async def run_unit_tests(request: Request):
     result = orchestrator.run_unit_test_orchestration(
         test_cases=orch_req.test_cases,
         myclaude_root=orch_req.myclaude_root or "",
+        report_output_dir=orch_req.report_output_dir,
     )
     return JSONResponse(content=result)
 

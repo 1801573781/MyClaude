@@ -584,7 +584,7 @@ class MyClaudeCLI:
         myorch_url = f"http://{cfg.myorch.host}:{cfg.myorch.port}/a2a/run_unit_tests"
 
         cli_print.print_info(
-            f"\n通过 A2A 协议提交单元测试任务...\n"
+            f"通过 A2A 协议提交单元测试任务...\n"
             f"MyOrch Agent: {myorch_url}\n"
             f"共 {total_cases} 个测试用例"
         )
@@ -601,6 +601,7 @@ class MyClaudeCLI:
                     json={
                         "test_cases": test_cases,
                         "myclaude_root": str(global_cfg.base_path.project_root),
+                        "report_output_dir": str(report_dir),
                     },
                 )
                 resp.raise_for_status()
@@ -619,6 +620,11 @@ class MyClaudeCLI:
         total = data.get("total", 0)
         pass_rate = data.get("pass_rate", 0.0)
         task_id = data.get("task_id", "")
+        report_path = data.get("report_path", "")
+
+        # 始终显示"测试报告文件"行
+        # 注意：不在此处回退查找本地旧报告文件，避免显示历史残留文件
+        report_display = report_path if report_path else "（未生成，请检查 SystemTest 服务日志）"
 
         cli_print.print_info(
             "\n" + "=" * 60 + "\n"
@@ -632,5 +638,6 @@ class MyClaudeCLI:
             f"  成功: {passed}  失败: {total - passed}\n"
             f"  通过率: {pass_rate * 100:.1f}%\n"
             f"  测试用例文件: {json_file}\n"
+            f"  测试报告文件: {report_display}\n"
             + "=" * 60
         )

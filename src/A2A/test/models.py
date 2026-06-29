@@ -117,6 +117,7 @@ class RunUnitTestRequest(BaseModel):
     task_id: Optional[str] = None
     test_cases: List[UnitTestCase]
     myclaude_root: Optional[str] = None
+    report_output_dir: Optional[str] = None
 
 
 class RunUnitTestResponse(BaseModel):
@@ -128,6 +129,7 @@ class RunUnitTestResponse(BaseModel):
     pass_rate: float
     details: List[UnitTestResult]
     execution_time_seconds: float
+    report_path: Optional[str] = None
 
 
 class SandboxStatus(BaseModel):

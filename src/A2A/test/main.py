@@ -148,6 +148,19 @@ async def run_unit_tests(req: RunUnitTestRequest):
     logger.info("Unit tests complete [task_id=%s] %d/%d passed (%.1f%%) in %.1fs",
                 task_id, passed, total, passed / total * 100 if total else 0, elapsed)
 
+    # 生成 Excel 报告
+    report_path = None
+    try:
+        report_output_dir = getattr(req, "report_output_dir", None)
+        report_path = UnitTestRunner.generate_excel_report(
+            details,
+            myclaude_root=req.myclaude_root,
+            output_dir=report_output_dir,
+        )
+    except Exception as report_err:
+        logger.error("Failed to generate Excel report: %s", report_err)
+        report_path = None
+
     return RunUnitTestResponse(
         task_id=task_id,
         state=TestRunState.COMPLETED,
@@ -156,6 +169,7 @@ async def run_unit_tests(req: RunUnitTestRequest):
         pass_rate=passed / total if total else 0.0,
         details=details,
         execution_time_seconds=elapsed,
+        report_path=str(report_path) if report_path else None,
     )
 
 

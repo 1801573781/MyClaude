@@ -13,7 +13,7 @@ import time
 import traceback
 from pathlib import Path
 
-from src.A2A.test.models import UnitTestResult, TestStatus
+from src.A2A.test.models import UnitTestCase, UnitTestResult, TestStatus
 from src.A2A.test.judge import LLMJudge
 
 logger = logging.getLogger(__name__)
@@ -51,8 +51,8 @@ class UnitTestRunner:
                 case = raw_case
             logger.info("Running unit-test case [id=%s] %s", case.id, case.description)
             result = self._run_one(case, myclaude_root)
-            # 注入原始用例数据，供 Excel 报告使用
-            result._case = case
+            # 注入原始用例数据，供 Excel 报告使用（Pydantic v2 需绕过 __setattr__）
+            object.__setattr__(result, "_case", case)
             results.append(result)
             logger.info("Case [id=%s] -> %s", case.id, result.status)
             logger.info("\n\n")
@@ -120,8 +120,8 @@ class UnitTestRunner:
     @staticmethod
     def generate_excel_report(results: list[UnitTestResult],
                               myclaude_root: str | None = None,
-                              output_dir: str | None = None) -> Path:
-        """根据测试结果生成 Excel 报告，输出到 logs_root 目录。
+                              output_dir: str | None = None) -> Path | None:
+        """根据测试结果生成 Excel 报告，输出到指定目录。
 
         Args:
             results: UnitTestResult 列表（每个元素需携带 _case 原始用例数据）
@@ -129,7 +129,7 @@ class UnitTestRunner:
             output_dir: 输出目录（优先使用；未提供时从 config 读取 logs_root）
 
         Returns:
-            生成的 .xlsx 文件路径
+            生成的 .xlsx 文件路径，失败时返回 None
         """
         import sys
         from datetime import datetime
@@ -138,11 +138,19 @@ class UnitTestRunner:
         if output_dir:
             logs_root = Path(output_dir)
         else:
-            root = myclaude_root or str(Path(__file__).resolve().parents[3])
-            if root not in sys.path:
-                sys.path.insert(0, root)
-            from utility.config_loader import global_cfg
-            logs_root = Path(global_cfg.base_path.logs_root)
+            # 尝试从 global_cfg 读取，失败时回退到 myclaude_root/log
+            try:
+                root = myclaude_root or str(Path(__file__).resolve().parents[3])
+                if root not in sys.path:
+                    sys.path.insert(0, root)
+                from src.utility.config_loader import global_cfg
+                logs_root = Path(global_cfg.base_path.logs_root)
+            except Exception as cfg_err:
+                logger.warning("Failed to load global_cfg: %s, falling back", cfg_err)
+                if myclaude_root:
+                    logs_root = Path(myclaude_root) / "log"
+                else:
+                    logs_root = Path.cwd() / "log"
 
         logs_root.mkdir(parents=True, exist_ok=True)
 
@@ -155,97 +163,98 @@ class UnitTestRunner:
             from openpyxl.styles import Alignment, Border, Side, PatternFill
         except ImportError:
             logger.error("openpyxl not installed, cannot generate Excel report")
+            return None
+
+        try:
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "Unit Test Report"
+
+            # 设置默认行高为 15，使内容更易阅读
+            ws.sheet_format.defaultRowHeight = 15
+
+            # 表头：用例原始列 + 测试结果列
+            headers = [
+                "id", "description", "target_module", "target_function",
+                "test_input", "expected_behavior",
+                "status", "actual_output", "reason", "duration_seconds",
+            ]
+            ws.append(headers)
+
+            for result in results:
+                case = getattr(result, "_case", None)
+                if case is None:
+                    row = [
+                        result.test_id, result.description, "", "", "", "",
+                        result.status.value if hasattr(result.status, "value") else str(result.status),
+                        result.actual_output, result.reason, result.duration_seconds,
+                    ]
+                else:
+                    row = [
+                        case.id,
+                        case.description,
+                        case.target_module,
+                        case.target_function,
+                        case.test_input,
+                        case.expected_behavior,
+                        result.status.value if hasattr(result.status, "value") else str(result.status),
+                        result.actual_output,
+                        result.reason,
+                        result.duration_seconds,
+                    ]
+                ws.append(row)
+
+            # --- 样式定义 ---
+            yahei_font = openpyxl.styles.Font(name="微软雅黑", size=11)
+            header_font = openpyxl.styles.Font(name="微软雅黑", size=11, bold=True)
+            header_fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
+            center_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            thin_border = Border(
+                left=Side(style="thin"),
+                right=Side(style="thin"),
+                top=Side(style="thin"),
+                bottom=Side(style="thin"),
+            )
+
+            # --- 应用全局样式 ---
+            for row_cells in ws.iter_rows(min_row=1, max_row=ws.max_row, max_col=ws.max_column):
+                for cell in row_cells:
+                    cell.font = yahei_font
+                    cell.alignment = Alignment(vertical="center", wrap_text=True)
+                    cell.border = thin_border
+
+            # --- 首行样式 ---
+            for cell in ws[1]:
+                cell.font = header_font
+                cell.alignment = center_align
+                cell.fill = header_fill
+
+            # --- A列(1)、G列(7)、J列(10) 左右居中 ---
+            center_columns = [1, 7, 10]
+            for col_idx in center_columns:
+                col_letter = openpyxl.utils.get_column_letter(col_idx)
+                for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=col_idx, max_col=col_idx):
+                    for cell in row:
+                        cell.alignment = center_align
+
+            # --- 冻结首行 ---
+            ws.freeze_panes = "A2"
+
+            # --- 自动调整列宽 ---
+            for col_cells in ws.columns:
+                max_length = 0
+                col_letter = col_cells[0].column_letter
+                for cell in col_cells:
+                    if cell.value:
+                        max_length = max(max_length, len(str(cell.value)))
+                ws.column_dimensions[col_letter].width = min(max_length + 4, 50)
+
+            wb.save(filepath)
+            logger.info("Excel report saved to %s", filepath)
             return filepath
-
-        wb = openpyxl.Workbook()
-        ws = wb.active
-        ws.title = "Unit Test Report"
-
-        # 设置默认行高为 15，使内容更易阅读
-        ws.sheet_format.defaultRowHeight = 15
-
-        # 表头：用例原始列 + 测试结果列
-        headers = [
-            "id", "description", "target_module", "target_function",
-            "test_input", "expected_behavior",
-            "status", "actual_output", "reason", "duration_seconds",
-        ]
-        ws.append(headers)
-
-        for result in results:
-            case = getattr(result, "_case", None)
-            if case is None:
-                # 没有原始用例数据，用 result 中的信息填充
-                row = [
-                    result.test_id, result.description, "", "", "", "",
-                    result.status.value if hasattr(result.status, "value") else str(result.status),
-                    result.actual_output, result.reason, result.duration_seconds,
-                ]
-            else:
-                # case 是 UnitTestCase 对象，用属性访问
-                row = [
-                    case.id,
-                    case.description,
-                    case.target_module,
-                    case.target_function,
-                    case.test_input,
-                    case.expected_behavior,
-                    result.status.value if hasattr(result.status, "value") else str(result.status),
-                    result.actual_output,
-                    result.reason,
-                    result.duration_seconds,
-                ]
-            ws.append(row)
-
-        # --- 样式定义 ---
-        yahei_font = openpyxl.styles.Font(name="微软雅黑", size=11)
-        header_font = openpyxl.styles.Font(name="微软雅黑", size=11, bold=True)
-        header_fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")  # 浅灰
-        center_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        left_align = Alignment(horizontal="left", vertical="center", wrap_text=True)
-        thin_border = Border(
-            left=Side(style="thin"),
-            right=Side(style="thin"),
-            top=Side(style="thin"),
-            bottom=Side(style="thin"),
-        )
-
-        # --- 应用全局样式：所有单元格上下居中 + 自动换行 + 微软雅黑 + 四面框线 ---
-        for row_cells in ws.iter_rows(min_row=1, max_row=ws.max_row, max_col=ws.max_column):
-            for cell in row_cells:
-                cell.font = yahei_font
-                cell.alignment = Alignment(vertical="center", wrap_text=True)
-                cell.border = thin_border
-
-        # --- 首行样式：居中、加粗、浅灰底色 ---
-        for cell in ws[1]:
-            cell.font = header_font
-            cell.alignment = center_align
-            cell.fill = header_fill
-
-        # --- A列(1)、G列(7)、J列(10) 左右居中 ---
-        center_columns = [1, 7, 10]
-        for col_idx in center_columns:
-            col_letter = openpyxl.utils.get_column_letter(col_idx)
-            for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=col_idx, max_col=col_idx):
-                for cell in row:
-                    cell.alignment = center_align
-
-        # --- 冻结首行 ---
-        ws.freeze_panes = "A2"
-
-        # --- 自动调整列宽 ---
-        for col_cells in ws.columns:
-            max_length = 0
-            col_letter = col_cells[0].column_letter
-            for cell in col_cells:
-                if cell.value:
-                    max_length = max(max_length, len(str(cell.value)))
-            ws.column_dimensions[col_letter].width = min(max_length + 4, 50)
-
-        wb.save(filepath)
-        logger.info("Excel report saved to %s", filepath)
-        return filepath
+        except Exception as build_err:
+            logger.error("Failed to generate Excel report: %s", build_err, exc_info=True)
+            return None
 
     # ------------------------------------------------------------------
 
