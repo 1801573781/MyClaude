@@ -728,8 +728,8 @@ class MyClaudeCLI:
         report_display = report_path if report_path else "（未生成，请检查 SystemTest 服务日志）"
 
         cli_print.print_info(
-            "\n" + "=" * 60 + "\n"
-            "  A2A 单元测试编排结果\n"
+            "A2A 单元测试报告\n"
+            + "=" * 60 + "\n"
             f"  任务 ID: {task_id}\n"
             f"  共执行 {total} 个用例\n"
             f"  开始时间: {start_time_str}\n"
@@ -742,3 +742,4 @@ class MyClaudeCLI:
             f"  测试报告文件: {report_display}\n"
             + "=" * 60
         )
+        cli_print.print_info(f"任务结束时间: {end_time_str}，执行耗时：{elapsed:.1f} 秒")
