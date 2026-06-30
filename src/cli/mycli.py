@@ -531,6 +531,102 @@ class MyClaudeCLI:
             log_fh.close()
 
 
+    def _check_port_open(self, host: str, port: int, timeout: float = 1.0) -> bool:
+        """检查指定端口是否在监听"""
+        import socket
+        try:
+            with socket.create_connection((host, int(port)), timeout=timeout):
+                return True
+        except (OSError, ConnectionRefusedError):
+            return False
+
+
+    def _ensure_a2a_services(self) -> bool:
+        """检查并启动 A2A 服务（MyOrch + SystemTest）
+
+        在 base_path.project_root 目录下启动服务：
+        - MyOrch:      python -m src.A2A.myorch.main  (端口 8200)
+        - SystemTest:  python -m uvicorn src.A2A.test.main:app --host 127.0.0.1 --port 8201
+
+        Returns:
+            True 如果两个服务都已就绪，False 如果有服务启动失败
+        """
+        import sys
+        import time
+        import subprocess
+        from pathlib import Path
+        from src.utility.config_loader import global_cfg
+        from src.A2A.shared.config import a2a_global_cfg
+
+        cfg = a2a_global_cfg
+        project_root = str(Path(global_cfg.base_path.project_root))
+
+        services = [
+            {
+                "name": "MyOrch",
+                "host": cfg.myorch.host,
+                "port": cfg.myorch.port,
+                "cmd": [sys.executable, "-m", "src.A2A.myorch.main"],
+            },
+            {
+                "name": "SystemTest",
+                "host": cfg.system_test.host,
+                "port": cfg.system_test.port,
+                "cmd": [
+                    sys.executable, "-m", "uvicorn",
+                    "src.A2A.test.main:app",
+                    "--host", cfg.system_test.host,
+                    "--port", str(cfg.system_test.port),
+                ],
+            },
+        ]
+
+        all_ready = True
+
+        for svc in services:
+            if self._check_port_open(svc["host"], svc["port"]):
+                cli_print.print_info(f"[A2A] {svc['name']} 服务已在运行 (端口 {svc['port']})")
+                continue
+
+            cli_print.print_info(f"[A2A] {svc['name']} 服务未启动，正在启动...")
+            cli_print.print_detail(f"[A2A] 启动命令: {' '.join(svc['cmd'])}")
+            cli_print.print_detail(f"[A2A] 工作目录: {project_root}")
+
+            try:
+                # Windows 下在新控制台窗口启动，便于查看服务日志
+                creation_flags = 0
+                if sys.platform == "win32":
+                    creation_flags = subprocess.CREATE_NEW_CONSOLE
+
+                subprocess.Popen(
+                    svc["cmd"],
+                    cwd=project_root,
+                    creationflags=creation_flags,
+                )
+
+                # 等待服务就绪（最多 30 秒）
+                max_wait = 30
+                waited = 0
+                ready = False
+                while waited < max_wait:
+                    time.sleep(1)
+                    waited += 1
+                    if self._check_port_open(svc["host"], svc["port"]):
+                        cli_print.print_detail(f"[A2A] {svc['name']} 服务已就绪 (等待 {waited} 秒)")
+                        ready = True
+                        break
+
+                if not ready:
+                    cli_print.print_error(f"[A2A] {svc['name']} 服务启动超时（{max_wait}秒）")
+                    all_ready = False
+
+            except Exception as e:
+                cli_print.print_error(f"[A2A] 启动 {svc['name']} 服务失败: {e}")
+                all_ready = False
+
+        return all_ready
+
+
     def _run_unit_test_a2a(self,
                            json_path: str,
                            report_output_dir: str | None = None):
@@ -542,6 +638,11 @@ class MyClaudeCLI:
         import httpx
         from src.utility.config_loader import global_cfg
         from src.A2A.shared.config import a2a_global_cfg
+
+        # ── 0. 检查并启动 A2A 服务 ──
+        if not self._ensure_a2a_services():
+            cli_print.print_error("A2A 服务未就绪，无法执行测试。请手动启动服务后重试。")
+            return
 
         # ── 1. 路径解析 ──
         json_file = Path(json_path)

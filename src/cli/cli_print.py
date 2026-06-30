@@ -129,9 +129,15 @@ def print_error(content: str):
 
 
 def print_info(content: str):
-    """打印通用消息"""
+    """打印通用消息（带 ✅ 前缀和前后空行，用于独立的关键提示）"""
     console.print(f"\n[{STYLES['info']}]✅ {content}[/{STYLES['info']}]\n")
     _append_html(f'<p style="color:#3b82f6;">✅ {html_escape(content)}</p>')
+
+
+def print_detail(content: str):
+    """打印详细信息（无 ✅ 前缀、无额外空行，紧跟 print_info 后展示附属信息）"""
+    console.print(f"[{STYLES['info']}]{content}[/{STYLES['info']}]")
+    _append_html(f'<p style="color:#3b82f6;">{html_escape(content)}</p>')
 
 
 def print_user_input(content: str):
