@@ -1,11 +1,13 @@
 """
-兼容性 shim — 已迁移至 src.A2A.test.ut.unit_test_runner
+单元测试执行器
 
-所有单元测试逻辑已移至 ut/ 子目录。
-此文件仅做重导出，保证旧引用仍可用。
+直接 import 被测模块、调用被测函数、捕获返回值/异常，再调用 LLMJudge 评判结果。
+复用现有的 LLMJudge 评判逻辑，不做端到端 CLI 调用。
 """
 
-from src.A2A.test.ut.unit_test_runner import UnitTestRunner  # noqa: F401
+from __future__ import annotations
+
+import importlib
 import logging
 import time
 import traceback
@@ -138,7 +140,7 @@ class UnitTestRunner:
         else:
             # 尝试从 global_cfg 读取，失败时回退到 myclaude_root/log
             try:
-                root = myclaude_root or str(Path(__file__).resolve().parents[3])
+                root = myclaude_root or str(Path(__file__).resolve().parents[4])
                 if root not in sys.path:
                     sys.path.insert(0, root)
                 from src.utility.config_loader import global_cfg
@@ -276,7 +278,7 @@ class UnitTestRunner:
         """
         # 确保项目根在 sys.path 中
         import sys
-        root = myclaude_root or str(Path(__file__).resolve().parents[3])
+        root = myclaude_root or str(Path(__file__).resolve().parents[4])
         if root not in sys.path:
             sys.path.insert(0, root)
 

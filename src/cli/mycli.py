@@ -373,7 +373,7 @@ class MyClaudeCLI:
         from datetime import datetime
 
         from src.utility.config_loader import global_cfg
-        from src.A2A.test.unit_test_runner import UnitTestRunner
+        from src.A2A.test.ut.unit_test_runner import UnitTestRunner
         from src.A2A.test.judge import LLMJudge
         from src.A2A.test.models import TestStatus
 
@@ -574,7 +574,7 @@ class MyClaudeCLI:
                 "port": cfg.system_test.port,
                 "cmd": [
                     sys.executable, "-m", "uvicorn",
-                    "src.A2A.test.main:app",
+                    "src.A2A.test.st.main:app",
                     "--host", cfg.system_test.host,
                     "--port", str(cfg.system_test.port),
                 ],
