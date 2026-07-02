@@ -37,6 +37,140 @@ class MyClaudeCLI:
             cli_print.show_token_count(token_stats)
             return True
 
+        elif cmd.startswith('/test'):
+            # /test --ut-c | --ut-e | --ut-a2a | --st-c | --st-e | --st-a2a | --help
+            # 统一入口：单元测试与系统测试命令
+            import shlex
+
+            parts = command.strip().split(maxsplit=2)
+            sub_flag = parts[1].lower() if len(parts) > 1 else ""
+            remaining = parts[2] if len(parts) > 2 else ""
+
+            if sub_flag in ("--help", "-h"):
+                cli_print.print_info(
+                    "用法: /test <子命令> [参数]\n"
+                    "\n"
+                    "单元测试命令:\n"
+                    "  /test --ut-c [--root <路径>] [--output <路径>]\n"
+                    "      生成单元测试用例\n"
+                    "      --root    Python 项目根目录（绝对路径），默认从 config.yaml 读取\n"
+                    "      --output  输出测试用例 JSON 文件路径（绝对路径）\n"
+                    "\n"
+                    "  /test --ut-e <测试用例JSON> <日志文件> [报告目录]\n"
+                    "      执行单元测试用例\n"
+                    "      <测试用例JSON>  测试用例 JSON 文件全路径\n"
+                    "      <日志文件>      日志文件全路径\n"
+                    "      [报告目录]      报告输出目录（可选）\n"
+                    "\n"
+                    "  /test --ut-a2a <测试用例JSON> [报告目录]\n"
+                    "      通过 A2A 协议执行单元测试（MyOrch → SystemTest）\n"
+                    "      <测试用例JSON>  测试用例 JSON 文件全路径\n"
+                    "      [报告目录]      报告输出目录（可选）\n"
+                    "\n"
+                    "系统测试命令:\n"
+                    "  /test --st-c\n"
+                    "      生成系统测试用例（暂时还未实现，敬请谅解）\n"
+                    "\n"
+                    "  /test --st-e\n"
+                    "      执行系统测试用例（暂时还未实现，敬请谅解）\n"
+                    "\n"
+                    "  /test --st-a2a\n"
+                    "      通过 A2A 协议执行系统测试（暂时还未实现，敬请谅解）\n"
+                    "\n"
+                    "其他:\n"
+                    "  /test --help    显示此帮助信息"
+                )
+                return True
+
+            elif sub_flag == "--ut-c":
+                # /test --ut-c [--root <path>] [--output <path>]
+                import sys
+                import subprocess
+                from pathlib import Path
+                from src.utility.config_loader import global_cfg
+
+                script_path = Path(global_cfg.base_path.project_root) / "src" / "tools" / "unit_test_generator_ex.py"
+
+                cmd_list = [sys.executable, str(script_path)]
+                if remaining:
+                    try:
+                        parsed = shlex.split(remaining, posix=False)
+                        cmd_list.extend(parsed)
+                    except ValueError as e:
+                        cli_print.print_error(f"参数解析错误: {e}")
+                        return True
+
+                cli_print.print_info(f"执行: {' '.join(cmd_list)}")
+                cli_print.print_info("=" * 60)
+
+                try:
+                    process = subprocess.Popen(
+                        cmd_list,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        cwd=str(Path(global_cfg.base_path.project_root)),
+                        bufsize=1
+                    )
+                    for line in process.stdout:
+                        print(line, end='')
+                    process.wait()
+                    if process.returncode == 0:
+                        cli_print.print_info("\n单元测试用例生成完成。")
+                    else:
+                        cli_print.print_error(f"\n脚本执行失败，退出码: {process.returncode}")
+                except Exception as e:
+                    cli_print.print_error(f"执行失败: {e}")
+
+                return True
+
+            elif sub_flag == "--ut-e":
+                # /test --ut-e <测试用例JSON路径> <日志文件路径> [<报告输出目录>]
+                try:
+                    ut_args = shlex.split(remaining, posix=False)
+                except ValueError as e:
+                    cli_print.print_error(f"参数解析错误: {e}")
+                    return True
+
+                if len(ut_args) < 2:
+                    cli_print.print_error("缺少必选参数：测试用例JSON路径 和 日志文件路径")
+                    cli_print.print_info("用法: /test --ut-e <测试用例JSON全路径> <日志文件全路径> [<报告输出目录>]")
+                    cli_print.print_info("示例: /test --ut-e D:/AI/MyClaude/tests/cases.json D:/AI/MyClaude/logs/output.txt D:/AI/MyClaude/logs")
+                    return True
+
+                p1 = ut_args[0]
+                p2 = ut_args[1]
+                p3 = ut_args[2] if len(ut_args) > 2 else None
+                self._run_unit_test_exec(p1, p2, p3)
+                return True
+
+            elif sub_flag == "--ut-a2a":
+                # /test --ut-a2a <测试用例JSON路径> [<报告输出目录>]
+                try:
+                    ut_args = shlex.split(remaining, posix=False)
+                except ValueError as e:
+                    cli_print.print_error(f"参数解析错误: {e}")
+                    return True
+
+                if len(ut_args) < 1:
+                    cli_print.print_error("缺少必选参数：测试用例 JSON 路径")
+                    cli_print.print_info("用法: /test --ut-a2a <测试用例JSON全路径> [<报告输出目录>]")
+                    cli_print.print_info("示例: /test --ut-a2a D:/AI/MyClaude/tests/unit_test_cases.json D:/AI/MyClaude/logs")
+                    return True
+
+                p1 = ut_args[0]
+                p2 = ut_args[1] if len(ut_args) > 1 else None
+                self._run_unit_test_a2a(p1, p2)
+                return True
+
+            elif sub_flag in ("--st-c", "--st-e", "--st-a2a"):
+                cli_print.print_info("暂时还未实现，敬请谅解")
+                return True
+
+            else:
+                cli_print.print_error("未知的子命令。使用 /test --help 查看帮助。")
+                return True
+
         elif cmd.startswith('/t'):
             # /t [number] — 展开指定轮次的思考过程
             parts = command.strip().split()
@@ -96,109 +230,6 @@ class MyClaudeCLI:
             # /cs — 统计项目代码行数
             from src.cli.code_statistics import code_statistics
             code_statistics()
-            return True
-
-        elif cmd.startswith('/ut-c'):
-            # /ut-c [--root <path>] [--output <path>] [--help]
-            # 调用 unit_test_generator_ex.py 生成单元测试用例
-            import sys
-            import subprocess
-            from pathlib import Path
-            from src.utility.config_loader import global_cfg
-
-            parts = command.strip().split(maxsplit=1)
-            extra_args = parts[1] if len(parts) > 1 else ""
-
-            script_path = Path(global_cfg.base_path.project_root) / "src" / "tools" / "unit_test_generator_ex.py"
-
-            if extra_args in ("--help", "-h", "help"):
-                cli_print.print_info(
-                    "用法: /ut-c [--root <项目根目录>] [--output <输出文件路径>]\n"
-                    "  --root    Python 项目根目录（绝对路径），默认从 config.yaml 读取\n"
-                    "  --output  输出测试用例 JSON 文件路径（绝对路径），默认 root/tests/unit_test_cases_<时间戳>.json\n"
-                    "✅ 示例:\n"
-                    "  /ut-c\n"
-                    "  /ut-c --root D:/AI/MyClaude\n"
-                    "  /ut-c --output D:/AI/MyClaude/tests/cases.json"
-                )
-                return True
-
-            cmd_list = [sys.executable, str(script_path)]
-            if extra_args:
-                import shlex
-                try:
-                    parsed = shlex.split(extra_args, posix=False)
-                    cmd_list.extend(parsed)
-                except ValueError as e:
-                    cli_print.print_error(f"参数解析错误: {e}")
-                    return True
-
-            cli_print.print_info(f"执行: {' '.join(cmd_list)}")
-            cli_print.print_info("=" * 60)
-
-            try:
-                process = subprocess.Popen(
-                    cmd_list,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    cwd=str(Path(global_cfg.base_path.project_root)),
-                    bufsize=1
-                )
-                for line in process.stdout:
-                    print(line, end='')
-                process.wait()
-                if process.returncode == 0:
-                    cli_print.print_info("\n单元测试用例生成完成。")
-                else:
-                    cli_print.print_error(f"\n脚本执行失败，退出码: {process.returncode}")
-            except Exception as e:
-                cli_print.print_error(f"执行失败: {e}")
-
-            return True
-
-        elif cmd.startswith('/ut-e'):
-            # /ut-e <测试用例JSON路径> <日志文件路径> [<报告输出目录>]
-            # 执行单元测试用例，打印进度、时间和总结
-            import shlex
-            try:
-                ut_args = shlex.split(command[5:].strip(), posix=False)
-            except ValueError as e:
-                cli_print.print_error(f"参数解析错误: {e}")
-                return True
-
-            if len(ut_args) < 2:
-                cli_print.print_error("缺少必选参数：测试用例JSON路径 和 日志文件路径")
-                cli_print.print_info("用法: /ut-e <测试用例JSON全路径> <日志文件全路径> [<报告输出目录>]")
-                cli_print.print_info("示例: /ut-e D:/AI/MyClaude/tests/cases.json D:/AI/MyClaude/logs/output.txt D:/AI/MyClaude/logs")
-                return True
-
-            p1 = ut_args[0]  # 测试用例 JSON 全路径
-            p2 = ut_args[1]  # 日志文件全路径
-            p3 = ut_args[2] if len(ut_args) > 2 else None  # 报告输出目录（可选）
-
-            self._run_unit_test_exec(p1, p2, p3)
-            return True
-
-        elif cmd.startswith('/ut-a2a'):
-            # /ut-a2a <测试用例JSON路径> [<报告输出目录>]
-            # 通过 A2A 协议（MyOrch → SystemTest）执行单元测试
-            import shlex
-            try:
-                ut_args = shlex.split(command[7:].strip(), posix=False)
-            except ValueError as e:
-                cli_print.print_error(f"参数解析错误: {e}")
-                return True
-
-            if len(ut_args) < 1:
-                cli_print.print_error("缺少必选参数：测试用例 JSON 路径")
-                cli_print.print_info("用法: /ut-a2a <测试用例JSON全路径> [<报告输出目录>]")
-                cli_print.print_info("示例: /ut-a2a D:/AI/MyClaude/tests/unit_test_cases.json D:/AI/MyClaude/logs")
-                return True
-
-            p1 = ut_args[0]  # 测试用例 JSON 全路径
-            p2 = ut_args[1] if len(ut_args) > 1 else None  # 报告输出目录（可选）
-            self._run_unit_test_a2a(p1, p2)
             return True
 
         elif cmd.startswith('/save'):
