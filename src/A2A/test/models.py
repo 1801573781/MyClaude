@@ -53,6 +53,7 @@ class RunRegressionRequest(BaseModel):
     task_id: Optional[str] = None
     test_ids: Optional[List[str]] = None
     myclaude_root: Optional[str] = None
+    report_output_dir: Optional[str] = None
 
 
 class RunRegressionResponse(BaseModel):
@@ -64,6 +65,7 @@ class RunRegressionResponse(BaseModel):
     pass_rate: float
     details: List[TestDetail]
     execution_time_seconds: float
+    report_path: Optional[str] = None
 
 
 class RunNewFeatureRequest(BaseModel):
@@ -72,6 +74,7 @@ class RunNewFeatureRequest(BaseModel):
     test_cases: List[TestCase]
     changed_files: Optional[List[str]] = None
     myclaude_root: Optional[str] = None
+    report_output_dir: Optional[str] = None
 
 
 class RunNewFeatureResponse(BaseModel):
@@ -83,6 +86,7 @@ class RunNewFeatureResponse(BaseModel):
     pass_rate: float
     details: List[TestResult]
     execution_time_seconds: float
+    report_path: Optional[str] = None
 
 
 class HealthResponse(BaseModel):

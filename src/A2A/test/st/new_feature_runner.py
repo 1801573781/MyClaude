@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import logging
 import time
+from typing import Callable, Optional
 
-from ..models import TestResult, TestStatus
+from ..models import TestCase, TestResult, TestStatus
 from ..sandbox import SandboxManager
 from ..judge import LLMJudge
 
@@ -27,15 +28,34 @@ class NewFeatureRunner:
 
     def execute(self,
                 test_cases: list,
-                myclaude_root: str | None = None) -> list[TestResult]:
-        """执行全部新功能测试用例，返回结果列表"""
-        results: list[TestResult] = []
+                myclaude_root: str | None = None,
+                progress_callback: Optional[Callable] = None) -> list[TestResult]:
+        """执行全部新功能测试用例，返回结果列表
 
-        for case in test_cases:
+        Args:
+            test_cases: 测试用例列表（支持 TestCase 对象或 dict）
+            myclaude_root: MyClaude 源码根目录
+            progress_callback: 可选回调，签名为 callback(idx, total, result)
+                idx: 当前已完成的用例序号（1-based）
+                total: 总用例数
+                result: 当前用例的 TestResult 结果
+        """
+        results: list[TestResult] = []
+        total = len(test_cases)
+
+        for i, raw_case in enumerate(test_cases):
+            # 归一化：dict → TestCase，统一用属性访问
+            if isinstance(raw_case, dict):
+                case = TestCase(**raw_case)
+            else:
+                case = raw_case
             logger.info("Running new-feature case [id=%s] %s", case.id, case.description)
             result = self._run_one(case, myclaude_root)
             results.append(result)
             logger.info("Case [id=%s] -> %s", case.id, result.status)
+
+            if progress_callback:
+                progress_callback(i + 1, total, result)
 
         return results
 
@@ -43,6 +63,7 @@ class NewFeatureRunner:
 
     def _run_one(self, case, myclaude_root: str | None) -> TestResult:
         t0 = time.perf_counter()
+        sandbox = None
 
         try:
             # 1. 在沙箱中启动 MyClaude 并发送指令，获取结构化测试结果
@@ -104,7 +125,9 @@ class NewFeatureRunner:
             )
 
         finally:
-            self._sandbox_mgr.release()
+            # 只在成功 acquire 后才 release，防止操作未设置的容器
+            if sandbox is not None:
+                self._sandbox_mgr.release(sandbox)
 
     # ------------------------------------------------------------------
 
@@ -152,3 +175,105 @@ class NewFeatureRunner:
             parts.append("=== 警告 ===\nLLM 输出被截断（max_tokens 不足）")
 
         return "\n\n".join(parts)[:2000]
+
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def generate_excel_report(results: list[TestResult],
+                              output_dir: str | None = None) -> str | None:
+        """根据新功能测试结果生成 Excel 文件。
+
+        Args:
+            results: TestResult 列表
+            output_dir: 输出目录
+
+        Returns:
+            生成的 .xlsx 文件路径，失败时返回 None
+        """
+        from datetime import datetime
+        from pathlib import Path
+
+        if output_dir:
+            logs_root = Path(output_dir)
+        else:
+            try:
+                from src.utility.config_loader import global_cfg
+                logs_root = Path(global_cfg.base_path.logs_root)
+            except Exception:
+                logs_root = Path.cwd() / "log"
+
+        logs_root.mkdir(parents=True, exist_ok=True)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"MyClaude_NewFeature_Test_Report_{timestamp}.xlsx"
+        filepath = logs_root / filename
+
+        try:
+            import openpyxl
+            from openpyxl.styles import Alignment, Border, Side, PatternFill
+        except ImportError:
+            logger.error("openpyxl not installed, cannot generate Excel report")
+            return None
+
+        try:
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "NewFeature Test Report"
+            ws.sheet_format.defaultRowHeight = 15
+
+            headers = [
+                "test_id", "description", "status", "exit_code",
+                "duration_seconds", "stdout_preview", "stderr_preview",
+            ]
+            ws.append(headers)
+
+            for r in results:
+                status_str = r.status.value if hasattr(r.status, "value") else str(r.status)
+                ws.append([
+                    r.test_id, r.description, status_str, r.exit_code,
+                    r.duration_seconds, r.stdout_preview, r.stderr_preview,
+                ])
+
+            # 样式
+            yahei_font = openpyxl.styles.Font(name="微软雅黑", size=11)
+            header_font = openpyxl.styles.Font(name="微软雅黑", size=11, bold=True)
+            header_fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
+            center_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            thin_border = Border(
+                left=Side(style="thin"), right=Side(style="thin"),
+                top=Side(style="thin"), bottom=Side(style="thin"),
+            )
+
+            for row_cells in ws.iter_rows(min_row=1, max_row=ws.max_row, max_col=ws.max_column):
+                for cell in row_cells:
+                    cell.font = yahei_font
+                    cell.alignment = Alignment(vertical="center", wrap_text=True)
+                    cell.border = thin_border
+
+            for cell in ws[1]:
+                cell.font = header_font
+                cell.alignment = center_align
+                cell.fill = header_fill
+
+            for col_idx in [1, 3, 4, 5]:
+                col_letter = openpyxl.utils.get_column_letter(col_idx)
+                for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=col_idx, max_col=col_idx):
+                    for cell in row:
+                        cell.alignment = center_align
+
+            ws.freeze_panes = "A2"
+
+            for col_cells in ws.columns:
+                max_length = 0
+                col_letter = col_cells[0].column_letter
+                for cell in col_cells:
+                    if cell.value:
+                        max_length = max(max_length, len(str(cell.value)))
+                ws.column_dimensions[col_letter].width = min(max_length + 4, 50)
+
+            wb.save(filepath)
+            logger.info("NewFeature Excel report saved to %s", filepath)
+            return str(filepath)
+        except Exception as build_err:
+            logger.error("Failed to generate Excel report: %s", build_err, exc_info=True)
+            return None

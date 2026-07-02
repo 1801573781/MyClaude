@@ -82,6 +82,17 @@ async def run_regression(req: RunRegressionRequest):
     logger.info("Regression complete [task_id=%s] %d/%d passed (%.1f%%) in %.1fs",
                 task_id, passed, total, passed / total * 100 if total else 0, elapsed)
 
+    # 生成 Excel 报告
+    report_path = None
+    try:
+        report_output_dir = getattr(req, "report_output_dir", None)
+        report_path = RegressionRunner.generate_excel_report(
+            report,
+            output_dir=report_output_dir,
+        )
+    except Exception as report_err:
+        logger.error("Failed to generate regression Excel report: %s", report_err)
+
     return RunRegressionResponse(
         task_id=task_id,
         state=TestRunState.COMPLETED,
@@ -90,6 +101,7 @@ async def run_regression(req: RunRegressionRequest):
         pass_rate=passed / total if total else 0.0,
         details=details,
         execution_time_seconds=elapsed,
+        report_path=str(report_path) if report_path else None,
     )
 
 
@@ -115,6 +127,17 @@ async def run_new_feature_tests(req: RunNewFeatureRequest):
     logger.info("New-feature tests complete [task_id=%s] %d/%d passed (%.1f%%) in %.1fs",
                 task_id, passed, total, passed / total * 100 if total else 0, elapsed)
 
+    # 生成 Excel 报告
+    report_path = None
+    try:
+        report_output_dir = getattr(req, "report_output_dir", None)
+        report_path = NewFeatureRunner.generate_excel_report(
+            details,
+            output_dir=report_output_dir,
+        )
+    except Exception as report_err:
+        logger.error("Failed to generate new-feature Excel report: %s", report_err)
+
     return RunNewFeatureResponse(
         task_id=task_id,
         state=TestRunState.COMPLETED,
@@ -123,6 +146,7 @@ async def run_new_feature_tests(req: RunNewFeatureRequest):
         pass_rate=passed / total if total else 0.0,
         details=details,
         execution_time_seconds=elapsed,
+        report_path=str(report_path) if report_path else None,
     )
 
 
@@ -198,17 +222,33 @@ if __name__ == "__main__":
     from src.utility.config_loader import global_cfg
 
     parser = argparse.ArgumentParser(
-        description="SystemTest CLI — 直接加载 JSON 执行单元测试"
+        description="SystemTest CLI — 支持 unit / regression / new-feature 三种测试模式"
+    )
+    parser.add_argument(
+        "--mode",
+        required=True,
+        choices=["unit", "regression", "new-feature"],
+        help="测试模式：unit=单元测试, regression=回归测试, new-feature=新功能测试",
     )
     parser.add_argument(
         "--json",
-        required=True,
-        help="单元测试用例 JSON 文件路径（如 D:/AI/MyClaude/tests/u9.json）",
+        default=None,
+        help="测试用例 JSON 文件路径（unit/new-feature 模式必需，regression 模式忽略）",
+    )
+    parser.add_argument(
+        "--test-ids",
+        default=None,
+        help="regression 模式：指定测试 ID 列表（逗号分隔，如 REG-01,REG-03）",
     )
     parser.add_argument(
         "--output",
         default=None,
-        help="Excel 报告输出目录（默认使用 config 中 logs_root）",
+        help="报告输出目录（默认使用 config 中 logs_root）",
+    )
+    parser.add_argument(
+        "--myclaude-root",
+        default=None,
+        help="MyClaude 源码根目录（默认使用 config 中 project_root）",
     )
     args = parser.parse_args()
 
@@ -222,44 +262,113 @@ if __name__ == "__main__":
         handlers=[
             logging.StreamHandler(sys.stdout),
             logging.FileHandler(
-                logs_root / "unit_test_cli.log",
+                logs_root / "systemtest_cli.log",
                 encoding="utf-8",
             ),
         ],
     )
 
-    # ── 加载测试用例 ──────────────────────────────────────────────
-    json_path = Path(args.json)
-    if not json_path.exists():
-        logger.error("JSON 文件不存在: %s", json_path)
-        sys.exit(1)
-
-    with open(json_path, encoding="utf-8") as f:
-        test_cases = json.load(f)
-
-    logger.info("从 %s 加载了 %d 条测试用例", json_path, len(test_cases))
-
-    # ── 执行测试 ──────────────────────────────────────────────────
+    myclaude_root = args.myclaude_root or global_cfg.base_path.project_root
     judge = LLMJudge()
-    runner = UnitTestRunner(judge=judge)
-    results = runner.execute(
-        test_cases=test_cases,
-        myclaude_root=global_cfg.base_path.project_root,
-    )
 
-    # ── 生成报告 ──────────────────────────────────────────────────
-    report_path = UnitTestRunner.generate_excel_report(
-        results,
-        output_dir=str(logs_root),
-    )
+    # ── 回归测试模式 ──────────────────────────────────────────────
+    if args.mode == "regression":
+        test_ids = args.test_ids.split(",") if args.test_ids else None
+        logger.info("Starting regression test (CLI mode), test_ids=%s", test_ids)
 
-    # ── 打印摘要 ──────────────────────────────────────────────────
-    passed = sum(1 for r in results if r.status == TestStatus.PASS)
-    total = len(results)
-    failed = total - passed
-    print("\n" + "=" * 60)
-    print("  单元测试完成")
-    print(f"  通过: {passed}  失败: {failed}  合计: {total}")
-    print(f"  通过率: {passed / total * 100:.1f}%" if total else "  无测试用例")
-    print(f"  Excel 报告: {report_path}")
-    print("=" * 60)
+        runner = RegressionRunner(sandbox=sandbox_mgr, judge=judge)
+        report = runner.run_all(
+            task_id="cli-regression",
+            test_ids=test_ids,
+            myclaude_root=myclaude_root,
+        )
+
+        passed = sum(1 for d in report.details if d.result == TestStatus.PASS)
+        total = report.total
+        print("\n" + "=" * 60)
+        print("  回归测试完成")
+        print(f"  通过: {passed}  失败: {total - passed}  合计: {total}")
+        print(f"  通过率: {passed / total * 100:.1f}%" if total else "  无测试用例")
+        print("=" * 60)
+
+        for d in report.details:
+            status_str = d.result.value if hasattr(d.result, "value") else str(d.result)
+            print(f"  [{d.test_id}] {status_str:12s} {d.description}")
+            if d.message:
+                print(f"    └─ {d.message[:120]}")
+        print("=" * 60)
+        sys.exit(0)
+
+    # ── 新功能测试模式 ────────────────────────────────────────────
+    if args.mode == "new-feature":
+        if not args.json:
+            logger.error("new-feature 模式需要 --json 参数")
+            sys.exit(1)
+
+        json_path = Path(args.json)
+        if not json_path.exists():
+            logger.error("JSON 文件不存在: %s", json_path)
+            sys.exit(1)
+
+        with open(json_path, encoding="utf-8") as f:
+            test_cases = json.load(f)
+
+        logger.info("从 %s 加载了 %d 条新功能测试用例", json_path, len(test_cases))
+
+        runner = NewFeatureRunner(sandbox_mgr=sandbox_mgr, judge=judge)
+        results = runner.execute(
+            test_cases=test_cases,
+            myclaude_root=myclaude_root,
+        )
+
+        passed = sum(1 for r in results if r.status == TestStatus.PASS)
+        total = len(results)
+        print("\n" + "=" * 60)
+        print("  新功能测试完成")
+        print(f"  通过: {passed}  失败: {total - passed}  合计: {total}")
+        print(f"  通过率: {passed / total * 100:.1f}%" if total else "  无测试用例")
+        print("=" * 60)
+
+        for r in results:
+            status_str = r.status.value if hasattr(r.status, "value") else str(r.status)
+            print(f"  [{r.test_id}] {status_str:12s} {r.description}")
+        print("=" * 60)
+        sys.exit(0)
+
+    # ── 单元测试模式 ──────────────────────────────────────────────
+    if args.mode == "unit":
+        if not args.json:
+            logger.error("unit 模式需要 --json 参数")
+            sys.exit(1)
+
+        json_path = Path(args.json)
+        if not json_path.exists():
+            logger.error("JSON 文件不存在: %s", json_path)
+            sys.exit(1)
+
+        with open(json_path, encoding="utf-8") as f:
+            test_cases = json.load(f)
+
+        logger.info("从 %s 加载了 %d 条单元测试用例", json_path, len(test_cases))
+
+        runner = UnitTestRunner(judge=judge)
+        results = runner.execute(
+            test_cases=test_cases,
+            myclaude_root=myclaude_root,
+        )
+
+        report_path = UnitTestRunner.generate_excel_report(
+            results,
+            output_dir=str(logs_root),
+        )
+
+        passed = sum(1 for r in results if r.status == TestStatus.PASS)
+        total = len(results)
+        failed = total - passed
+        print("\n" + "=" * 60)
+        print("  单元测试完成")
+        print(f"  通过: {passed}  失败: {failed}  合计: {total}")
+        print(f"  通过率: {passed / total * 100:.1f}%" if total else "  无测试用例")
+        print(f"  Excel 报告: {report_path}")
+        print("=" * 60)
+        sys.exit(0)

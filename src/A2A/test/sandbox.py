@@ -29,6 +29,22 @@ class Sandbox:
 
     # ------------------------------------------------------------------
 
+    def destroy(self):
+        """销毁沙箱实例。Docker 模式下移除容器，本地模式下 no-op。"""
+        if self._is_docker and self._container_id:
+            try:
+                subprocess.run(
+                    ["docker", "rm", "-f", self._container_id],
+                    capture_output=True, timeout=10,
+                )
+                logger.info("Destroyed sandbox container %s", self._container_id)
+            except (OSError, subprocess.SubprocessError) as exc:
+                logger.warning("Failed to destroy container: %s", exc)
+            self._container_id = None
+            self._is_docker = False
+
+    # ------------------------------------------------------------------
+
     def run_myclaude_command(self,
                              user_prompt: str,
                              myclaude_root: Optional[str] = None) -> tuple[str, str, int]:
@@ -174,10 +190,13 @@ class Sandbox:
 
 
 class SandboxManager:
-    """沙箱生命周期管理器"""
+    """沙箱生命周期管理器
+
+    支持管理多个并行容器，防止容器泄漏。
+    """
 
     def __init__(self):
-        self._container: Optional[str] = None
+        self._containers: set[str] = set()
         self._available: Optional[bool] = None  # None = 未检测
 
     # ------------------------------------------------------------------
@@ -200,18 +219,38 @@ class SandboxManager:
 
     # ------------------------------------------------------------------
 
-    def release(self):
-        """释放当前沙箱"""
-        if self._container:
+    def release(self, sandbox: Optional[Sandbox] = None):
+        """释放沙箱。传入 sandbox 则释放指定实例，不传则释放全部。"""
+        if sandbox is not None:
+            sandbox.destroy()
+            if sandbox._container_id and sandbox._container_id in self._containers:
+                self._containers.discard(sandbox._container_id)
+            return
+
+        # 释放全部容器
+        for cid in list(self._containers):
             try:
                 subprocess.run(
-                    ["docker", "rm", "-f", self._container],
+                    ["docker", "rm", "-f", cid],
                     capture_output=True, timeout=10,
                 )
-                logger.info("Released sandbox container %s", self._container)
+                logger.info("Released sandbox container %s", cid)
             except (OSError, subprocess.SubprocessError) as exc:
-                logger.warning("Failed to release container: %s", exc)
-            self._container = None
+                logger.warning("Failed to release container %s: %s", cid, exc)
+        self._containers.clear()
+
+    # ------------------------------------------------------------------
+
+    def release_all(self):
+        """释放所有沙箱容器"""
+        self.release()
+
+    # ------------------------------------------------------------------
+
+    @property
+    def active_count(self) -> int:
+        """当前活跃容器数"""
+        return len(self._containers)
 
     # ------------------------------------------------------------------
     # 私有方法
@@ -235,12 +274,41 @@ class SandboxManager:
         """创建并启动一个 Docker 容器作为沙箱"""
         root = myclaude_root or os.getcwd()
         mounts = [
-            ("-v", f"{root}/src:/app/src:ro"),  # noqa: E231
-            ("-v", f"{root}/config:/app/config:ro"),  # noqa: E231
+            ("-v", f"{root}/src:/app/src:rw"),  # noqa: E231
+            ("-v", f"{root}/config:/app/config:rw"),  # noqa: E231
+            ("-v", f"{root}/code_output:/app/code_output:rw"),  # noqa: E231
+            ("-v", f"{root}/log:/app/log:rw"),  # noqa: E231
         ]
+
         env_vars = [
             ("-e", "MYCLAUDE_TEST_MODE=true"),
         ]
+
+        # 传递所有已知的 API Key 环境变量
+        api_key_envs = [
+            "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "MINIMAX_API_KEY",
+            "API_KEY", "MODEL_API_KEY",
+        ]
+        for env_name in api_key_envs:
+            val = os.environ.get(env_name)
+            if val:
+                env_vars.append(("-e", f"{env_name}={val}"))
+
+        # 从 config 加载 API Key 并注入（作为后备）
+        try:
+            from src.utility.config_loader import global_cfg
+            model_provider = global_cfg.model.provider
+            provider_cfg = getattr(global_cfg, model_provider)
+            if hasattr(provider_cfg, "api_key") and provider_cfg.api_key:
+                env_vars.append(("-e", f"DEEPSEEK_API_KEY={provider_cfg.api_key}"))
+            if hasattr(provider_cfg, "base_url") and provider_cfg.base_url:
+                env_vars.append(("-e", f"OPENAI_BASE_URL={provider_cfg.base_url}"))
+            if hasattr(global_cfg, "model_key") and hasattr(global_cfg.model_key, "embedding"):
+                emb = global_cfg.model_key.embedding
+                if hasattr(emb, "api_key") and emb.api_key:
+                    env_vars.append(("-e", f"EMBEDDING_API_KEY={emb.api_key}"))
+        except Exception:
+            pass
 
         cmd = ["docker", "run", "-d", "--rm",
                "--cpus=2", "--memory=2g",
@@ -258,8 +326,18 @@ class SandboxManager:
             raise RuntimeError(f"Docker run failed: {proc.stderr}")
 
         container_id = proc.stdout.strip()[:12]
-        self._container = container_id
+        self._containers.add(container_id)
         logger.info("Sandbox container started: %s", container_id)
+
+        # 安装项目依赖（pip install）
+        try:
+            subprocess.run(
+                ["docker", "exec", container_id, "pip", "install",
+                 "openai", "rich", "pyyaml", "numpy"],
+                capture_output=True, text=True, timeout=120,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            logger.warning("Failed to install deps in container: %s", exc)
 
         # 等待容器就绪
         time.sleep(2)
