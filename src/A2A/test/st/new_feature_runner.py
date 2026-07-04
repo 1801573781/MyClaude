@@ -67,7 +67,7 @@ class NewFeatureRunner:
 
         try:
             # 1. 在沙箱中启动 MyClaude 并发送指令，获取结构化测试结果
-            sandbox = self._sandbox_mgr.acquire()
+            sandbox = self._sandbox_mgr.acquire(myclaude_root)
             std_out, std_err, exit_code, test_data = sandbox.run_myclaude_command_with_test_output(
                 user_prompt=case.user_prompt,
                 myclaude_root=myclaude_root,

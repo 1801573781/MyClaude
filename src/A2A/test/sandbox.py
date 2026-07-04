@@ -84,8 +84,10 @@ class Sandbox:
         tmp_file = tmp_dir / f"test_{hash(user_prompt) & 0x7FFFFFFF:08x}.json"
         
         if self._is_docker and self._container_id:
+            # 容器内对应的路径
+            container_tmp_file = f"/tmp/myclaude_test_output/{tmp_file.name}"
             stdout, stderr, exit_code = self._run_in_docker_with_test_output(
-                user_prompt, str(tmp_file)
+                user_prompt, container_tmp_file
             )
         else:
             stdout, stderr, exit_code = self._run_locally_with_test_output(
@@ -272,12 +274,21 @@ class SandboxManager:
     def _create_docker_sandbox(self,
                                myclaude_root: Optional[str] = None) -> Sandbox:
         """创建并启动一个 Docker 容器作为沙箱"""
+        import tempfile
+        from pathlib import Path
+        
         root = myclaude_root or os.getcwd()
+        
+        # 宿主机临时目录，用于存放测试输出 JSON
+        host_tmp_dir = Path(tempfile.gettempdir()) / "myclaude_test_output"
+        host_tmp_dir.mkdir(parents=True, exist_ok=True)
+        
         mounts = [
             ("-v", f"{root}/src:/app/src:rw"),  # noqa: E231
             ("-v", f"{root}/config:/app/config:rw"),  # noqa: E231
             ("-v", f"{root}/code_output:/app/code_output:rw"),  # noqa: E231
             ("-v", f"{root}/log:/app/log:rw"),  # noqa: E231
+            ("-v", f"{host_tmp_dir}:/tmp/myclaude_test_output:rw"),  # noqa: E231
         ]
 
         env_vars = [
