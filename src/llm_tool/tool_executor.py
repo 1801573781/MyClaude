@@ -17,36 +17,45 @@ _SELF_CLOSING_TAGS = {"file_view", "excel_view", "use_skill"}
 
 
 def _final_clean_xml_tags(content: str) -> str:
-    """最终安全网：移除内容中所有 XML 工具标签残留。
+    """最终安全网：移除内容中独占一行的 XML 工具标签残留。
 
-    这是最后一道防线，确保任何漏网之标签都不会被写入文件。
-    使用 _ALL_XML_TAGS 动态构建正则，处理所有已知工具标签。
+    改进：只清除独占一行的标签（行首到行尾只有标签和空白），
+    避免破坏文档内容中内嵌在表格、段落、代码块中的合法标签文本。
+    LLM 输出的工具标签通常独占一行，而文档内容中的标签通常内嵌在文本中。
     """
     if not content:
         return content
 
-    # 构建匹配所有标签的正则（闭标签 + 开标签/自闭合标签）
+    # 构建匹配所有标签的正则，只匹配独占一行的标签
     tags_or = '|'.join(_ALL_XML_TAGS)
-    cleaned = re.sub(r'</?(' + tags_or + r')[^>]*/?>', '', content)
+    cleaned = re.sub(
+        r'^[ \t]*</?(?:' + tags_or + r')(?:\s[^>]*)?/?>[ \t]*$',
+        '',
+        content,
+        flags=re.MULTILINE
+    )
     return cleaned
 
 
 def _find_container_end(response: str, content_start: int,
                         open_tag_prefix: str, close_tag: str) -> int:
-    """嵌套感知的容器闭合标签查找器（字符串感知版）。
+    """嵌套感知的容器闭合标签查找器（字符串 + Markdown 感知版）。
 
-    从 content_start 位置开始逐字符扫描，跟踪 JSON 字符串状态和
-    同名标签的嵌套深度，找到与当前开标签匹配的闭标签位置。
+    从 content_start 位置开始逐字符扫描，跟踪以下状态：
+    1. JSON 字符串状态（单双引号、三引号）
+    2. Markdown 代码块状态（三反引号，可跨行）
+    3. Markdown 行内代码状态（单反引号，不跨行）
+    4. 同名标签的嵌套深度
 
-    核心改进：不再使用 str.find() 盲目搜索，而是逐字符扫描并
-    跟踪是否处于字符串字面量内部。当发现疑似开/闭标签前缀时，
-    若当前位置处于字符串内，则跳过不处理，彻底消除 JSON 内容中
-    出现同名标签关键字导致的误判。
+    当处于字符串、代码块或行内代码中时，跳过所有标签匹配，
+    彻底消除内容中出现同名标签关键字导致的误判。
     """
     depth = 1
     pos = content_start
     in_string = False
     string_char = None  # '"', "'", '"""', "'''"
+    in_code_block = False   # Markdown 代码块（可跨行）
+    in_inline_code = False  # Markdown 行内代码（不跨行）
     open_len = len(open_tag_prefix)
     close_len = len(close_tag)
 
@@ -70,6 +79,33 @@ def _find_container_end(response: str, content_start: int,
             pos += 1
             continue
 
+        # === Markdown 代码块检测（三反引号，可跨行）===
+        if pos + 3 <= len(response) and response[pos:pos + 3] == '```':
+            in_code_block = not in_code_block
+            pos += 3
+            if in_code_block:
+                # 代码块开头：跳过语言标记（如 python）
+                while pos < len(response) and response[pos] not in '\n\r':
+                    pos += 1
+            continue
+
+        # === Markdown 行内代码检测（单反引号，不在代码块内时）===
+        if not in_code_block and response[pos] == '`':
+            in_inline_code = not in_inline_code
+            pos += 1
+            continue
+
+        # 行内代码遇到换行自动结束
+        if in_inline_code and response[pos] in '\n\r':
+            in_inline_code = False
+            pos += 1
+            continue
+
+        # 在代码块或行内代码中，跳过所有标签匹配
+        if in_code_block or in_inline_code:
+            pos += 1
+            continue
+
         # 检查三引号开标签（""" 或 '''）  # noqa
         if pos + 3 <= len(response) and response[pos:pos + 3] in ('"""', "'''"):
             in_string = True
@@ -84,7 +120,7 @@ def _find_container_end(response: str, content_start: int,
             pos += 1
             continue
 
-        # 检查开标签前缀（仅当不在字符串内时生效）
+        # 检查开标签前缀（仅当不在字符串/代码块/行内代码内时生效）
         if (pos + open_len <= len(response)
                 and response[pos:pos + open_len] == open_tag_prefix):
             after = pos + open_len
@@ -93,7 +129,7 @@ def _find_container_end(response: str, content_start: int,
                 pos = after
                 continue
 
-        # 检查闭标签（仅当不在字符串内时生效）
+        # 检查闭标签（仅当不在字符串/代码块/行内代码内时生效）
         if (pos + close_len <= len(response)
                 and response[pos:pos + close_len] == close_tag):
             depth -= 1
