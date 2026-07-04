@@ -98,7 +98,7 @@ class QueryLoop:
             print_llm_rsp: Callable[[str], None],
             print_tool_call: Callable[[str, Dict], None],
             print_tool_result: Callable[[str], None],
-            print_llm_reasoning: Callable[[str], None] = None,
+            print_llm_reasoning: Callable[[str, int], None] = None,
     ):
 
         # 赋值
@@ -273,7 +273,7 @@ class QueryLoop:
         # 打印推理内容给前端（打字机效果，完成后自动折叠）
         if reasoning_content:
             if self._print_llm_reasoning:
-                self._print_llm_reasoning(reasoning_content)
+                self._print_llm_reasoning(reasoning_content, turn)
             else:
                 self._print_llm_rsp(reasoning_content)
 

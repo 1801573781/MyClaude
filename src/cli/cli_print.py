@@ -385,17 +385,22 @@ def print_unknown_cmd(command):
     console.print("[dim]Type /help for available commands[/dim]")
 
 
-def typewriter_then_collapse(text: str, delay: float = 0.003):
+def typewriter_then_collapse(text: str, turn: int, delay: float = 0.003):
     """
     打字机效果逐字显示推理过程，完成后折叠为 1-2 行预览。
     打字阶段限制 Panel 高度（最多终端可见行数），避免内容超屏时 Rich Live 无法渲染。
     不阻塞主流程，折叠后立即继续执行。
     用户可通过输入 /t 命令展开/折叠完整思考内容。
+
+    Args:
+        text: 推理过程文本
+        turn: 当前对话轮次号（由 query_loop 传入，与真实轮次一致）
+        delay: 字符间延迟（秒）
     """
     # 转义 Rich markup 特殊字符（如方括号），避免解析错误
     text = escape(text)
 
-    set_reasoning_text(text)  # 保存文本供展开/折叠命令使用
+    set_reasoning_text(text, turn)  # 保存文本供展开/折叠命令使用
     char_count = len(text)
     preview_lines = 2
 
@@ -517,20 +522,20 @@ _reasoning_expanded = False
 _reasoning_turn_counter = 0
 
 
-def reset_reasoning():
-    """重置推理历史（新对话开始时调用）。"""
-    global _reasoning_history, _reasoning_cursor, _reasoning_expanded, _reasoning_turn_counter
-    _reasoning_history.clear()
-    _reasoning_cursor = -1
-    _reasoning_expanded = False
-    _reasoning_turn_counter = 0
+def set_reasoning_text(text: str, turn: int = None):
+    """保存推理过程文本（由 query_loop 调用）。
 
-
-def set_reasoning_text(text: str):
-    """保存推理过程文本（由 query_loop 调用），自动递增轮次号"""
+    Args:
+        text: 推理过程文本
+        turn: 当前轮次号（由 query_loop 传入真实轮次号）。若为 None 则自动递增（兼容旧调用）。
+    """
     global _reasoning_history, _reasoning_cursor, _reasoning_turn_counter
-    _reasoning_turn_counter += 1
-    _reasoning_history.append((text, _reasoning_turn_counter))
+    if turn is None:
+        _reasoning_turn_counter += 1
+        turn = _reasoning_turn_counter
+    else:
+        _reasoning_turn_counter = turn
+    _reasoning_history.append((text, turn))
     _reasoning_cursor = -1  # 新内容来了，光标回到最新
 
 
@@ -568,7 +573,8 @@ def expand_reasoning(turn: int = -1):
                 idx = i
                 break
         if idx is None:
-            console.print(f"[dim]未找到 Turn {turn} 的思考过程（共 {total} 轮）[/dim]")
+            available = [str(t) for _, t in _reasoning_history]
+            console.print(f"[dim]未找到 Turn {turn} 的思考过程。有思考内容的轮次为: {', '.join(available)}[/dim]")
             return
         _reasoning_cursor = idx
 

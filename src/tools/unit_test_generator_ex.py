@@ -13,6 +13,7 @@ import json
 import re
 import sys
 import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -148,7 +149,7 @@ def _path_to_module(file_path: Path, root: Path) -> str:
 def _extract_type_hint(param) -> Optional[str]:
     """从 Jedi 参数对象中提取类型提示字符串。"""
     desc = getattr(param, "description", "") or ""
-    # description 格式: "param name: type" 或 "param name: type = default"
+    # description 格式: "param name: type" DEPRECATED "param name: type = default"
     # 去掉默认值部分
     before_default = desc.split("=")[0] if "=" in desc else desc
     if ":" in before_default:
@@ -375,7 +376,7 @@ def _build_batch_prompt(funcs: List[Dict[str, Any]]) -> str:
         "func_index": 0,
         "values": ["'/tmp'", "'new.py'", "'print(1)'"],
         "description": "正常创建文件",
-        "expected_behavior": "返回字符串，包含文件创建成功信息，不含 [BLOCKED] 或 [ERROR]"
+        "expected_behavior": "返回字符串，包含文件创建成功信息，不含 [BLOCKED] removed [ERROR]"
     }}
 ]
 """
@@ -588,173 +589,70 @@ def _parse_test_input_by_params(ti: str, param_names: List[str]) -> Optional[Dic
     return result if result else None
 
 
-def _parse_test_input_keys(ti: str) -> Optional[Dict[str, str]]:
-    """
-    解析 test_input 键值对字符串。
-    格式: 'key1' : value1, 'key2' : value2
-    返回键值对字典，value 保留原始字符串（含外层引号/括号等）。
-    支持 value 内部含有逗号、嵌套引号、各种括号（{}、[]、()）。
-    空值（如 'key' : 后无内容）在解析时 value 为空字符串。
-    """
-    if not ti or not isinstance(ti, str):
-        return None
-
-    result: Dict[str, str] = {}
-    pos = 0
-    n = len(ti)
-
-    while pos < n:
-        # 跳过空白
-        while pos < n and ti[pos].isspace():
-            pos += 1
-        if pos >= n:
-            break
-
-        # 匹配 key: 'key' :
-        m = re.match(r"'([^']+)'\s*:\s*", ti[pos:])
-        if not m:
-            return result if result else None
-        key = m.group(1)
-        pos += m.end()
-
-        # 逐字符解析 value，在深度 0 的逗号或串尾处终止
-        value_chars: List[str] = []
-        depth_brace = 0    # {}
-        depth_bracket = 0  # []
-        depth_paren = 0    # ()
-        quote_char: Optional[str] = None  # ' 或 "
-
-        while pos < n:
-            ch = ti[pos]
-
-            if quote_char is not None:
-                # 在引号内：转义处理，遇匹配引号退出
-                value_chars.append(ch)
-                pos += 1
-                if ch == '\\':
-                    if pos < n:
-                        value_chars.append(ti[pos])
-                        pos += 1
-                elif ch == quote_char:
-                    quote_char = None
-            elif ch in ("'", '"'):
-                # 进入引号字符串
-                quote_char = ch
-                value_chars.append(ch)
-                pos += 1
-            elif ch == '{':
-                depth_brace += 1
-                value_chars.append(ch)
-                pos += 1
-            elif ch == '}':
-                depth_brace = max(0, depth_brace - 1)
-                value_chars.append(ch)
-                pos += 1
-            elif ch == '[':
-                depth_bracket += 1
-                value_chars.append(ch)
-                pos += 1
-            elif ch == ']':
-                depth_bracket = max(0, depth_bracket - 1)
-                value_chars.append(ch)
-                pos += 1
-            elif ch == '(':
-                depth_paren += 1
-                value_chars.append(ch)
-                pos += 1
-            elif ch == ')':
-                depth_paren = max(0, depth_paren - 1)
-                value_chars.append(ch)
-                pos += 1
-            elif ch == ',' and depth_brace == 0 and depth_bracket == 0 and depth_paren == 0:
-                # 遇到深度 0 的逗号，peek 后续是否为新的键值对起点
-                peek_pos = pos + 1
-                # 跳过空白
-                while peek_pos < n and ti[peek_pos].isspace():
-                    peek_pos += 1
-                # 检查后续是否为 'key' : 模式
-                next_is_kv = bool(
-                    peek_pos < n
-                    and ti[peek_pos] == "'"
-                    and re.match(r"'([^']+)'\s*:\s*", ti[peek_pos:])
-                )
-                if next_is_kv:
-                    # 确认为新键值对分隔符，当前键值对结束
-                    pos += 1  # 跳过逗号
-                    break
-                else:
-                    # 逗号是 value 的一部分，继续累积
-                    value_chars.append(ch)
-                    pos += 1
-            else:
-                value_chars.append(ch)
-                pos += 1
-
-        value = ''.join(value_chars).strip()
-        result[key] = value
-
-    return result if result else None
-
-
 def _check_type_compatibility(value: str, type_hint: str) -> bool:
-    """检查值字符串是否与类型提示兼容（简易检查）。
+    """检查值字符串是否与类型提示兼容。
 
-    所有 test_input 中的值都是字符串形式（来自 LLM JSON），需要先剥离外层引号再比对。
-    对类型不匹配保持宽松：只有极明显的不兼容（如非 Optional 类型传 None）才报错，
-    避免将「故意传错类型以测试异常处理」的用例误判为错误。
+    对基本类型（int、float、bool、list、dict、tuple、set）进行严格检查，
+    对自定义类型保持宽松（返回 True）。
+    允许 None 值与 Optional/Union 类型兼容。
     """
-    # ---------- 1. 剥离值的外层引号 ----------
     v_raw = value.strip()
-    # 去掉可能包裹在值外层的引号：'hello' → hello ; "world" → world
     if len(v_raw) >= 2 and v_raw[0] == v_raw[-1] and v_raw[0] in ("'", '"'):
         v = v_raw[1:-1]
     else:
         v = v_raw
 
-    # 快速路径：空值总是兼容
     if v == "":
         return True
 
-    # ---------- 2. 检查原始类型提示（保留 Optional / Union 信息）----------
     hint_lower = type_hint.lower().strip()
-
-    # 2a. 原始提示中是否包含 None / Optional（即允许 None）
-    allows_none = ("none" in hint_lower or "optional" in hint_lower)
+    allows_none = "none" in hint_lower or "optional" in hint_lower
 
     if v.lower() == "none":
         return allows_none
 
-    # 2b. 剥离 Optional/Union 用于精确类型检查
     hint_core = re.sub(r"^optional\[(.*)\]$", r"\1", hint_lower)
     hint_core = re.sub(r"^union\[(.*)\]$", r"\1", hint_core)
-
-    # ---------- 3. 基本类型匹配 ----------
     base_types = [t.strip() for t in hint_core.split(",")]
 
+    matched = False
     for bt in base_types:
         bt = bt.strip("[]")
-        if bt in ("int", "float", "number"):
+        if bt == "int":
+            try:
+                int(v)
+                matched = True
+            except ValueError:
+                pass
+        elif bt in ("float", "number"):
             try:
                 float(v)
-                return True
+                matched = True
             except ValueError:
-                # 无法解析为数字，不视为错误（可能是故意传错类型测异常）
-                return True
+                pass
         elif bt in ("str", "string"):
-            return True
+            matched = True
         elif bt in ("bool", "boolean"):
-            # 宽松匹配：true/false/0/1 或任意字符串都放行
-            return True
-        elif bt in ("list", "dict", "tuple", "set"):
-            return True
+            if v.lower() in ("true", "false", "0", "1"):
+                matched = True
+        elif bt == "list":
+            if v.startswith("[") or v.lower() == "none":
+                matched = True
+        elif bt == "dict":
+            if v.startswith("{") or v.lower() == "none":
+                matched = True
+        elif bt == "tuple":
+            if v.startswith("(") or v.lower() == "none":
+                matched = True
+        elif bt == "set":
+            if v.startswith("{") or v.lower() == "none":
+                matched = True
         elif bt in ("path", "pathlike", "purepath"):
-            return True
+            matched = True
         else:
-            # 自定义类型，放宽检查
-            return True
+            matched = True
 
-    # 所有类型都匹配不上，仍然放行（保守策略，避免误杀异常测试）
-    return True
+    return matched
 
 
 def validate_all_cases(
@@ -960,33 +858,56 @@ def main() -> None:
         key = (f["target_module"], f["name"])
         funcs_map[key] = f
 
-    # LLM 批量生成测试条目
-    print("[4/7] 调用 LLM 生成测试用例...")
+    # LLM 批量生成测试条目（并发）
+    print("[4/7] 调用 LLM 生成测试用例（并发）...")
     batch_size = 5  # 每批最多 5 个函数
     all_raw_items: List[Dict[str, Any]] = []
     funcs_with_index: Dict[int, Dict[str, Any]] = {}  # 全局索引→函数信息
+
+    # 构建所有批次: (batch_num, batch, global_start_index)
+    batches: List[Tuple[int, List[Dict[str, Any]], int]] = []
     global_func_index = 0
     for i in range(0, len(all_funcs), batch_size):
         batch = all_funcs[i: i + batch_size]  # noqa
         for local_i, f in enumerate(batch):
             funcs_with_index[global_func_index + local_i] = f
         batch_num = i // batch_size + 1
+        batches.append((batch_num, batch, global_func_index))
+        global_func_index += len(batch)
+
+    def _process_batch(
+        batch_info: Tuple[int, List[Dict[str, Any]], int]
+    ) -> Tuple[int, Optional[List[Dict[str, Any]]], int]:
+        """处理单个批次，返回 (batch_num, result, global_start_index)。"""
+        batch_num, batch, gidx = batch_info
         func_names = [f"{f['target_module']}.{f['name']}" for f in batch]
-        print(f"  处理第 {batch_num} 批 ({len(batch)} 个函数):")
+        print(f"  [批次 {batch_num}] 开始处理 ({len(batch)} 个函数):")
         for fn in func_names:
             print(f"    - {fn}")
         prompt = _build_batch_prompt(batch)
         result = _call_llm(client, model_name, prompt, max_tokens=8192)
         if result:
-            # LLM 返回的 func_index 是批内索引，映射到全局索引
             for item in result:
                 if isinstance(item, dict) and "func_index" in item:
-                    item["func_index"] = item["func_index"] + global_func_index
-            all_raw_items.extend(result)
-            print(f"    LLM 返回 {len(result)} 条")
+                    item["func_index"] = item["func_index"] + gidx
+            print(f"    [批次 {batch_num}] LLM 返回 {len(result)} 条")
         else:
-            print(f"    本批生成失败，跳过")
-        global_func_index += len(batch)
+            print(f"    [批次 {batch_num}] 生成失败，跳过")
+        return batch_num, result, gidx
+
+    max_workers = min(5, len(batches)) if batches else 1
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(_process_batch, b): b for b in batches}
+        results_by_batch: Dict[int, Optional[List[Dict[str, Any]]]] = {}
+        for future in as_completed(futures):
+            batch_num, result, _ = future.result()
+            results_by_batch[batch_num] = result
+
+    # 按批次顺序合并结果
+    for batch_num, _, _ in batches:
+        result = results_by_batch.get(batch_num)
+        if result:
+            all_raw_items.extend(result)
 
     if not all_raw_items:
         print("LLM 未能生成任何用例，退出。")
