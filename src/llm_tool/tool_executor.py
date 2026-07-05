@@ -198,12 +198,12 @@ def _parse_str_replace_block(block: str):
     old_content, old_end, old_found = _extract_subtag_content(block, "old")
     if old_content is None:
         return {
-            "error": "str_replace 工具缺少  开标签，请检查 XML 格式。",
+            "error": "str_replace 工具缺少 <old> 开标签，请检查 XML 格式。",
             "params": {"path": path, "summary": summary}
         }
     if not old_found:
         return {
-            "error": "str_replace 工具中  未闭合（缺少 ），请补全后重新生成。",
+            "error": "str_replace 工具中 old 子标签未闭合（缺少 /old 闭合标签），请补全后重新生成。",
             "params": {"path": path, "summary": summary}
         }
 
@@ -301,13 +301,75 @@ def parse_tools(response: str, reasoning_content: str = ""):
     return remaining, tools
 
 
+def _find_str_replace_end(response: str, content_start: int, all_open_positions: list) -> tuple:
+    """通过子标签 <old> 和 <new> 确定 str_replace 的闭合位置。
+
+    避免 <old>/<new> 内容中的 </str_replace> 字符串导致外层
+    _find_container_end 提前关闭。
+
+    策略：
+    1. 先用嵌套感知提取 <old>...</old> 子标签
+    2. 再用嵌套感知提取 <new>...</new> 子标签
+    3. 在 </new> 之后查找 </str_replace> 闭合标签
+
+    Returns:
+        (end_pos, is_unclosed)
+        - end_pos: </str_replace> 之后的绝对位置（或软边界）
+        - is_unclosed: 是否未闭合
+    """
+    close_tag = '</str_replace>'
+
+    # 找到软边界（下一个工具的开标签或响应末尾）
+    soft_boundary = len(response)
+    for op in all_open_positions:
+        if op > content_start:
+            soft_boundary = op
+            break
+
+    search_region = response[content_start:soft_boundary]
+
+    # 1. 查找 <old>...</old> 子标签
+    old_content, old_end_rel, old_found = _extract_subtag_content(search_region, "old")
+
+    if old_content is None or not old_found:
+        # <old> 未找到或未闭合，回退到通用方法
+        end_pos = _find_container_end(response, content_start, '<str_replace', close_tag)
+        if end_pos == -1:
+            return soft_boundary, True
+        return end_pos, False
+
+    # 2. 查找 <new>...</new> 子标签（在 </old> 之后）
+    new_search_region = search_region[old_end_rel:]
+    new_content, new_end_rel, new_found = _extract_subtag_content(new_search_region, "new")
+
+    if new_content is None or not new_found:
+        # 尝试简单正则兜底
+        new_match = re.search(r'<new>(.*?)</new>', new_search_region, re.DOTALL)
+        if new_match:
+            new_end_rel = new_match.end()
+        else:
+            # 回退到通用方法
+            end_pos = _find_container_end(response, content_start, '<str_replace', close_tag)
+            if end_pos == -1:
+                return soft_boundary, True
+            return end_pos, False
+
+    # 3. 在 new 子标签之后查找 str_replace 闭合标签
+    after_new_abs = content_start + old_end_rel + new_end_rel
+    close_pos = response.find(close_tag, after_new_abs)
+    if close_pos == -1:
+        return soft_boundary, True
+    return close_pos + len(close_tag), False
+
+
 def _parse_tools_strict(response: str):
-    """严格嵌套感知解析。所有标签名引用 _CONTAINER_TAGS 和 _SELF_CLOSING_TAGS。"""
+    """严格模式解析 AI 响应中的 XML 工具调用。"""
     all_matches = []
 
     # === 非容器工具（自闭合标签）：正则匹配 ===
     non_container_patterns = {
         "file_view": re.compile(r'<file_view\s+path="([^"]*)"[^>]*/>'),
+        "excel_view": re.compile(r'<excel_view\s+path="([^"]*)"[^>]*/>'),
         "use_skill": re.compile(r'<use_skill\s+name="([^"]*)"\s*/>'),
     }
     for tool_name, pattern in non_container_patterns.items():
@@ -342,10 +404,18 @@ def _parse_tools_strict(response: str):
 
         for m in open_pattern.finditer(response):
             content_start = m.end()
-            end_pos = _find_container_end(response, content_start, open_prefix, close_tag)
 
-            if end_pos == -1:
-                # 未闭合：用下个工具开标签作为软边界，防止污染后续块
+            if tool_name == "str_replace":
+                # 特殊处理：通过 <old>/<new> 子标签定位闭合，避免内容中的
+                # 闭标签字符串导致提前关闭
+                end_pos, is_unclosed = _find_str_replace_end(
+                    response, content_start, all_open_positions
+                )
+            else:
+                end_pos = _find_container_end(response, content_start, open_prefix, close_tag)
+                is_unclosed = (end_pos == -1)
+
+            if is_unclosed:
                 soft_boundary = len(response)
                 for op in all_open_positions:
                     if op > content_start:
@@ -353,11 +423,9 @@ def _parse_tools_strict(response: str):
                         break
                 content = response[content_start:soft_boundary]
                 match_end = soft_boundary
-                is_unclosed = True
             else:
                 content = response[content_start:end_pos - len(close_tag)]
                 match_end = end_pos
-                is_unclosed = False
 
             all_matches.append((m.start(), match_end, tool_name, {
                 "match": m,
@@ -652,7 +720,7 @@ def execute_code_tool(tool):
             path = p.get("path", "未知路径")
             result = (
                 f"[ERROR] str_replace 解析失败：[path] = {path}, [error] = {error_msg}\n"
-                f"请修正 XML 格式后重新输出  工具调用。"
+                f"请修正 XML 格式后重新输出 str_replace 工具调用。"
             )
         else:
             result_detail = file_str_replace(code_output_root, p["path"], p["old"], p["new"])
@@ -722,6 +790,10 @@ def execute_code_tool(tool):
                 f"可用的技能列表：{available}\n"
                 f"你必须立即输出 <done> 并报告错误，禁止继续执行任何其他工具。"
             )
+
+    elif name == "bash":
+        command = p.get("command", "")
+        result = tool_bash(command)
 
     else:
         result = "unknown llm_tool"
