@@ -68,8 +68,10 @@ class MyClaudeCLI:
                     "      [报告目录]      报告输出目录（可选）\n"
                     "\n"
                     "系统测试命令:\n"
-                    "  /test --st-c\n"
-                    "      生成系统测试用例（暂时还未实现，敬请谅解）\n"
+                    "  /test --st-c [--spec <路径>] [--output <路径>]\n"
+                    "      生成系统测试用例\n"
+                    "      --spec    系统规格文档路径（绝对路径），默认读取 spec/myclaude_spec.md\n"
+                    "      --output  输出测试用例 JSON 文件路径（绝对路径）\n"
                     "\n"
                     "  /test --st-e\n"
                     "      执行系统测试用例（暂时还未实现，敬请谅解）\n"
@@ -109,6 +111,8 @@ class MyClaudeCLI:
                         stdout=subprocess.PIPE,
                         stderr=subprocess.STDOUT,
                         text=True,
+                        encoding="utf-8",
+                        errors="replace",
                         cwd=str(Path(global_cfg.base_path.project_root)),
                         bufsize=1
                     )
@@ -163,7 +167,51 @@ class MyClaudeCLI:
                 self._run_unit_test_a2a(p1, p2)
                 return True
 
-            elif sub_flag in ("--st-c", "--st-e", "--st-a2a"):
+            elif sub_flag == "--st-c":
+                # /test --st-c [--spec <路径>] [--output <路径>]
+                import sys
+                import subprocess
+                from pathlib import Path
+                from src.utility.config_loader import global_cfg
+
+                script_path = Path(global_cfg.base_path.project_root) / "src" / "tools" / "system_test_generator_ex.py"
+
+                cmd_list = [sys.executable, str(script_path)]
+                if remaining:
+                    try:
+                        parsed = shlex.split(remaining, posix=False)
+                        cmd_list.extend(parsed)
+                    except ValueError as e:
+                        cli_print.print_error(f"参数解析错误: {e}")
+                        return True
+
+                cli_print.print_info(f"执行: {' '.join(cmd_list)}")
+                cli_print.print_info("=" * 60)
+
+                try:
+                    process = subprocess.Popen(
+                        cmd_list,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        cwd=str(Path(global_cfg.base_path.project_root)),
+                        bufsize=1
+                    )
+                    for line in process.stdout:
+                        print(line, end='')
+                    process.wait()
+                    if process.returncode == 0:
+                        cli_print.print_info("\n系统测试用例生成完成。")
+                    else:
+                        cli_print.print_error(f"\n脚本执行失败，退出码: {process.returncode}")
+                except Exception as e:
+                    cli_print.print_error(f"执行失败: {e}")
+
+                return True
+
+            elif sub_flag in ("--st-e", "--st-a2a"):
                 cli_print.print_info("暂时还未实现，敬请谅解")
                 return True
 
