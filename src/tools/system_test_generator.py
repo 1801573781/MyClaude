@@ -48,7 +48,7 @@ _SYSTEM_TEST_SNIPPET_TEMPLATE = """你是一个严格的系统测试用例生成
 {req_list}
 
 ## 规则
-1. user_prompt 必须是自然语言指令，会被发送给 MyClaude 进程执行。
+1. user_prompt 是要实际执行给 MyClaude 进程的命令或自然语言指令。对于启动测试（check_type=startup），user_prompt 是实际的 CLI 命令（如 "myclaude --test-mode"），它代表的是整个命令行，不是 --prompt 参数的值。测试 --prompt 缺失场景时，user_prompt 应填入不带 --prompt 的命令（如 "myclaude --test-mode"），不应为空。
 2. expected_behavior 必须包含明确的通过/失败判定标准，供 judge LLM 评判。
 3. check_type 必须与验证目标匹配：file_created/file_modified/tool_chain/log_generated/startup/memory_aware/skill_triggered/path_safety/general
 4. 每个用例必须包含 id、description、user_prompt、expected_behavior、check_type 字段
@@ -70,7 +70,7 @@ _SYSTEM_RETRY_TEMPLATE = """你之前生成的以下系统测试用例有错误�
 1. 只输出需要修正的用例的 JSON 数组（不是全部用例）
 2. 根据每个用例的错误信息修正对应字段
 3. 确保 id 格式为 "TC-前缀-数字"
-4. 确保 user_prompt 是明确的自然语言指令
+4. 确保 user_prompt 是明确的命令或自然语言指令。对于 check_type=startup 的场景，user_prompt 是实际的 CLI 命令（如 "myclaude --test-mode"），如果测试的是缺少 --prompt 参数的场景，user_prompt 就应填入那个不带 --prompt 的命令，不应为空
 5. 确保 expected_behavior 包含明确的通过/失败判定标准
 6. 确保 check_type 是有效值
 
@@ -162,6 +162,8 @@ def _validate_system_test_case(case: dict) -> str | None:
     """验证系统测试用例的合法性，返回错误信息或 None（表示通过）。"""
     for field in ["id", "description", "user_prompt", "expected_behavior", "check_type"]:
         if not case.get(field):
+            if field == "user_prompt":
+                return "缺少必填字段 'user_prompt' 或字段为空。对于 startup 类型测试，user_prompt 应填入实际 CLI 命令（如 'myclaude --test-mode'），不是 --prompt 参数的值"
             return f"缺少 {field} 字段"
     case_id = case["id"]
     if not re.match(r"^TC-[A-Z]+-\d{3}$", case_id):

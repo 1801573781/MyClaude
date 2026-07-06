@@ -13,10 +13,16 @@
 
 from __future__ import annotations
 
+import functools
+# 强制 print 立即刷新，避免在 subprocess 中被缓冲导致界面卡顿
+print = functools.partial(print, flush=True)
+
 import argparse
 import json
 import re
 import sys
+import threading
+import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -29,9 +35,23 @@ from openai import OpenAI
 # 配置加载
 # ---------------------------------------------------------------------------
 
+def _find_project_root() -> Path:
+    """查找项目根目录。"""
+    current = Path(__file__).resolve().parent
+    while current != current.parent:
+        if (current / "src").is_dir() and (current / "config").is_dir():
+            return current
+        current = current.parent
+    return Path.cwd()
+
+
 def _load_global_config() -> Any:
     """尝试加载全局配置，失败则返回 None。"""
     try:
+        import sys
+        project_root = _find_project_root()
+        if str(project_root) not in sys.path:
+            sys.path.insert(0, str(project_root))
         from src.utility.config_loader import load_config
         return load_config()
     except Exception:
@@ -119,17 +139,20 @@ def _extract_test_scenarios(spec_text: str) -> List[Dict[str, Any]]:
             current_section = sec_match.group(1).strip()
             continue
 
-        # 匹配表格行，格式: | TS-7.x.x | 描述 | 预期行为 |
+        # 匹配表格行，格式: | TS-7.x.x | 描述 | 预期行为 | 或 | ST-7.x.x | ...
         row_match = re.match(
-            r"^\|\s*(TS-[\d.]+)\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|$",
+            r"^\|\s*((?:TS|ST)-[\d.]+)\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|$",
             stripped,
         )
         if row_match:
+            # 统一将前缀替换为 ST-
             scenario_id = row_match.group(1).strip()
+            if scenario_id.startswith("TS-"):
+                scenario_id = "ST-" + scenario_id[3:]
             description = row_match.group(2).strip()
             expected = row_match.group(3).strip()
             # 跳过表头行
-            if scenario_id.startswith("TS-") and "场景" not in scenario_id:
+            if "场景" not in scenario_id:
                 scenarios.append({
                     "scenario_id": scenario_id,
                     "section": current_section,
@@ -144,34 +167,29 @@ def _extract_test_scenarios(spec_text: str) -> List[Dict[str, Any]]:
 # ID 生成
 # ---------------------------------------------------------------------------
 
-def _section_abbr(section: str) -> str:
-    """从章节名生成缩写。"""
-    mapping = {
-        "对话引擎测试": "ENG",
-        "工具解析测试": "TLS",
-        "记忆系统测试": "MEM",
-        "CLI 命令测试": "CLI",
-        "测试模式测试": "TMD",
-        "A2A 服务测试": "A2A",
-        "日志系统测试": "LOG",
-        "安全性测试": "SEC",
-    }
-    for key, val in mapping.items():
-        if key in section:
-            return val
-    return section[:2].upper() if section else "XX"
+def _extract_section_num(scenario_id: str) -> str:
+    """从 scenario_id (如 'ST-7.1.1') 提取章节编号 (如 '7.1')。"""
+    m = re.match(r"ST-([\d.]+)", scenario_id)
+    if m:
+        return m.group(1).rsplit(".", 1)[0]  # "7.1.1" -> "7.1"
+    return "0"
 
 
-def generate_ids(cases: List[Dict[str, Any]], start_counter: int = 0) -> int:
-    """为测试用例生成唯一 ID，返回下一个可用计数器。"""
-    counter = start_counter
+def generate_ids(cases: List[Dict[str, Any]], existing_max_seqs: Dict[str, int] = None) -> Dict[str, int]:
+    """为测试用例生成唯一 ID，格式: ST-{章节编号}-{序号:03d}。
+
+    ID 中的章节编号取自 scenario_id，如 ST-7.1.1 的用例 ID 为 ST-7.1-001、ST-7.1-002 等。
+    返回各章节已使用的最大序号，供纠错批次继续编号。
+    """
+    section_counters = dict(existing_max_seqs) if existing_max_seqs else {}
+
     for case in cases:
-        section = case.get("section", "")
-        abbr = _section_abbr(section)
-        cid = f"ST-{abbr}-{counter:03d}"
-        case["id"] = cid
-        counter += 1
-    return counter
+        section_num = _extract_section_num(case.get("scenario_id", ""))
+        section_counters[section_num] = section_counters.get(section_num, 0) + 1
+        seq = section_counters[section_num]
+        case["id"] = f"ST-{section_num}-{seq:03d}"
+
+    return section_counters
 
 
 # ---------------------------------------------------------------------------
@@ -232,9 +250,8 @@ LLM 在响应文本中嵌入 XML 标签触发工具调用，主要工具包括�
 
 ### user_prompt 编写规范（重要）
 - 必须是自然语言指令，模拟真实用户在终端输入的内容
-- 长度适中（10~200 字符），不要太短或太长
 - 正确示例：「写一个 Python 函数计算斐波那契数列」「用相对路径 test.py 创建一个文件」
-- 错误示例：「测试」（太短）、「请帮我创建一个文件，文件名是 test.py，内容是 print hello 然后保存」（太长）
+- 错误示例：「测试」（太简短）
 
 ### expected_behavior 编写规范（重要）
 - 必须包含具体的、可验证的行为描述，不能模糊笼统
@@ -364,29 +381,21 @@ _VERDICT_KEYWORDS = [
     "应触发", "应拒绝", "应拦截", "应降级", "应自动", "应包含",
     "应生成", "应正常", "应报错", "应提示", "应清除", "应展开",
     "应保存", "应显示", "应打印", "应启动", "应退出", "应崩溃",
-    "PASS", "FAIL", "通过", "失败",
+    "应捕获", "应处理", "应支持", "应跳过", "应忽略", "应限制",
+    "应", "PASS", "FAIL", "通过", "失败",
 ]
 
 
 def _validate_single_case(case: Dict[str, Any], seen_ids: set) -> List[str]:
     """验证单个测试用例，返回错误列表。"""
     errors: List[str] = []
+    # id 由 generate_ids() 在纠错完成后统一生成，验证阶段不检查 id
     required_fields = [
-        "id", "description", "user_prompt", "expected_behavior", "check_type",
+        "description", "user_prompt", "expected_behavior", "check_type",
     ]
     for field in required_fields:
         if field not in case or not case.get(field):
             errors.append(f"缺少必填字段 '{field}' 或字段为空")
-
-    # 检查 user_prompt 长度
-    up = case.get("user_prompt", "")
-    if not isinstance(up, str):
-        errors.append("user_prompt 必须是字符串")
-    else:
-        if len(up.strip()) < 10:
-            errors.append(f"user_prompt 过短（{len(up.strip())} 字符），至少需要 10 字符")
-        if len(up.strip()) > 200:
-            errors.append(f"user_prompt 过长（{len(up.strip())} 字符），最多 200 字符")
 
     # 检查 expected_behavior 包含判定关键词
     eb = case.get("expected_behavior", "")
@@ -436,71 +445,8 @@ def validate_all_cases(
 
 
 # ---------------------------------------------------------------------------
-# LLM 纠错
-# ---------------------------------------------------------------------------
-
-def _build_fix_prompt(
-    error_cases: List[Dict[str, Any]],
-    all_scenarios: List[Dict[str, Any]],
-) -> str:
-    """构建纠错 prompt。通过 all_scenarios 查找场景信息。"""
-    scenario_index_map: Dict[str, int] = {}
-    for idx, s in enumerate(all_scenarios):
-        scenario_index_map[s["scenario_id"]] = idx
-
-    error_descs: List[str] = []
-    for ec in error_cases:
-        oc = ec["original_case"]
-        sid = oc.get("scenario_id", "?")
-        si = scenario_index_map.get(sid, -1)
-        if si >= 0:
-            scenario = all_scenarios[si]
-            sec_desc = f"{scenario['section']} - {scenario['description']}"
-        else:
-            sec_desc = "未知场景"
-        error_descs.append(
-            f"### scenario_index={si}: {sid}\n"
-            f"- 场景描述: {sec_desc}\n"
-            f"- 原 user_prompt: {oc.get('user_prompt', '')}\n"
-            f"- 原 description: {oc.get('description', '')}\n"
-            f"- 原 expected_behavior: {oc.get('expected_behavior', '')}\n"
-            f"- 原 check_type: {oc.get('check_type', '')}\n"
-            f"- 错误: {ec['errors']}"
-        )
-
-    prompt = f"""以下系统测试用例存在格式或内容错误，请修正。
-
-{chr(10).join(error_descs)}
-
-## 修正要求
-
-输出修正后的 JSON 数组，每个元素字段：
-- "scenario_index": 整数，与上面相同的 scenario_index
-- "user_prompt": 修正后的自然语言指令（10~200 字符）
-- "description": 修正后的测试描述
-- "expected_behavior": 修正后的期望行为，必须包含判定关键词（如"应该"、"必须"、"不应"等）
-- "check_type": 修正后的验证类型，必须是以下之一：file_created, file_modified, tool_chain, log_generated, startup, memory_aware, skill_triggered, path_safety, general
-
-重要：在 expected_behavior 中描述 XML 工具时，不要使用尖括号语法，请用引号包裹工具名，如 'create'、'str_replace'、'done' 等。
-
-只输出 JSON 数组，不要额外文字。
-"""
-    return prompt
-
-
-# ---------------------------------------------------------------------------
 # 主流程
 # ---------------------------------------------------------------------------
-
-def _find_project_root() -> Path:
-    """查找项目根目录。"""
-    current = Path(__file__).resolve().parent
-    while current != current.parent:
-        if (current / "src").is_dir() and (current / "config").is_dir():
-            return current
-        current = current.parent
-    return Path.cwd()
-
 
 def main() -> None:
     from datetime import datetime
@@ -522,6 +468,10 @@ def main() -> None:
     # 确定输出路径
     if args.output is not None:
         output_path = Path(args.output).resolve()
+        # 如果输出路径是已存在的目录，或没有 .json 后缀，则视为目录并生成带时间戳的文件名
+        if output_path.is_dir() or output_path.suffix != ".json":
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_path = output_path / f"system_test_cases_{timestamp}.json"
     else:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_path = (project_root / "tests" / f"system_test_cases_{timestamp}.json").resolve()
@@ -565,49 +515,120 @@ def main() -> None:
 
     # LLM 批量生成测试条目（并发）
     print("[4/7] 调用 LLM 生成系统测试用例（并发）...")
-    batch_size = 5  # 每批最多 5 个场景
     all_raw_items: List[Dict[str, Any]] = []
 
-    # 构建所有批次: (batch_num, batch, global_start_index)
-    batches: List[Tuple[int, List[Dict[str, Any]], int]] = []
+    # 按 section 分组构建批次，使同一章节的场景在连续批次中处理
+    from collections import OrderedDict
+    section_groups: "OrderedDict[str, List[Dict[str, Any]]]" = OrderedDict()
+    for s in all_scenarios:
+        section_groups.setdefault(s["section"], []).append(s)
+
+    batches: List[Tuple[str, List[Dict[str, Any]], int]] = []
     global_scenario_index = 0
-    for i in range(0, len(all_scenarios), batch_size):
-        batch = all_scenarios[i: i + batch_size]
-        batch_num = i // batch_size + 1
-        batches.append((batch_num, batch, global_scenario_index))
-        global_scenario_index += len(batch)
+    batch_size = 5  # 单批次最多 5 个场景
+    for section, scenarios_in_section in section_groups.items():
+        section_batch_idx = 0
+        for i in range(0, len(scenarios_in_section), batch_size):
+            batch = scenarios_in_section[i: i + batch_size]
+            section_batch_idx += 1
+            section_num = _extract_section_num(batch[0]["scenario_id"])
+            batch_id = f"{section_num}-{section_batch_idx}"
+            batches.append((batch_id, batch, global_scenario_index))
+            global_scenario_index += len(batch)
+
+    # 提交前在主线程按顺序打印所有批次的开始信息，避免并发输出交错
+    for batch_id, batch, _ in batches:
+        section_name = batch[0]["section"] if batch else ""
+        print(f"  [批次 {batch_id} / {section_name}] 开始处理 ({len(batch)} 个场景):")
+        for s in batch:
+            print(f"    - {s['scenario_id']}: {s['description']}")
 
     def _process_batch(
-        batch_info: Tuple[int, List[Dict[str, Any]], int]
-    ) -> Tuple[int, Optional[List[Dict[str, Any]]], int]:
-        """处理单个批次，返回 (batch_num, result, global_start_index)。"""
-        batch_num, batch, gidx = batch_info
-        scenario_ids = [f"{s['scenario_id']}: {s['description']}" for s in batch]
-        print(f"  [批次 {batch_num}] 开始处理 ({len(batch)} 个场景):")
-        for sid in scenario_ids:
-            print(f"    - {sid}")
+        batch_info: Tuple[str, List[Dict[str, Any]], int]
+    ) -> Tuple[str, Optional[List[Dict[str, Any]]], int]:
+        """处理单个批次，返回 (batch_id, result, global_start_index)。不打印日志，由主线程统一输出。"""
+        batch_id, batch, gidx = batch_info
         prompt = _build_batch_prompt(batch)
         result = _call_llm(client, model_name, prompt, max_tokens=8192)
         if result:
             for item in result:
                 if isinstance(item, dict) and "scenario_index" in item:
                     item["scenario_index"] = item["scenario_index"] + gidx
-            print(f"    [批次 {batch_num}] LLM 返回 {len(result)} 条")
-        else:
-            print(f"    [批次 {batch_num}] 生成失败，跳过")
-        return batch_num, result, gidx
+        return batch_id, result, gidx
+
+    is_tty = sys.stdout.isatty()
+
+    print()
+    print("  正在等待 LLM 返回结果...")
+
+    all_done = threading.Event()
+    completed_count = [0]
+    total_batches = len(batches)
+    spinner_chars = ('|', '/', '-', '\\')
+    output_lock = threading.Lock()
+    spin_start = time.time()
+
+    def _spin():
+        """Spinner/heartbeat thread — single thread, runs until all_done is set.
+
+        TTY mode:      \\r-based single-line spinner (works in Windows CMD).
+        Non-TTY mode:  prints a heartbeat line every 5 seconds (for piped stdout).
+        """
+        i = 0
+        last_heartbeat = time.time()
+        while not all_done.is_set():
+            char = spinner_chars[i % len(spinner_chars)]
+            with output_lock:
+                if all_done.is_set():
+                    break
+                if is_tty:
+                    # TTY: single-line spinner using carriage return + space padding
+                    msg = f"  {char} 等待 LLM 返回 ({completed_count[0]}/{total_batches} 已完成)..."
+                    # Pad with trailing spaces to overwrite any leftover characters
+                    sys.stdout.write(f"\r{msg.ljust(70)}")
+                    sys.stdout.flush()
+                else:
+                    # Non-TTY (piped): print heartbeat every 5 seconds as a full line
+                    now = time.time()
+                    if now - last_heartbeat >= 5.0:
+                        elapsed = int(now - spin_start)
+                        print(f"  ... 仍在等待 ({completed_count[0]}/{total_batches} 已完成, 已耗时 {elapsed}s)")
+                        last_heartbeat = now
+            time.sleep(0.15)
+            i += 1
+
+    spinner_thread = threading.Thread(target=_spin, daemon=True)
+    spinner_thread.start()
 
     max_workers = min(5, len(batches)) if batches else 1
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(_process_batch, b): b for b in batches}
-        results_by_batch: Dict[int, Optional[List[Dict[str, Any]]]] = {}
+        results_by_batch: Dict[str, Optional[List[Dict[str, Any]]]] = {}
         for future in as_completed(futures):
-            batch_num, result, _ = future.result()
-            results_by_batch[batch_num] = result
+            batch_id, result, _ = future.result()
+            with output_lock:
+                completed_count[0] += 1
+                if is_tty:
+                    # Clear spinner line before printing result
+                    sys.stdout.write(f"\r{' ' * 75}\r")
+                    sys.stdout.flush()
+                if result:
+                    print(f"    [批次 {batch_id}] LLM 返回 {len(result)} 条  ({completed_count[0]}/{total_batches})")
+                else:
+                    print(f"    [批次 {batch_id}] 生成失败，跳过  ({completed_count[0]}/{total_batches})")
+            results_by_batch[batch_id] = result
+
+    # Stop spinner
+    all_done.set()
+    spinner_thread.join(timeout=1.0)
+    with output_lock:
+        if is_tty:
+            sys.stdout.write(f"\r{' ' * 75}\r")
+            sys.stdout.flush()
 
     # 按批次顺序合并结果
-    for batch_num, _, _ in batches:
-        result = results_by_batch.get(batch_num)
+    for batch_id, _, _ in batches:
+        result = results_by_batch.get(batch_id)
         if result:
             all_raw_items.extend(result)
 
@@ -629,15 +650,9 @@ def main() -> None:
     else:
         print(f"  组装 {len(all_raw_cases)} 个用例")
 
-    # 生成 ID
-    print("[5/7] 生成用例 ID...")
-    id_counter = generate_ids(all_raw_cases, start_counter=0)
-
-    # 兜底检查与纠错
-    print("[6/7] 兜底检查与纠错...")
+    # 系统测试用例检查
+    print("[5/7] 系统测试用例检查...")
     seen_ids: set = set()
-    max_retries = 3
-
     valid_cases, error_cases = validate_all_cases(all_raw_cases, seen_ids)
 
     # 错误用例清理 _scenario_index 后保存（用集合去重）
@@ -656,38 +671,18 @@ def main() -> None:
             seen_error_keys.add(ek)
             final_errors.append(err_entry)
 
-    for retry in range(1, max_retries + 1):
-        if not error_cases:
-            break
-        print(f"  第 {retry} 次纠错重试 ({len(error_cases)} 个错误)...")
-        fix_prompt = _build_fix_prompt(error_cases, all_scenarios)
-        fixed = _call_llm(client, model_name, fix_prompt, max_tokens=8192)
-        if not fixed:
-            print("    纠错调用失败，保留原始错误")
-            break
-        # 将 LLM 纠错结果组装并重新验证
-        fixed_cases = _assemble_cases(fixed, all_scenarios)
-        id_counter = generate_ids(fixed_cases, start_counter=id_counter)
-        seen_ids_retry: set = seen_ids.copy()
-        new_valid, new_errors = validate_all_cases(fixed_cases, seen_ids_retry)
-        valid_cases.extend(new_valid)
-        for case in new_valid:
-            case.pop("_scenario_index", None)
-        error_cases = new_errors
-        for ec in error_cases:
-            oc = ec["original_case"].copy()
-            oc.pop("_scenario_index", None)
-            err_entry = {"original_case": oc, "errors": ec["errors"]}
-            ek = _error_key(err_entry)
-            if ek not in seen_error_keys:
-                seen_error_keys.add(ek)
-                final_errors.append(err_entry)
-        print(f"    修正后: {len(new_valid)} 个有效, {len(new_errors)} 个仍错误")
     print(f"  最终: {len(valid_cases)} 个有效, {len(final_errors)} 个错误")
 
     # 清理所有有效用例的 _scenario_index
     for case in valid_cases:
         case.pop("_scenario_index", None)
+
+    # 按 scenario_id 排序，使同场景用例聚集
+    valid_cases.sort(key=lambda c: c.get("scenario_id", ""))
+
+    # 生成 ID（在纠错完成后统一编号，确保连续不跳号）
+    print("[6/7] 生成用例 ID...")
+    generate_ids(valid_cases)
 
     # 输出文件
     print("[7/7] 输出结果...")
@@ -712,7 +707,6 @@ def main() -> None:
     elapsed = end_time - start_time
     print(f"任务结束时间: {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"总耗时: {elapsed}")
-    print("完成！")
 
 
 if __name__ == "__main__":

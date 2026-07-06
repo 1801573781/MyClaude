@@ -102,8 +102,7 @@ class MyClaudeCLI:
                         cli_print.print_error(f"参数解析错误: {e}")
                         return True
 
-                cli_print.print_info(f"执行: {' '.join(cmd_list)}")
-                cli_print.print_info("=" * 60)
+                cli_print.print_info(f"执行: {' '.join(cmd_list)}\n\n" + "=" * 60)
 
                 try:
                     process = subprocess.Popen(
@@ -117,12 +116,12 @@ class MyClaudeCLI:
                         bufsize=1
                     )
                     for line in process.stdout:
-                        print(line, end='')
+                        print(line, end='', flush=True)
                     process.wait()
                     if process.returncode == 0:
-                        cli_print.print_info("\n单元测试用例生成完成。")
+                        cli_print.print_info("单元测试用例生成完成。")
                     else:
-                        cli_print.print_error(f"\n脚本执行失败，退出码: {process.returncode}")
+                        cli_print.print_error(f"脚本执行失败，退出码: {process.returncode}")
                 except Exception as e:
                     cli_print.print_error(f"执行失败: {e}")
 
@@ -185,8 +184,7 @@ class MyClaudeCLI:
                         cli_print.print_error(f"参数解析错误: {e}")
                         return True
 
-                cli_print.print_info(f"执行: {' '.join(cmd_list)}")
-                cli_print.print_info("=" * 60)
+                cli_print.print_info(f"执行: {' '.join(cmd_list)}\n\n" + "=" * 60)
 
                 try:
                     process = subprocess.Popen(
@@ -200,12 +198,12 @@ class MyClaudeCLI:
                         bufsize=1
                     )
                     for line in process.stdout:
-                        print(line, end='')
+                        print(line, end='', flush=True)
                     process.wait()
                     if process.returncode == 0:
-                        cli_print.print_info("\n系统测试用例生成完成。")
+                        cli_print.print_info("系统测试用例生成完成。")
                     else:
-                        cli_print.print_error(f"\n脚本执行失败，退出码: {process.returncode}")
+                        cli_print.print_error(f"脚本执行失败，退出码: {process.returncode}")
                 except Exception as e:
                     cli_print.print_error(f"执行失败: {e}")
 
