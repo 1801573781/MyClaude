@@ -73,11 +73,16 @@ class MyClaudeCLI:
                     "      --spec    系统规格文档路径（绝对路径），默认读取 spec/myclaude_spec.md\n"
                     "      --output  输出测试用例 JSON 文件路径（绝对路径）\n"
                     "\n"
-                    "  /test --st-e\n"
-                    "      执行系统测试用例（暂时还未实现，敬请谅解）\n"
+                    "  /test --st-e <测试用例JSON> <日志文件> [报告目录]\n"
+                    "      执行系统测试用例\n"
+                    "      <测试用例JSON>  测试用例 JSON 文件全路径\n"
+                    "      <日志文件>      日志文件全路径\n"
+                    "      [报告目录]      报告输出目录（可选）\n"
                     "\n"
-                    "  /test --st-a2a\n"
-                    "      通过 A2A 协议执行系统测试（暂时还未实现，敬请谅解）\n"
+                    "  /test --st-a2a <测试用例JSON> [报告目录]\n"
+                    "      通过 A2A 协议执行系统测试（MyOrch → SystemTest）\n"
+                    "      <测试用例JSON>  测试用例 JSON 文件全路径\n"
+                    "      [报告目录]      报告输出目录（可选）\n"
                     "\n"
                     "其他:\n"
                     "  /test --help    显示此帮助信息"
@@ -209,8 +214,43 @@ class MyClaudeCLI:
 
                 return True
 
-            elif sub_flag in ("--st-e", "--st-a2a"):
-                cli_print.print_info("暂时还未实现，敬请谅解")
+            elif sub_flag == "--st-e":
+                # /test --st-e <测试用例JSON路径> <日志文件路径> [<报告输出目录>]
+                try:
+                    st_args = shlex.split(remaining, posix=False)
+                except ValueError as e:
+                    cli_print.print_error(f"参数解析错误: {e}")
+                    return True
+
+                if len(st_args) < 2:
+                    cli_print.print_error("缺少必选参数：测试用例JSON路径 和 日志文件路径")
+                    cli_print.print_info("用法: /test --st-e <测试用例JSON全路径> <日志文件全路径> [<报告输出目录>]")
+                    cli_print.print_info("示例: /test --st-e D:/AI/MyClaude/tests/s20.json D:/AI/MyClaude/logs/st_output.txt D:/AI/MyClaude/logs")
+                    return True
+
+                p1 = st_args[0]
+                p2 = st_args[1]
+                p3 = st_args[2] if len(st_args) > 2 else None
+                self._run_system_test_exec(p1, p2, p3)
+                return True
+
+            elif sub_flag == "--st-a2a":
+                # /test --st-a2a <测试用例JSON路径> [<报告输出目录>]
+                try:
+                    st_args = shlex.split(remaining, posix=False)
+                except ValueError as e:
+                    cli_print.print_error(f"参数解析错误: {e}")
+                    return True
+
+                if len(st_args) < 1:
+                    cli_print.print_error("缺少必选参数：测试用例 JSON 路径")
+                    cli_print.print_info("用法: /test --st-a2a <测试用例JSON全路径> [<报告输出目录>]")
+                    cli_print.print_info("示例: /test --st-a2a D:/AI/MyClaude/tests/s20.json D:/AI/MyClaude/logs")
+                    return True
+
+                p1 = st_args[0]
+                p2 = st_args[1] if len(st_args) > 1 else None
+                self._run_system_test_a2a(p1, p2)
                 return True
 
             else:
@@ -806,6 +846,286 @@ class MyClaudeCLI:
 
         cli_print.print_info(
             "A2A 单元测试报告\n"
+            + "=" * 60 + "\n"
+            f"  任务 ID: {task_id}\n"
+            f"  共执行 {total} 个用例\n"
+            f"  开始时间: {start_time_str}\n"
+            f"  结束时间: {end_time_str}\n"
+            f"  执行耗时: {elapsed:.1f} 秒\n"
+            f"  状态: {status}\n"
+            f"  成功: {passed}  失败: {total - passed}\n"
+            f"  通过率: {pass_rate * 100:.1f}%\n"
+            f"  测试用例文件: {json_file}\n"
+            f"  测试报告文件: {report_display}\n"
+            + "=" * 60
+        )
+        cli_print.print_info(f"任务结束时间: {end_time_str}，执行耗时：{elapsed:.1f} 秒")
+
+
+    def _run_system_test_exec(self,
+                              json_path: str,
+                              log_path: str,
+                              report_output_dir: str | None = None):
+        """执行 /st-e 命令：加载 JSON 测试用例并执行系统测试，打印进度与总结"""
+        import json
+        import sys
+        import time
+        from pathlib import Path
+        from datetime import datetime
+
+        from src.utility.config_loader import global_cfg
+        from src.A2A.test.st.system_test_runner import SystemTestRunner
+        from src.A2A.test.judge import LLMJudge
+        from src.A2A.test.sandbox import SandboxManager
+        from src.A2A.test.models import TestStatus
+
+        # ── 1. 路径解析 ──
+        json_file = Path(json_path)
+        if not json_file.is_absolute():
+            cli_print.print_error(f"测试用例路径必须是绝对路径: {json_path}")
+            return
+
+        log_file = Path(log_path)
+        if not log_file.is_absolute():
+            log_file = Path.cwd() / log_file.name
+
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+
+        if report_output_dir:
+            report_dir = Path(report_output_dir)
+        else:
+            report_dir = Path(global_cfg.base_path.logs_root)
+        report_dir.mkdir(parents=True, exist_ok=True)
+
+        cli_print.print_info(
+            f"测试用例文件: {json_file}\n"
+            f"日志文件: {log_file}\n"
+            f"报告目录: {report_dir}"
+        )
+
+        # ── 2. 检查 JSON 文件 ──
+        if not json_file.exists():
+            cli_print.print_error(f"测试用例 JSON 文件不存在: {json_file}")
+            return
+
+        # ── 3. 加载测试用例 ──
+        try:
+            with open(json_file, encoding="utf-8") as f:
+                test_cases = json.load(f)
+        except Exception as e:
+            cli_print.print_error(f"加载测试用例 JSON 失败: {e}")
+            return
+
+        total_cases = len(test_cases)
+        if total_cases == 0:
+            cli_print.print_info("测试用例数为 0，无需执行。")
+            return
+
+        # ── 4. 重定向标准输出到日志文件 ──
+        log_fh = open(log_file, "w", encoding="utf-8")
+
+        class TeeWriter:
+            """同时写入控制台和日志文件"""
+            def __init__(self, console, file):
+                self.console = console
+                self.file = file
+
+            def write(self, data):
+                self.console.write(data)
+                self.file.write(data)
+                self.file.flush()
+
+            def flush(self):
+                self.console.flush()
+                self.file.flush()
+
+        original_stdout = sys.stdout
+        original_stderr = sys.stderr
+        sys.stdout = TeeWriter(original_stdout, log_fh)
+        sys.stderr = TeeWriter(original_stderr, log_fh)
+
+        try:
+            # ── 5. 打印开始时间 ──
+            start_time = datetime.now()
+            start_time_str = start_time.strftime("%Y-%m-%d %H:%M:%S")
+            cli_print.print_info(
+                f"系统测试开始时间: {start_time_str}\n"
+                f"共 {total_cases} 个测试用例"
+            )
+
+            # ── 6. 执行测试 ──
+            judge = LLMJudge()
+            sandbox_mgr = SandboxManager()
+            runner = SystemTestRunner(sandbox_mgr=sandbox_mgr, judge=judge)
+
+            progress_last_line = [""]
+
+            def _on_progress(completed: int, total: int, results: list):
+                passed = sum(1 for r in results if r.status == TestStatus.PASS)
+                pass_rate = (passed / completed * 100) if completed > 0 else 0.0
+                line = (
+                    f"  进度: {completed}/{total} 已执行 | "
+                    f"通过 {passed}/{completed} ({pass_rate:.1f}%)"
+                )
+                if progress_last_line[0]:
+                    sys.stdout.write("\r" + " " * len(progress_last_line[0]) + "\r")
+                sys.stdout.write(line)
+                sys.stdout.flush()
+                progress_last_line[0] = line
+
+            results = runner.execute(
+                test_cases=test_cases,
+                myclaude_root=global_cfg.base_path.project_root,
+                progress_callback=_on_progress,
+            )
+
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+
+            # ── 7. 打印结束时间 ──
+            end_time = datetime.now()
+            end_time_str = end_time.strftime("%Y-%m-%d %H:%M:%S")
+            elapsed = end_time - start_time
+            elapsed_str = f"{elapsed.total_seconds():.1f} 秒"
+
+            cli_print.print_info(f"系统测试结束时间: {end_time_str}")
+
+            # ── 8. 生成 Excel 报告 ──
+            report_path = SystemTestRunner.generate_excel_report(
+                results, output_dir=str(report_dir)
+            )
+
+            # ── 9. 打印测试报告总结 ──
+            passed = sum(1 for r in results if r.status == TestStatus.PASS)
+            failed = sum(1 for r in results if r.status == TestStatus.FAIL)
+            error_count = sum(1 for r in results if r.status == TestStatus.ERROR)
+            inconclusive = sum(1 for r in results if r.status == TestStatus.INCONCLUSIVE)
+            total = len(results)
+            pass_rate = passed / total * 100 if total > 0 else 0.0
+
+            cli_print.print_info(
+                "\n" + "=" * 60 + "\n"
+                "  系统测试总结\n"
+                f"  共执行 {total} 个用例\n"
+                f"  开始时间: {start_time_str}\n"
+                f"  结束时间: {end_time_str}\n"
+                f"  执行耗时: {elapsed_str}\n"
+                f"  成功: {passed}  失败: {failed}  错误: {error_count}  不确定: {inconclusive}\n"
+                f"  通过率: {pass_rate:.1f}%\n"
+                f"  测试用例文件: {json_file}\n"
+                f"  测试日志文件: {log_file}\n"
+                f"  测试报告文件: {report_path}\n"
+                f"  如需获取详细信息，请直接查阅上述文件。\n"
+                + "=" * 60
+            )
+
+        except Exception as e:
+            cli_print.print_error(f"系统测试执行异常: {e}")
+        finally:
+            sys.stdout = original_stdout
+            sys.stderr = original_stderr
+            log_fh.close()
+
+
+    def _run_system_test_a2a(self,
+                             json_path: str,
+                             report_output_dir: str | None = None):
+        """执行 /st-a2a 命令：通过 A2A 协议（MyOrch → SystemTest）执行系统测试"""
+        import json
+        from pathlib import Path
+        from datetime import datetime
+
+        import httpx
+        from src.utility.config_loader import global_cfg
+        from src.A2A.shared.config import a2a_global_cfg
+
+        # ── 0. 检查并启动 A2A 服务 ──
+        if not self._ensure_a2a_services():
+            cli_print.print_error("A2A 服务未就绪，无法执行测试。请手动启动服务后重试。")
+            return
+
+        # ── 1. 路径解析 ──
+        json_file = Path(json_path)
+        if not json_file.is_absolute():
+            cli_print.print_error(f"测试用例路径必须是绝对路径: {json_path}")
+            return
+
+        if report_output_dir:
+            report_dir = Path(report_output_dir)
+        else:
+            report_dir = Path(global_cfg.base_path.logs_root)
+        report_dir.mkdir(parents=True, exist_ok=True)
+
+        cli_print.print_info(
+            f"测试用例文件: {json_file}\n"
+            f"报告目录: {report_dir}"
+        )
+
+        # ── 2. 检查 JSON 文件 ──
+        if not json_file.exists():
+            cli_print.print_error(f"测试用例 JSON 文件不存在: {json_file}")
+            return
+
+        # ── 3. 加载测试用例 ──
+        try:
+            with open(json_file, encoding="utf-8") as f:
+                test_cases = json.load(f)
+        except Exception as e:
+            cli_print.print_error(f"加载测试用例 JSON 失败: {e}")
+            return
+
+        total_cases = len(test_cases)
+        if total_cases == 0:
+            cli_print.print_info("测试用例数为 0，无需执行。")
+            return
+
+        # ── 4. 构造 MyOrch URL ──
+        cfg = a2a_global_cfg
+        myorch_url = f"http://{cfg.myorch.host}:{cfg.myorch.port}/a2a/run_system_tests"
+
+        cli_print.print_info(
+            f"通过 A2A 协议提交系统测试任务...\n"
+            f"MyOrch Agent: {myorch_url}\n"
+            f"共 {total_cases} 个测试用例"
+        )
+
+        # ── 5. 发送请求 ──
+        start_time = datetime.now()
+        start_time_str = start_time.strftime("%Y-%m-%d %H:%M:%S")
+        cli_print.print_info(f"任务开始时间: {start_time_str}")
+
+        try:
+            with httpx.Client(timeout=600) as client:
+                resp = client.post(
+                    myorch_url,
+                    json={
+                        "test_cases": test_cases,
+                        "myclaude_root": str(global_cfg.base_path.project_root),
+                        "report_output_dir": str(report_dir),
+                    },
+                )
+                resp.raise_for_status()
+                data = resp.json()
+        except Exception as e:
+            cli_print.print_error(f"A2A 协议调用失败: {e}")
+            return
+
+        end_time = datetime.now()
+        end_time_str = end_time.strftime("%Y-%m-%d %H:%M:%S")
+        elapsed = (end_time - start_time).total_seconds()
+
+        # ── 6. 打印结果 ──
+        status = data.get("status", "UNKNOWN")
+        passed = data.get("passed", 0)
+        total = data.get("total", 0)
+        pass_rate = data.get("pass_rate", 0.0)
+        task_id = data.get("task_id", "")
+        report_path = data.get("report_path", "")
+
+        report_display = report_path if report_path else "（未生成，请检查 SystemTest 服务日志）"
+
+        cli_print.print_info(
+            "A2A 系统测试报告\n"
             + "=" * 60 + "\n"
             f"  任务 ID: {task_id}\n"
             f"  共执行 {total} 个用例\n"

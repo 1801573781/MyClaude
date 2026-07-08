@@ -341,6 +341,72 @@ class MyOrchestrator:
                 "error_message": str(e),
             }
 
+    def run_system_test_orchestration(self, test_cases: list, myclaude_root: str,
+                                       report_output_dir: str | None = None) -> dict:
+        """执行系统测试编排流程。
+
+        Args:
+            test_cases: 系统测试用例列表（字典格式）。
+            myclaude_root: MyClaude 项目根目录。
+            report_output_dir: 测试报告输出目录（绝对路径），传递给 SystemTest。
+
+        Returns:
+            包含 task_id, status, passed, total, pass_rate, details 的字典。
+        """
+        task_id = generate_task_id()
+        start_time = time.time()
+
+        try:
+            # 构造 SystemTest 请求
+            from src.A2A.test.models import RunSystemTestRequest
+
+            st_req = RunSystemTestRequest(
+                task_id=task_id,
+                test_cases=test_cases,
+                myclaude_root=myclaude_root or a2a_global_cfg.myclaude_root,
+                report_output_dir=report_output_dir,
+            )
+
+            # 通过 A2A 协议委派任务给 SystemTest Agent
+            resp = self._http.post(
+                f"{self._sys_test_url}/a2a/run_system_tests",
+                json=st_req.model_dump(),
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            passed = data.get("passed", 0)
+            total = data.get("total", 0)
+            pass_rate = data.get("pass_rate", 0.0)
+            report_path = data.get("report_path")
+
+            status = "PASS" if pass_rate >= 1.0 else "FAIL"
+            execution_time = time.time() - start_time
+
+            return {
+                "task_id": task_id,
+                "status": status,
+                "passed": passed,
+                "total": total,
+                "pass_rate": pass_rate,
+                "details": data.get("details", []),
+                "execution_time_seconds": execution_time,
+                "report_path": report_path,
+            }
+
+        except Exception as e:
+            execution_time = time.time() - start_time
+            return {
+                "task_id": task_id,
+                "status": "ERROR",
+                "passed": 0,
+                "total": len(test_cases),
+                "pass_rate": 0.0,
+                "details": [],
+                "execution_time_seconds": execution_time,
+                "error_message": str(e),
+            }
+
     @staticmethod
     def _generate_summary(
         regression: TestSuiteReport,

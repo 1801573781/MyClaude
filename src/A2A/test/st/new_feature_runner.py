@@ -74,7 +74,7 @@ class NewFeatureRunner:
             )
 
             # 2. 构建评判 actual_output（优先使用结构化 JSON 的关键输出片段）
-            actual_output = self._build_actual_output(std_out, test_data)
+            actual_output = self._build_actual_output(std_out, test_data, std_err)
 
             # 3. 确定 check_type
             check_type = getattr(case, 'check_type', None) or "general"
@@ -105,8 +105,7 @@ class NewFeatureRunner:
                 test_id=case.id,
                 description=case.description,
                 status=verdict,
-                stdout_preview=actual_output[:500] if actual_output else "(empty)",
-                stderr_preview=std_err[:500] if std_err else "",
+                actual_output=actual_output[:3000] if actual_output else "(empty)",
                 exit_code=exit_code,
                 duration_seconds=elapsed,
             )
@@ -118,8 +117,7 @@ class NewFeatureRunner:
                 test_id=case.id,
                 description=case.description,
                 status=TestStatus.ERROR,
-                stdout_preview=str(exc)[:500],
-                stderr_preview="",
+                actual_output=str(exc)[:3000],
                 exit_code=-1,
                 duration_seconds=elapsed,
             )
@@ -132,47 +130,66 @@ class NewFeatureRunner:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _build_actual_output(std_out: str, test_data: dict | None) -> str:
+    def _strip_ansi(text: str) -> str:
+        """去除 Rich ANSI 转义码，返回纯文本。"""
+        import re
+        ansi_re = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[()][AB012]|\x1b[=>]')
+        cleaned = ansi_re.sub('', text)
+        cleaned = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', cleaned)
+        cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+        return cleaned.strip()
+
+    @staticmethod
+    def _build_actual_output(std_out: str, test_data: dict | None, std_err: str = "") -> str:
         """将结构化测试数据与原始 stdout 合并为评判 LLM 的输入。
 
         优先使用结构化 JSON 中的 key_outputs（LLM 纯文本片段）和 tool_calls
         （工具调用记录），因为 stdout 可能包含 Rich ANSI 转义码干扰评判。
-        如果 JSON 不可用，回退到原始 stdout。
+        如果 JSON 不可用或内容为空，回退到清理 ANSI 码后的 stdout。
         """
-        if not test_data:
-            return std_out[:2000]
-
         parts = []
 
-        # 1. 工具调用摘要（结构化，无 Rich 转义码）
-        tool_calls = test_data.get("tool_calls", [])
-        if tool_calls:
-            parts.append("=== 工具调用序列 ===")
-            for i, tc in enumerate(tool_calls):
-                parts.append(
-                    f"[{i+1}] {tc.get('tool', '?')}: "
-                    f"params={tc.get('params', {})}, "
-                    f"result={tc.get('result', '')[:300]}"
-                )
+        if test_data:
+            # 1. 工具调用摘要
+            tool_calls = test_data.get("tool_calls", [])
+            if tool_calls:
+                parts.append("=== 工具调用序列 ===")
+                for i, tc in enumerate(tool_calls):
+                    parts.append(
+                        f"[{i+1}] {tc.get('tool', '?')}: "
+                        f"params={tc.get('params', {})}, "
+                        f"result={tc.get('result', '')[:300]}"
+                    )
 
-        # 2. LLM 输出的纯文本片段
-        key_outputs = test_data.get("key_outputs", [])
-        if key_outputs:
-            parts.append("=== LLM 关键输出 ===")
-            for ko in key_outputs:
-                parts.append(ko[:500])
+            # 2. LLM 输出的纯文本片段
+            key_outputs = test_data.get("key_outputs", [])
+            if key_outputs:
+                parts.append("=== LLM 关键输出 ===")
+                for ko in key_outputs:
+                    parts.append(ko[:500])
 
-        # 3. 错误信息
-        error = test_data.get("error")
-        if error:
-            parts.append(f"=== 异常信息 ===\n{error}")
+            # 3. 错误信息
+            error = test_data.get("error")
+            if error:
+                parts.append(f"=== 异常信息 ===\n{error}")
 
-        # 4. 退出码
-        parts.append(f"=== 退出码 ===\n{test_data.get('exit_code', -1)}")
+            # 4. 截断标记
+            if test_data.get("is_truncated"):
+                parts.append("=== 警告 ===\nLLM 输出被截断（max_tokens 不足）")
 
-        # 5. 截断标记
-        if test_data.get("is_truncated"):
-            parts.append("=== 警告 ===\nLLM 输出被截断（max_tokens 不足）")
+        # 如果结构化数据没有提取到任何有效内容，回退到清理后的 stdout
+        if not parts:
+            cleaned_stdout = NewFeatureRunner._strip_ansi(std_out)
+            if cleaned_stdout:
+                parts.append("=== MyClaude 终端输出 ===")
+                parts.append(cleaned_stdout[:1500])
+            elif std_err:
+                parts.append("=== stderr ===")
+                parts.append(std_err[:1000])
+
+        # 附加退出码
+        exit_code = test_data.get("exit_code", -1) if test_data else -1
+        parts.append(f"=== 退出码 ===\n{exit_code}")
 
         return "\n\n".join(parts)[:2000]
 
@@ -223,7 +240,7 @@ class NewFeatureRunner:
 
             headers = [
                 "test_id", "description", "status", "exit_code",
-                "duration_seconds", "stdout_preview", "stderr_preview",
+                "duration_seconds", "actual_output",
             ]
             ws.append(headers)
 
@@ -231,7 +248,7 @@ class NewFeatureRunner:
                 status_str = r.status.value if hasattr(r.status, "value") else str(r.status)
                 ws.append([
                     r.test_id, r.description, status_str, r.exit_code,
-                    r.duration_seconds, r.stdout_preview, r.stderr_preview,
+                    r.duration_seconds, r.actual_output,
                 ])
 
             # 样式

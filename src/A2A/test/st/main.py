@@ -19,10 +19,12 @@ from ..models import (
     RunRegressionRequest, RunRegressionResponse,
     RunNewFeatureRequest, RunNewFeatureResponse,
     RunUnitTestRequest, RunUnitTestResponse,
+    RunSystemTestRequest, RunSystemTestResponse,
     TestRunState, TestStatus,
 )
 from .regression_runner import RegressionRunner
 from .new_feature_runner import NewFeatureRunner
+from .system_test_runner import SystemTestRunner
 from ..ut.unit_test_runner import UnitTestRunner
 from ..sandbox import SandboxManager
 from ..judge import LLMJudge
@@ -192,6 +194,53 @@ async def run_unit_tests(req: RunUnitTestRequest):
         total=total,
         pass_rate=passed / total if total else 0.0,
         details=details,
+        execution_time_seconds=elapsed,
+        report_path=str(report_path) if report_path else None,
+    )
+
+
+# ------------------------------ 系统测试 --------------------------------
+
+@app.post("/a2a/run_system_tests", response_model=RunSystemTestResponse)
+async def run_system_tests(req: RunSystemTestRequest):
+    """执行系统测试用例（在沙箱中启动 MyClaude，LLM 评判结果）"""
+    t0 = time.perf_counter()
+    task_id = req.task_id or f"st-{int(t0)}"
+
+    logger.info("Starting system-test run [task_id=%s] cases=%d",
+                task_id, len(req.test_cases))
+
+    runner = SystemTestRunner(sandbox_mgr=sandbox_mgr, judge=judge)
+    results = runner.execute(
+        test_cases=req.test_cases,
+        myclaude_root=req.myclaude_root,
+    )
+
+    passed = sum(1 for r in results if r.status == TestStatus.PASS)
+    total = len(results)
+    elapsed = round(time.perf_counter() - t0, 2)
+
+    logger.info("System tests complete [task_id=%s] %d/%d passed (%.1f%%) in %.1fs",
+                task_id, passed, total, passed / total * 100 if total else 0, elapsed)
+
+    # 生成 Excel 报告
+    report_path = None
+    try:
+        report_output_dir = getattr(req, "report_output_dir", None)
+        report_path = SystemTestRunner.generate_excel_report(
+            results,
+            output_dir=report_output_dir,
+        )
+    except Exception as report_err:
+        logger.error("Failed to generate system-test Excel report: %s", report_err)
+
+    return RunSystemTestResponse(
+        task_id=task_id,
+        state=TestRunState.COMPLETED,
+        passed=passed,
+        total=total,
+        pass_rate=passed / total if total else 0.0,
+        details=results,
         execution_time_seconds=elapsed,
         report_path=str(report_path) if report_path else None,
     )

@@ -121,9 +121,13 @@ class Sandbox:
             "--prompt", user_prompt,
             "--test-output", test_output_path,
         ]
+        logger.info("Launching MyClaude [docker test-mode]: prompt=%r", user_prompt[:80])
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True,
+                                  encoding="utf-8", errors="replace",
                                   timeout=CONTAINER_TIMEOUT)
+            logger.info("MyClaude subprocess finished: exit_code=%d, stdout_len=%d",
+                        proc.returncode, len(proc.stdout or ""))
             return proc.stdout, proc.stderr, proc.returncode
         except subprocess.TimeoutExpired:
             logger.error("Docker exec timed out after %ds", CONTAINER_TIMEOUT)
@@ -144,9 +148,13 @@ class Sandbox:
             "--prompt", user_prompt,
             "--test-output", test_output_path,
         ]
+        logger.info("Launching MyClaude [local test-mode]: prompt=%r", user_prompt[:80])
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True,
+                                  encoding="utf-8", errors="replace",
                                   timeout=CONTAINER_TIMEOUT, cwd=root)
+            logger.info("MyClaude subprocess finished: exit_code=%d, stdout_len=%d",
+                        proc.returncode, len(proc.stdout or ""))
             return proc.stdout, proc.stderr, proc.returncode
         except subprocess.TimeoutExpired:
             logger.error("Local run timed out after %ds", CONTAINER_TIMEOUT)
@@ -162,9 +170,13 @@ class Sandbox:
             "--test-mode",
             "--prompt", user_prompt,
         ]
+        logger.info("Launching MyClaude [docker test-mode]: prompt=%r", user_prompt[:80])
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True,
+                                  encoding="utf-8", errors="replace",
                                   timeout=CONTAINER_TIMEOUT)
+            logger.info("MyClaude subprocess finished: exit_code=%d, stdout_len=%d",
+                        proc.returncode, len(proc.stdout or ""))
             return proc.stdout, proc.stderr, proc.returncode
         except subprocess.TimeoutExpired:
             logger.error("Docker exec timed out after %ds", CONTAINER_TIMEOUT)
@@ -182,9 +194,13 @@ class Sandbox:
             "--test-mode",
             "--prompt", user_prompt,
         ]
+        logger.info("Launching MyClaude [local test-mode]: prompt=%r", user_prompt[:80])
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True,
+                                  encoding="utf-8", errors="replace",
                                   timeout=CONTAINER_TIMEOUT, cwd=root)
+            logger.info("MyClaude subprocess finished: exit_code=%d, stdout_len=%d",
+                        proc.returncode, len(proc.stdout or ""))
             return proc.stdout, proc.stderr, proc.returncode
         except subprocess.TimeoutExpired:
             logger.error("Local run timed out after %ds", CONTAINER_TIMEOUT)

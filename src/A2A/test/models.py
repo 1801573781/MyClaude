@@ -42,10 +42,12 @@ class TestResult(BaseModel):
     test_id: str
     description: str
     status: TestStatus
+    actual_output: str = ""
     stdout_preview: str = ""
     stderr_preview: str = ""
     exit_code: int = 0
     duration_seconds: float = 0.0
+    judge_reason: str = ""
 
 
 class RunRegressionRequest(BaseModel):
@@ -132,6 +134,26 @@ class RunUnitTestResponse(BaseModel):
     total: int
     pass_rate: float
     details: List[UnitTestResult]
+    execution_time_seconds: float
+    report_path: Optional[str] = None
+
+
+class RunSystemTestRequest(BaseModel):
+    """系统测试请求。"""
+    task_id: Optional[str] = None
+    test_cases: List[dict] = []
+    myclaude_root: Optional[str] = None
+    report_output_dir: Optional[str] = None
+
+
+class RunSystemTestResponse(BaseModel):
+    """系统测试响应。"""
+    task_id: str
+    state: TestRunState
+    passed: int
+    total: int
+    pass_rate: float
+    details: List[TestResult] = []
     execution_time_seconds: float
     report_path: Optional[str] = None
 

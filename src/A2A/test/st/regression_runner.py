@@ -166,7 +166,7 @@ class RegressionRunner:
                             test_case["user_prompt"],
                             myclaude_root=myclaude_root,
                         )
-                    raw_output = self._build_actual_output(stdout, test_data)
+                    raw_output = self._build_actual_output(stdout, test_data, stderr)
 
                     # 用 LLM 评判结果（修正参数顺序：expected, actual_output, context）
                     judge_result = self._judge.evaluate(
@@ -232,41 +232,62 @@ class RegressionRunner:
         )
 
     @staticmethod
-    def _build_actual_output(std_out: str, test_data: dict | None) -> str:
+    def _strip_ansi(text: str) -> str:
+        """去除 Rich ANSI 转义码，返回纯文本。"""
+        import re
+        ansi_re = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[()][AB012]|\x1b[=>]')
+        cleaned = ansi_re.sub('', text)
+        cleaned = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', cleaned)
+        cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+        return cleaned.strip()
+
+    @staticmethod
+    def _build_actual_output(std_out: str, test_data: dict | None, std_err: str = "") -> str:
         """将结构化测试数据与原始 stdout 合并为评判 LLM 的输入。
 
         优先使用结构化 JSON 中的 key_outputs 和 tool_calls，
         因为 stdout 可能包含 Rich ANSI 转义码干扰评判。
+        如果 JSON 不可用或内容为空，回退到清理 ANSI 码后的 stdout。
         """
-        if not test_data:
-            return std_out[:2000]
-
         parts = []
 
-        tool_calls = test_data.get("tool_calls", [])
-        if tool_calls:
-            parts.append("=== 工具调用序列 ===")
-            for i, tc in enumerate(tool_calls):
-                parts.append(
-                    f"[{i+1}] {tc.get('tool', '?')}: "
-                    f"params={tc.get('params', {})}, "
-                    f"result={tc.get('result', '')[:300]}"
-                )
+        if test_data:
+            tool_calls = test_data.get("tool_calls", [])
+            if tool_calls:
+                parts.append("=== 工具调用序列 ===")
+                for i, tc in enumerate(tool_calls):
+                    parts.append(
+                        f"[{i+1}] {tc.get('tool', '?')}: "
+                        f"params={tc.get('params', {})}, "
+                        f"result={tc.get('result', '')[:300]}"
+                    )
 
-        key_outputs = test_data.get("key_outputs", [])
-        if key_outputs:
-            parts.append("=== LLM 关键输出 ===")
-            for ko in key_outputs:
-                parts.append(ko[:500])
+            key_outputs = test_data.get("key_outputs", [])
+            if key_outputs:
+                parts.append("=== LLM 关键输出 ===")
+                for ko in key_outputs:
+                    parts.append(ko[:500])
 
-        error = test_data.get("error")
-        if error:
-            parts.append(f"=== 异常信息 ===\n{error}")
+            error = test_data.get("error")
+            if error:
+                parts.append(f"=== 异常信息 ===\n{error}")
 
-        parts.append(f"=== 退出码 ===\n{test_data.get('exit_code', -1)}")
+            if test_data.get("is_truncated"):
+                parts.append("=== 警告 ===\nLLM 输出被截断（max_tokens 不足）")
 
-        if test_data.get("is_truncated"):
-            parts.append("=== 警告 ===\nLLM 输出被截断（max_tokens 不足）")
+        # 如果结构化数据没有提取到任何有效内容，回退到清理后的 stdout
+        if not parts:
+            cleaned_stdout = RegressionRunner._strip_ansi(std_out)
+            if cleaned_stdout:
+                parts.append("=== MyClaude 终端输出 ===")
+                parts.append(cleaned_stdout[:1500])
+            elif std_err:
+                parts.append("=== stderr ===")
+                parts.append(std_err[:1000])
+
+        # 附加退出码
+        exit_code = test_data.get("exit_code", -1) if test_data else -1
+        parts.append(f"=== 退出码 ===\n{exit_code}")
 
         return "\n\n".join(parts)[:2000]
 
