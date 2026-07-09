@@ -213,9 +213,18 @@ class SystemTestRunner:
         """去除 Rich ANSI 转义码，返回纯文本。"""
         import re
         # 匹配 ANSI 转义序列（CSI + OSC + 其他常见模式）
-        ansi_re = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[()][AB012]|\x1b[=>]')
+        # CSI: \x1b[ + 参数(数字;?等) + 字母终结符  —— 覆盖颜色、光标移动、清屏等
+        # OSC: \x1b] + 内容 + \x07(BEL) 或 \x1b\\(ST)
+        # 其他: \x1b( 或 \x1b) + 字符（字符集切换），\x1b= \x1b>（键盘模式）
+        ansi_re = re.compile(
+            r'\x1b\[[0-9;?]*[a-zA-Z]'    # CSI 序列（含 ?25l/h 等光标命令）
+            r'|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)'  # OSC 序列
+            r'|\x1b[()][AB012]'           # 字符集切换
+            r'|\x1b[=>]'                  # 键盘模式
+            r'|\x1b[78]'                  # 保存/恢复光标
+        )
         cleaned = ansi_re.sub('', text)
-        # 去除残留的控制字符（保留换行和制表符）
+        # 去除残留的控制字符（保留换行 \n 和制表符 \t）
         cleaned = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', cleaned)
         # 合并连续空行（最多保留2行）
         cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
@@ -251,24 +260,40 @@ class SystemTestRunner:
                 for ko in key_outputs:
                     parts.append(ko[:1000])
 
-            # 3. 错误信息
+            # 3. info_messages（含 done 消息、执行进度等）
+            info_messages = test_data.get("info_messages", [])
+            if info_messages:
+                parts.append("=== 系统消息 ===")
+                for im in info_messages:
+                    parts.append(im[:500])
+
+            # 4. 错误信息
             error = test_data.get("error")
             if error:
                 parts.append(f"=== 异常信息 ===\n{error}")
 
-            # 4. 截断标记
+            # 5. 截断标记
             if test_data.get("is_truncated"):
                 parts.append("=== 警告 ===\nLLM 输出被截断（max_tokens 不足）")
 
         # 如果结构化数据没有提取到任何有效内容，回退到清理后的 stdout
         if not parts:
-            cleaned_stdout = SystemTestRunner._strip_ansi(std_out)
-            if cleaned_stdout:
-                parts.append("=== MyClaude 终端输出 ===")
-                parts.append(cleaned_stdout[:3500])
-            elif std_err:
-                parts.append("=== stderr ===")
-                parts.append(std_err[:2000])
+            # 优先使用 test_data 中的 full_output（已捕获 Rich Console 全部输出）
+            full_output = test_data.get("full_output", "") if test_data else ""
+            if full_output:
+                cleaned = SystemTestRunner._strip_ansi(full_output)
+                if cleaned:
+                    parts.append("=== MyClaude 终端输出 ===")
+                    parts.append(cleaned[:3500])
+
+            if not parts:
+                cleaned_stdout = SystemTestRunner._strip_ansi(std_out)
+                if cleaned_stdout:
+                    parts.append("=== MyClaude 终端输出(stdout) ===")
+                    parts.append(cleaned_stdout[:3500])
+                elif std_err:
+                    parts.append("=== stderr ===")
+                    parts.append(std_err[:2000])
 
         # 附加退出码（始终输出）
         exit_code = test_data.get("exit_code", -1) if test_data else -1

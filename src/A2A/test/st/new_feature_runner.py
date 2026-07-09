@@ -133,7 +133,13 @@ class NewFeatureRunner:
     def _strip_ansi(text: str) -> str:
         """去除 Rich ANSI 转义码，返回纯文本。"""
         import re
-        ansi_re = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[()][AB012]|\x1b[=>]')
+        ansi_re = re.compile(
+            r'\x1b\[[0-9;?]*[a-zA-Z]'
+            r'|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)'
+            r'|\x1b[()][AB012]'
+            r'|\x1b[=>]'
+            r'|\x1b[78]'
+        )
         cleaned = ansi_re.sub('', text)
         cleaned = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', cleaned)
         cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
@@ -168,24 +174,40 @@ class NewFeatureRunner:
                 for ko in key_outputs:
                     parts.append(ko[:500])
 
-            # 3. 错误信息
+            # 3. info_messages（含 done 消息、执行进度等）
+            info_messages = test_data.get("info_messages", [])
+            if info_messages:
+                parts.append("=== 系统消息 ===")
+                for im in info_messages:
+                    parts.append(im[:500])
+
+            # 4. 错误信息
             error = test_data.get("error")
             if error:
                 parts.append(f"=== 异常信息 ===\n{error}")
 
-            # 4. 截断标记
+            # 5. 截断标记
             if test_data.get("is_truncated"):
                 parts.append("=== 警告 ===\nLLM 输出被截断（max_tokens 不足）")
 
-        # 如果结构化数据没有提取到任何有效内容，回退到清理后的 stdout
+        # 如果结构化数据没有提取到任何有效内容，回退到清理后的输出
         if not parts:
-            cleaned_stdout = NewFeatureRunner._strip_ansi(std_out)
-            if cleaned_stdout:
-                parts.append("=== MyClaude 终端输出 ===")
-                parts.append(cleaned_stdout[:1500])
-            elif std_err:
-                parts.append("=== stderr ===")
-                parts.append(std_err[:1000])
+            # 优先使用 test_data 中的 full_output
+            full_output = test_data.get("full_output", "") if test_data else ""
+            if full_output:
+                cleaned = NewFeatureRunner._strip_ansi(full_output)
+                if cleaned:
+                    parts.append("=== MyClaude 终端输出 ===")
+                    parts.append(cleaned[:1500])
+
+            if not parts:
+                cleaned_stdout = NewFeatureRunner._strip_ansi(std_out)
+                if cleaned_stdout:
+                    parts.append("=== MyClaude 终端输出(stdout) ===")
+                    parts.append(cleaned_stdout[:1500])
+                elif std_err:
+                    parts.append("=== stderr ===")
+                    parts.append(std_err[:1000])
 
         # 附加退出码
         exit_code = test_data.get("exit_code", -1) if test_data else -1

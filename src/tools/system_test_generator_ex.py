@@ -564,7 +564,8 @@ def main() -> None:
     all_done = threading.Event()
     completed_count = [0]
     total_batches = len(batches)
-    spinner_chars = ('|', '/', '-', '\\')
+    # Braille spinner chars — same style as Rich "Thinking" animation
+    spinner_chars = ('⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏')
     output_lock = threading.Lock()
     spin_start = time.time()
 
@@ -583,9 +584,10 @@ def main() -> None:
                     break
                 if is_tty:
                     # TTY: single-line spinner using carriage return + space padding
-                    msg = f"  {char} 等待 LLM 返回 ({completed_count[0]}/{total_batches} 已完成)..."
+                    elapsed = int(time.time() - spin_start)
+                    msg = f"  {char} 等待 LLM 返回 ({completed_count[0]}/{total_batches} 已完成, 已耗时 {elapsed}s)..."
                     # Pad with trailing spaces to overwrite any leftover characters
-                    sys.stdout.write(f"\r{msg.ljust(70)}")
+                    sys.stdout.write(f"\r{msg.ljust(75)}")
                     sys.stdout.flush()
                 else:
                     # Non-TTY (piped): print heartbeat every 5 seconds as a full line
@@ -610,7 +612,7 @@ def main() -> None:
                 completed_count[0] += 1
                 if is_tty:
                     # Clear spinner line before printing result
-                    sys.stdout.write(f"\r{' ' * 75}\r")
+                    sys.stdout.write(f"\r{' ' * 80}\r")
                     sys.stdout.flush()
                 if result:
                     print(f"    [批次 {batch_id}] LLM 返回 {len(result)} 条  ({completed_count[0]}/{total_batches})")
@@ -623,7 +625,7 @@ def main() -> None:
     spinner_thread.join(timeout=1.0)
     with output_lock:
         if is_tty:
-            sys.stdout.write(f"\r{' ' * 75}\r")
+            sys.stdout.write(f"\r{' ' * 80}\r")
             sys.stdout.flush()
 
     # 按批次顺序合并结果

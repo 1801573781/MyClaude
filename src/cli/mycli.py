@@ -194,16 +194,8 @@ class MyClaudeCLI:
                 try:
                     process = subprocess.Popen(
                         cmd_list,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.STDOUT,
-                        text=True,
-                        encoding="utf-8",
-                        errors="replace",
                         cwd=str(Path(global_cfg.base_path.project_root)),
-                        bufsize=1
                     )
-                    for line in process.stdout:
-                        print(line, end='', flush=True)
                     process.wait()
                     if process.returncode == 0:
                         cli_print.print_info("系统测试用例生成完成。")
@@ -400,10 +392,36 @@ class MyClaudeCLI:
                     "error": str|null           # 异常信息（正常为 null）
                 }
         """
+        import io
         import json
         from pathlib import Path
         from src.utility.config_loader import global_cfg
         from src.cli import cli_print as cp
+
+        # --- 捕获 ALL Rich Console 输出（TeeFile: 同时写 stdout 和内存缓冲） ---
+        output_buffer = io.StringIO()
+        original_console_file = cp.console.file
+
+        class _TeeFile:
+            """同时写入原始 stdout 和内存缓冲区，用于捕获 Rich Console 全部输出。"""
+            def __init__(self, original, buffer):
+                self._original = original
+                self._buffer = buffer
+            def write(self, data):
+                self._original.write(data)
+                self._buffer.write(data)
+            def flush(self):
+                self._original.flush()
+                self._buffer.flush()
+            def isatty(self):
+                return False
+            def fileno(self):
+                return self._original.fileno()
+            @property
+            def encoding(self):
+                return getattr(self._original, 'encoding', 'utf-8')
+
+        cp.console.file = _TeeFile(original_console_file, output_buffer)
 
         cp.print_info(f"[测试模式] 输入: {prompt}")
         cp.reset_reasoning()
@@ -416,9 +434,19 @@ class MyClaudeCLI:
             "exit_code": 0,
             "tool_calls": [],
             "key_outputs": [],
+            "info_messages": [],
+            "full_output": "",
             "is_truncated": False,
             "error": None,
         }
+
+        # 包装回调：捕获 print_info 消息（含 done 消息、执行进度等关键信息）
+        original_print_info = cp.print_info
+
+        def capturing_print_info(msg: str):
+            if msg and msg.strip():
+                test_data["info_messages"].append(msg)
+            original_print_info(msg)
 
         # 包装回调：捕获 LLM 输出文本（typewriter_then_markdown 的参数）到 key_outputs
         original_print_llm_rsp = cp.typewriter_then_markdown
@@ -454,7 +482,7 @@ class MyClaudeCLI:
             self.query_loop.run(
                 prompt,
                 cp.show_status,
-                cp.print_info,
+                capturing_print_info,
                 capturing_print_llm_rsp,
                 capturing_print_tool_call,
                 capturing_print_tool_result,
@@ -463,6 +491,10 @@ class MyClaudeCLI:
         except Exception as e:
             test_data["exit_code"] = 1
             test_data["error"] = str(e)
+
+        # 恢复 console.file，捕获完整输出
+        cp.console.file = original_console_file
+        test_data["full_output"] = output_buffer.getvalue()
 
         # 写入 JSON 结果文件
         if test_output_path:
