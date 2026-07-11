@@ -141,24 +141,39 @@ class Sandbox:
             myclaude_root: Optional[str] = None
     ) -> tuple[str, str, int]:
         """降级模式：本地执行，生成结构化测试 JSON"""
+        import sys as _sys
         root = myclaude_root or os.getcwd()
         cmd = [
-            "python", "-m", "src.myclaude",
+            _sys.executable, "-m", "src.myclaude",
             "--test-mode",
             "--prompt", user_prompt,
             "--test-output", test_output_path,
         ]
         logger.info("Launching MyClaude [local test-mode]: prompt=%r", user_prompt[:80])
+        logger.info("Subprocess cmd: %s, cwd=%s", cmd, root)
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True,
                                   encoding="utf-8", errors="replace",
                                   timeout=CONTAINER_TIMEOUT, cwd=root)
-            logger.info("MyClaude subprocess finished: exit_code=%d, stdout_len=%d",
-                        proc.returncode, len(proc.stdout or ""))
+            logger.info("MyClaude subprocess finished: exit_code=%d, stdout_len=%d, stderr_len=%d",
+                        proc.returncode, len(proc.stdout or ""), len(proc.stderr or ""))
+            if proc.returncode != 0:
+                logger.warning("Subprocess non-zero exit, stderr: %s", (proc.stderr or "")[:500])
             return proc.stdout, proc.stderr, proc.returncode
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as e:
             logger.error("Local run timed out after %ds", CONTAINER_TIMEOUT)
-            return "", f"Timeout after {CONTAINER_TIMEOUT}s", -1
+            stdout = e.stdout or ""
+            stderr = e.stderr or ""
+            if isinstance(stdout, bytes):
+                stdout = stdout.decode('utf-8', errors='replace')
+            if isinstance(stderr, bytes):
+                stderr = stderr.decode('utf-8', errors='replace')
+            timeout_msg = f"Timeout after {CONTAINER_TIMEOUT}s"
+            stderr = f"{timeout_msg}\n{stderr}" if stderr else timeout_msg
+            return stdout, stderr, -1
+        except Exception as e:
+            logger.error("Failed to launch subprocess: %s", e)
+            return "", f"Subprocess launch error: {type(e).__name__}: {e}", -1
 
     # ------------------------------------------------------------------
 

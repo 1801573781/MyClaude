@@ -49,7 +49,7 @@ _SYSTEM_TEST_SNIPPET_TEMPLATE = """你是一个严格的系统测试用例生成
 
 ## 规则
 1. user_prompt 是要实际执行给 MyClaude 进程的命令或自然语言指令。对于启动测试（check_type=startup），user_prompt 是实际的 CLI 命令（如 "myclaude --test-mode"），它代表的是整个命令行，不是 --prompt 参数的值。测试 --prompt 缺失场景时，user_prompt 应填入不带 --prompt 的命令（如 "myclaude --test-mode"），不应为空。
-2. expected_behavior 必须包含明确的通过/失败判定标准，供 judge LLM 评判。
+2. expected_behavior 必须包含明确的通过/失败判定标准，供 judge LLM 评判。expected_behavior 只关注回复内容是否正确、工具是否正确调用等业务行为，严禁包含关于 MyClaude 是否输出 'done' 标签、是否自动结束任务、是否追问用户等流程性期望。只要 MyClaude 正确完成了用户请求即可判定通过。
 3. check_type 必须与验证目标匹配：file_created/file_modified/tool_chain/log_generated/startup/memory_aware/skill_triggered/path_safety/general
 4. 每个用例必须包含 id、description、user_prompt、expected_behavior、check_type 字段
 5. 输出是一个合法的 JSON 数组，不要包含 markdown 代码块标记
@@ -71,7 +71,7 @@ _SYSTEM_RETRY_TEMPLATE = """你之前生成的以下系统测试用例有错误�
 2. 根据每个用例的错误信息修正对应字段
 3. 确保 id 格式为 "TC-前缀-数字"
 4. 确保 user_prompt 是明确的命令或自然语言指令。对于 check_type=startup 的场景，user_prompt 是实际的 CLI 命令（如 "myclaude --test-mode"），如果测试的是缺少 --prompt 参数的场景，user_prompt 就应填入那个不带 --prompt 的命令，不应为空
-5. 确保 expected_behavior 包含明确的通过/失败判定标准
+5. 确保 expected_behavior 包含明确的通过/失败判定标准。expected_behavior 只关注回复内容是否正确、工具是否正确调用等业务行为，严禁包含关于 MyClaude 是否输出 'done' 标签、是否自动结束任务、是否追问用户等流程性期望
 6. 确保 check_type 是有效值
 
 请直接输出修正后的 JSON 数组，不要加任何解释。"""
@@ -178,6 +178,13 @@ def _validate_system_test_case(case: dict) -> str | None:
     verdict_keywords = ["通过", "失败", "PASS", "FAIL", "应该", "必须", "不应", "不能"]
     if not any(kw in expected for kw in verdict_keywords):
         return "expected_behavior 缺少明确的通过/失败判定标准"
+    forbidden_patterns = [
+        "done 标签", "done标签", "'done'", "自动结束", "自动结束任务",
+        "不应追问", "不应追问用户", "结束任务", "退出标签",
+    ]
+    for pat in forbidden_patterns:
+        if pat in expected:
+            return f"expected_behavior 不应包含关于 done 标签或自动结束任务的期望（发现: '{pat}'），只关注业务行为正确性"
     return None
 
 

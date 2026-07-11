@@ -414,7 +414,9 @@ class MyClaudeCLI:
                 self._original.flush()
                 self._buffer.flush()
             def isatty(self):
-                return False
+                # 必须返回 True，否则 Rich Live 组件认为不是终端，
+                # 会跳过刷新输出，导致 full_output 为空
+                return True
             def fileno(self):
                 return self._original.fileno()
             @property
@@ -435,6 +437,7 @@ class MyClaudeCLI:
             "tool_calls": [],
             "key_outputs": [],
             "info_messages": [],
+            "conversation_history": [],
             "full_output": "",
             "is_truncated": False,
             "error": None,
@@ -491,6 +494,21 @@ class MyClaudeCLI:
         except Exception as e:
             test_data["exit_code"] = 1
             test_data["error"] = str(e)
+
+        # 从 query_loop.api_messages 提取完整对话历史（最可靠的数据源）
+        # 不依赖回调捕获机制，直接从引擎内部状态提取
+        try:
+            if self.query_loop.api_messages:
+                for msg in self.query_loop.api_messages.get_msg():
+                    role = msg.get("role", "unknown")
+                    content = msg.get("content", "")
+                    if content and content.strip():
+                        test_data["conversation_history"].append({
+                            "role": role,
+                            "content": content[:2000],
+                        })
+        except Exception:
+            pass
 
         # 恢复 console.file，捕获完整输出
         cp.console.file = original_console_file
@@ -839,42 +857,101 @@ class MyClaudeCLI:
             f"共 {total_cases} 个测试用例"
         )
 
-        # ── 5. 发送请求 ──
+        # ── 5. 逐条发送请求（显示 m/n 进度） ──
         start_time = datetime.now()
         start_time_str = start_time.strftime("%Y-%m-%d %H:%M:%S")
         cli_print.print_info(f"任务开始时间: {start_time_str}")
 
-        try:
-            with httpx.Client(timeout=600) as client:
-                resp = client.post(
-                    myorch_url,
-                    json={
-                        "test_cases": test_cases,
-                        "myclaude_root": str(global_cfg.base_path.project_root),
-                        "report_output_dir": str(report_dir),
-                    },
-                )
-                resp.raise_for_status()
-                data = resp.json()
-        except Exception as e:
-            cli_print.print_error(f"A2A 协议调用失败: {e}")
+        import sys
+        import time
+        import threading
+
+        spinner_chars = ('⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏')
+        is_tty = sys.stdout.isatty()
+
+        all_results = []
+        all_errors = []
+
+        for idx, tc in enumerate(test_cases, 1):
+            all_done = threading.Event()
+            spin_start = time.time()
+
+            def _spin():
+                i = 0
+                last_heartbeat = time.time()
+                while not all_done.is_set():
+                    char = spinner_chars[i % len(spinner_chars)]
+                    elapsed = int(time.time() - spin_start)
+                    total_elapsed = int(time.time() - start_time.timestamp())
+                    if is_tty:
+                        msg = f"  {char} 正在执行 {idx}/{total_cases} 单元测试用例 (已耗时 {elapsed}s，总耗时 {total_elapsed}s)..."
+                        sys.stdout.write(f"\r{msg.ljust(80)}")
+                        sys.stdout.flush()
+                    else:
+                        now = time.time()
+                        if now - last_heartbeat >= 5.0:
+                            print(f"  ... 正在执行 {idx}/{total_cases} 单元测试用例 (已耗时 {elapsed}s，总耗时 {total_elapsed}s)")
+                            last_heartbeat = now
+                    time.sleep(0.15)
+                    i += 1
+
+            spinner_thread = threading.Thread(target=_spin, daemon=True)
+            spinner_thread.start()
+
+            try:
+                with httpx.Client(timeout=600) as client:
+                    resp = client.post(
+                        myorch_url,
+                        json={
+                            "test_cases": [tc],
+                            "myclaude_root": str(global_cfg.base_path.project_root),
+                            "report_output_dir": str(report_dir),
+                        },
+                    )
+                    resp.raise_for_status()
+                    all_results.append(resp.json())
+            except Exception as e:
+                all_errors.append(f"用例 {idx}/{total_cases}: {e}")
+
+            all_done.set()
+            spinner_thread.join(timeout=1.0)
+            if is_tty:
+                sys.stdout.write(f"\r{' ' * 80}\r")
+                sys.stdout.flush()
+
+        if not all_results and all_errors:
+            cli_print.print_error(
+                f"A2A 协议调用失败，所有 {total_cases} 个用例均执行异常:\n"
+                + "\n".join(all_errors)
+            )
             return
 
         end_time = datetime.now()
         end_time_str = end_time.strftime("%Y-%m-%d %H:%M:%S")
         elapsed = (end_time - start_time).total_seconds()
 
-        # ── 6. 打印结果 ──
-        status = data.get("status", "UNKNOWN")
-        passed = data.get("passed", 0)
-        total = data.get("total", 0)
-        pass_rate = data.get("pass_rate", 0.0)
-        task_id = data.get("task_id", "")
-        report_path = data.get("report_path", "")
+        # ── 6. 汇总结果 ──
+        passed = sum(r.get("passed", 0) for r in all_results)
+        total = total_cases
+        pass_rate = (passed / total) if total > 0 else 0.0
+        task_ids = [r.get("task_id", "") for r in all_results if r.get("task_id")]
+        task_id = task_ids[0] if task_ids else ""
+        report_paths = [r.get("report_path", "") for r in all_results if r.get("report_path")]
+        report_path = report_paths[-1] if report_paths else ""
 
-        # 始终显示"测试报告文件"行
-        # 注意：不在此处回退查找本地旧报告文件，避免显示历史残留文件
+        if all_results:
+            status = "PASS" if all(r.get("status") == "PASS" for r in all_results) else "FAIL"
+        else:
+            status = "ERROR"
+
+        if all_errors:
+            status = status + " (部分异常)" if all_results else "ERROR"
+
         report_display = report_path if report_path else "（未生成，请检查 SystemTest 服务日志）"
+
+        error_detail = ""
+        if all_errors:
+            error_detail = f"  异常用例: {len(all_errors)} 个\n"
 
         cli_print.print_info(
             "A2A 单元测试报告\n"
@@ -887,7 +964,8 @@ class MyClaudeCLI:
             f"  状态: {status}\n"
             f"  成功: {passed}  失败: {total - passed}\n"
             f"  通过率: {pass_rate * 100:.1f}%\n"
-            f"  测试用例文件: {json_file}\n"
+            + error_detail
+            + f"  测试用例文件: {json_file}\n"
             f"  测试报告文件: {report_display}\n"
             + "=" * 60
         )
@@ -1121,40 +1199,140 @@ class MyClaudeCLI:
             f"共 {total_cases} 个测试用例"
         )
 
-        # ── 5. 发送请求 ──
+        # ── 5. 逐条提交用例（显示 m/n 进度），最后统一生成单份报告 ──
         start_time = datetime.now()
         start_time_str = start_time.strftime("%Y-%m-%d %H:%M:%S")
         cli_print.print_info(f"任务开始时间: {start_time_str}")
 
-        try:
-            with httpx.Client(timeout=600) as client:
-                resp = client.post(
-                    myorch_url,
-                    json={
-                        "test_cases": test_cases,
-                        "myclaude_root": str(global_cfg.base_path.project_root),
-                        "report_output_dir": str(report_dir),
-                    },
-                )
-                resp.raise_for_status()
-                data = resp.json()
-        except Exception as e:
-            cli_print.print_error(f"A2A 协议调用失败: {e}")
+        import sys
+        import time
+        import threading
+
+        spinner_chars = ('⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏')
+        is_tty = sys.stdout.isatty()
+
+        case_results = {}  # 用例序号(1-based) -> MyOrch 响应 dict
+        case_errors = {}   # 用例序号(1-based) -> 异常信息
+
+        for idx, tc in enumerate(test_cases, 1):
+            all_done = threading.Event()
+            spin_start = time.time()
+
+            def _spin():
+                i = 0
+                last_heartbeat = time.time()
+                while not all_done.is_set():
+                    char = spinner_chars[i % len(spinner_chars)]
+                    elapsed = int(time.time() - spin_start)
+                    total_elapsed = int(time.time() - start_time.timestamp())
+                    if is_tty:
+                        msg = f"  {char} 正在执行 {idx}/{total_cases} 系统测试用例 (已耗时 {elapsed}s，总耗时 {total_elapsed}s)..."
+                        sys.stdout.write(f"\r{msg.ljust(90)}")
+                        sys.stdout.flush()
+                    else:
+                        now = time.time()
+                        if now - last_heartbeat >= 5.0:
+                            print(f"  ... 正在执行 {idx}/{total_cases} 系统测试用例 (已耗时 {elapsed}s，总耗时 {total_elapsed}s)")
+                            last_heartbeat = now
+                    time.sleep(0.15)
+                    i += 1
+
+            spinner_thread = threading.Thread(target=_spin, daemon=True)
+            spinner_thread.start()
+
+            try:
+                with httpx.Client(timeout=600) as client:
+                    resp = client.post(
+                        myorch_url,
+                        json={
+                            "test_cases": [tc],
+                            "myclaude_root": str(global_cfg.base_path.project_root),
+                            "report_output_dir": None,
+                        },
+                    )
+                    resp.raise_for_status()
+                    case_results[idx] = resp.json()
+            except Exception as e:
+                case_errors[idx] = str(e)
+
+            all_done.set()
+            spinner_thread.join(timeout=1.0)
+            if is_tty:
+                sys.stdout.write(f"\r{' ' * 90}\r")
+                sys.stdout.flush()
+
+        if not case_results and case_errors:
+            cli_print.print_error(
+                f"A2A 协议调用失败，所有 {total_cases} 个用例均执行异常:\n"
+                + "\n".join(case_errors.values())
+            )
             return
 
         end_time = datetime.now()
         end_time_str = end_time.strftime("%Y-%m-%d %H:%M:%S")
         elapsed = (end_time - start_time).total_seconds()
 
-        # ── 6. 打印结果 ──
-        status = data.get("status", "UNKNOWN")
-        passed = data.get("passed", 0)
-        total = data.get("total", 0)
-        pass_rate = data.get("pass_rate", 0.0)
-        task_id = data.get("task_id", "")
-        report_path = data.get("report_path", "")
+        # ── 6. 汇总结果并生成单份 Excel 报告 ──
+        from src.A2A.test.st.system_test_runner import SystemTestRunner as _STR
+        from src.A2A.test.models import TestResult as _TR, TestStatus as _TS
 
-        report_display = report_path if report_path else "（未生成，请检查 SystemTest 服务日志）"
+        # 重建 TestResult 对象列表，注入原始用例数据（_case）
+        combined_results = []
+        for idx, tc in enumerate(test_cases, 1):
+            if idx in case_results:
+                resp = case_results[idx]
+                for detail in resp.get("details", []):
+                    try:
+                        result_obj = _TR(**detail)
+                    except Exception:
+                        result_obj = _TR(
+                            test_id=tc.get("id", ""),
+                            description=tc.get("description", ""),
+                            status=_TS.ERROR,
+                            actual_output=str(detail)[:3000],
+                            judge_reason="结果解析失败",
+                        )
+                    object.__setattr__(result_obj, "_case", tc)
+                    combined_results.append(result_obj)
+            elif idx in case_errors:
+                result_obj = _TR(
+                    test_id=tc.get("id", ""),
+                    description=tc.get("description", ""),
+                    status=_TS.ERROR,
+                    actual_output=case_errors[idx],
+                    judge_reason="执行异常",
+                )
+                object.__setattr__(result_obj, "_case", tc)
+                combined_results.append(result_obj)
+
+        # 生成本地合并 Excel 报告
+        report_path = None
+        try:
+            report_path = _STR.generate_excel_report(
+                combined_results, output_dir=str(report_dir)
+            )
+        except Exception as report_err:
+            cli_print.print_error(f"生成 Excel 报告失败: {report_err}")
+
+        # 统计
+        passed = sum(1 for r in combined_results if r.status == _TS.PASS)
+        total = len(combined_results)
+        pass_rate = passed / total if total > 0 else 0.0
+        task_ids = [r.get("task_id", "") for r in case_results.values() if r.get("task_id")]
+        task_id = task_ids[0] if task_ids else ""
+
+        if case_errors and case_results:
+            status = "FAIL (部分异常)"
+        elif case_errors:
+            status = "ERROR"
+        else:
+            status = "PASS" if all(r.get("status") == "PASS" for r in case_results.values()) else "FAIL"
+
+        report_display = str(report_path) if report_path else "（未生成，请检查日志）"
+
+        error_detail = ""
+        if case_errors:
+            error_detail = f"  异常用例: {len(case_errors)} 个\n"
 
         cli_print.print_info(
             "A2A 系统测试报告\n"
@@ -1167,7 +1345,8 @@ class MyClaudeCLI:
             f"  状态: {status}\n"
             f"  成功: {passed}  失败: {total - passed}\n"
             f"  通过率: {pass_rate * 100:.1f}%\n"
-            f"  测试用例文件: {json_file}\n"
+            + error_detail
+            + f"  测试用例文件: {json_file}\n"
             f"  测试报告文件: {report_display}\n"
             + "=" * 60
         )

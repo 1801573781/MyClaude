@@ -73,7 +73,7 @@ class LLMJudge:
         check_hints = {
             "file_created": "重点检查：是否创建了文件。",
             "file_modified": "重点检查：是否修改了已有文件。",
-            "tool_chain": "重点检查：是否使用了正确的 XML 工具链（如 <create>/<done>）。",
+            "tool_chain": "重点检查：是否使用了正确的 XML 工具链（如 <create>/<str_replace>）。",
             "log_generated": "重点检查：是否生成了日志文件。",
             "startup": "重点检查：服务是否正常启动。",
             "memory_aware": "重点检查：是否体现了对上下文的记忆。",

@@ -147,7 +147,7 @@ class SystemTestRunner:
                 )
 
             # 2. 构建评判 actual_output（优先使用结构化 JSON 的关键输出片段）
-            actual_output = self._build_actual_output(std_out, test_data, std_err)
+            actual_output = self._build_actual_output(std_out, test_data, std_err, exit_code)
 
             # 3. 确定 check_type
             check_type = getattr(case, "check_type", None) or "general"
@@ -226,26 +226,55 @@ class SystemTestRunner:
         cleaned = ansi_re.sub('', text)
         # 去除残留的控制字符（保留换行 \n 和制表符 \t）
         cleaned = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', cleaned)
+        # 处理 \r：将 \r\n 替换为 \n，然后去除单独的 \r（Rich Live 刷新产生）
+        cleaned = cleaned.replace('\r\n', '\n').replace('\r', '\n')
         # 合并连续空行（最多保留2行）
         cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
         return cleaned.strip()
 
     @staticmethod
-    def _build_actual_output(std_out: str, test_data: dict | None, std_err: str = "") -> str:
-        """将结构化测试数据与原始 stdout 合并为评判 LLM 的输入。
+    def _build_actual_output(std_out: str, test_data: dict | None, std_err: str = "",
+                             exit_code: int = -1) -> str:
+        """将结构化测试数据合并为评判 LLM 的输入。
 
-        优先使用结构化 JSON 中的 key_outputs（LLM 纯文本片段）和 tool_calls
-        （工具调用记录），因为 stdout 可能包含 Rich ANSI 转义码干扰评判。
+        优先提取 LLM 的实际回答（key_outputs 和 assistant 回复），
+        而非完整对话历史（含系统提示词和项目上下文），避免无关内容干扰评判。
         如果 JSON 不可用或内容为空，回退到清理 ANSI 码后的 stdout。
         """
         parts = []
 
         # 尝试从结构化 JSON 提取有效内容
         if test_data:
-            # 1. 工具调用摘要（结构化，无 Rich 转义码）
+            # 0. 用户原始输入（仅指令本身，不含注入的项目上下文）
+            user_input = test_data.get("user_original_input", "")
+            if user_input:
+                parts.append(f"【用户输入】\n{user_input}")
+
+            # 1. LLM 输出的纯文本片段（最核心的评判依据）
+            #    key_outputs 与 conversation_history 中的 assistant 回复内容重复，
+            #    仅保留 key_outputs 即可，避免冗余信息干扰评判 LLM
+            key_outputs = test_data.get("key_outputs", [])
+            if key_outputs:
+                parts.append("【LLM 输出】")
+                for ko in key_outputs:
+                    parts.append(ko[:1500])
+            else:
+                # key_outputs 为空时，从对话历史中提取 assistant 回复作为回退
+                conversation_history = test_data.get("conversation_history", [])
+                assistant_msgs = [
+                    msg for msg in conversation_history
+                    if msg.get("role") == "assistant" and msg.get("content", "").strip()
+                ]
+                if assistant_msgs:
+                    parts.append("【LLM 输出】")
+                    for msg in assistant_msgs:
+                        content = msg.get("content", "")
+                        parts.append(content[:1500])
+
+            # 2. 工具调用摘要
             tool_calls = test_data.get("tool_calls", [])
             if tool_calls:
-                parts.append("=== 工具调用序列 ===")
+                parts.append("【工具调用序列】")
                 for i, tc in enumerate(tool_calls):
                     parts.append(
                         f"[{i+1}] {tc.get('tool', '?')}: "
@@ -253,53 +282,56 @@ class SystemTestRunner:
                         f"result={tc.get('result', '')[:500]}"
                     )
 
-            # 2. LLM 输出的纯文本片段
-            key_outputs = test_data.get("key_outputs", [])
-            if key_outputs:
-                parts.append("=== LLM 关键输出 ===")
-                for ko in key_outputs:
-                    parts.append(ko[:1000])
-
-            # 3. info_messages（含 done 消息、执行进度等）
+            # 3. 系统消息（含 done 消息、自动结束等关键信息）
             info_messages = test_data.get("info_messages", [])
             if info_messages:
-                parts.append("=== 系统消息 ===")
+                parts.append("【系统消息】")
                 for im in info_messages:
                     parts.append(im[:500])
 
             # 4. 错误信息
             error = test_data.get("error")
             if error:
-                parts.append(f"=== 异常信息 ===\n{error}")
+                parts.append(f"【异常信息】\n{error}")
 
             # 5. 截断标记
             if test_data.get("is_truncated"):
-                parts.append("=== 警告 ===\nLLM 输出被截断（max_tokens 不足）")
+                parts.append("【警告】\nLLM 输出被截断（max_tokens 不足）")
 
-        # 如果结构化数据没有提取到任何有效内容，回退到清理后的 stdout
+        # 如果结构化数据没有提取到任何有效内容，逐层回退
         if not parts:
-            # 优先使用 test_data 中的 full_output（已捕获 Rich Console 全部输出）
+            # 层1: test_data 中的 full_output（Rich Console 全部输出）
             full_output = test_data.get("full_output", "") if test_data else ""
             if full_output:
                 cleaned = SystemTestRunner._strip_ansi(full_output)
                 if cleaned:
-                    parts.append("=== MyClaude 终端输出 ===")
+                    parts.append("【MyClaude 终端输出(full)】")
                     parts.append(cleaned[:3500])
 
+            # 层2: 原始 stdout（子进程标准输出）
             if not parts:
                 cleaned_stdout = SystemTestRunner._strip_ansi(std_out)
                 if cleaned_stdout:
-                    parts.append("=== MyClaude 终端输出(stdout) ===")
+                    parts.append("【MyClaude 终端输出(stdout)】")
                     parts.append(cleaned_stdout[:3500])
-                elif std_err:
-                    parts.append("=== stderr ===")
-                    parts.append(std_err[:2000])
 
-        # 附加退出码（始终输出）
-        exit_code = test_data.get("exit_code", -1) if test_data else -1
-        parts.append(f"=== 退出码 ===\n{exit_code}")
+            # 层3: stderr（最后兜底）
+            if not parts and std_err:
+                cleaned_stderr = SystemTestRunner._strip_ansi(std_err)
+                if cleaned_stderr:
+                    parts.append("【stderr】")
+                    parts.append(cleaned_stderr[:2000])
 
-        return "\n\n".join(parts)[:4000]
+            # 层4: 所有源都为空，输出明确提示
+            if not parts:
+                parts.append("【警告】\nMyClaude 未产生任何可捕获的输出内容。"
+                             "可能原因：子进程启动失败、Rich 输出被重定向、或异常导致提前退出。")
+
+        # 附加退出码（始终输出，优先使用参数传入的 exit_code）
+        parts.append(f"【退出码】\n{exit_code}")
+
+        result = "\n\n".join(parts)[:4000]
+        return result if result else "(empty)"
 
     # ------------------------------------------------------------------
 
@@ -393,7 +425,20 @@ class SystemTestRunner:
                         result.actual_output,
                         result.judge_reason,
                     ]
-                ws.append(row)
+                # 强制所有单元格为字符串类型，防止 Excel 将以 = 开头的内容当作公式
+                safe_row = []
+                for val in row:
+                    if val is None:
+                        safe_row.append("")
+                    elif isinstance(val, str):
+                        # 防止 Excel 公式注入：以 = + - @ 开头的内容会被 Excel 当作公式
+                        if val and val[0] in ('=', '+', '-', '@'):
+                            safe_row.append("'" + val)
+                        else:
+                            safe_row.append(val)
+                    else:
+                        safe_row.append(str(val))
+                ws.append(safe_row)
 
             # --- 样式定义 ---
             yahei_font = openpyxl.styles.Font(name="微软雅黑", size=11)
