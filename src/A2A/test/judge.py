@@ -34,6 +34,8 @@ _JUDGE_PROMPT = """你是一个测试评判助手。根据以下信息，判断�
 - 如果被测程序崩溃、出现未捕获的异常、或环境错误（如沙箱不可用），输出 ERROR。
 - 如果无法确定（输出被截断、模糊不清、信息不足），输出 INCONCLUSIVE。
 - **重要**：即使信息有限，也必须输出一个最佳判断的 JSON，不要返回空响应。
+- **重要**：只要实际输出正确回答了用户问题或完成了请求的操作，即使 LLM 未自动输出 'done' 标签结束任务，也应判定为 PASS。不应因为缺少 'done' 标签而判定失败。
+- 在评判描述中引用工具名称时，不要使用尖括号语法，请用引号包裹工具名（如 'create'、'str_replace'）。
 
 ## 输出格式（严格 JSON，不要输出任何其他文字）
 {{"verdict": "PASS" | "FAIL" | "ERROR" | "INCONCLUSIVE", "reason": "简短理由（中文，≤50字）"}}
@@ -73,7 +75,7 @@ class LLMJudge:
         check_hints = {
             "file_created": "重点检查：是否创建了文件。",
             "file_modified": "重点检查：是否修改了已有文件。",
-            "tool_chain": "重点检查：是否使用了正确的 XML 工具链（如 <create>/<str_replace>）。",
+            "tool_chain": "重点检查：是否使用了正确的 XML 工具链（如 'create'、'str_replace'）。",
             "log_generated": "重点检查：是否生成了日志文件。",
             "startup": "重点检查：服务是否正常启动。",
             "memory_aware": "重点检查：是否体现了对上下文的记忆。",

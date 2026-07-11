@@ -360,6 +360,7 @@ def _build_batch_prompt(funcs: List[Dict[str, Any]]) -> str:
 - 正确示例：「返回值类型为 bool，值为 True」「返回字符串包含 'success'」「抛出 TypeError，提示缺少参数」
 - 错误示例：「正常执行」「处理成功」「返回结果」（这些太模糊，评判 LLM 无法判定）
 - 边界/异常用例必须说明**期望的异常类型或返回值**，如「抛出 ValueError，错误信息包含 'invalid'」「返回 None 而不崩溃」
+- 重要：在 expected_behavior 中不要使用尖括号语法引用工具名，请用引号包裹（如 'create'、'str_replace'）
 
 ### values 格式规则
 - values 是字符串列表，顺序与函数参数列表严格一致

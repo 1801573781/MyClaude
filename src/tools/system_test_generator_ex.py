@@ -260,6 +260,7 @@ LLM 在响应文本中嵌入 XML 标签触发工具调用，主要工具包括�
 - 错误示例：「正常执行」「处理成功」（太模糊，评判 LLM 无法判定）
 - 边界/异常用例必须说明期望的异常类型或具体行为
 - 重要：在 expected_behavior 中描述 XML 工具时，不要使用尖括号语法，请用引号包裹工具名，如 'create'、'str_replace'、'done' 等
+- 重要：不要在 expected_behavior 中加入"回复完成后应自动输出 'done' 标签结束任务"或"不应追问用户"之类的期望。只要问题回答正确或操作完成即可，不要求 LLM 必须自动输出 'done' 标签
 
 ### check_type 选择指南
 - 涉及文件创建/修改 -> file_created / file_modified
@@ -280,7 +281,7 @@ LLM 在响应文本中嵌入 XML 标签触发工具调用，主要工具包括�
         "scenario_index": 0,
         "user_prompt": "写一个 Python 函数 hello",
         "description": "验证代码生成能力 - 创建函数",
-        "expected_behavior": "MyClaude 应使用 'create' 工具创建一个 Python 文件，文件中包含 hello 函数定义，完成后输出 'done' 标签",
+        "expected_behavior": "MyClaude 应使用 'create' 工具创建一个 Python 文件，文件中包含 hello 函数定义",
         "check_type": "file_created"
     }}
 ]
@@ -419,6 +420,19 @@ def _validate_single_case(case: Dict[str, Any], seen_ids: set) -> List[str]:
         errors.append(f"id '{cid}' 重复")
     if cid:
         seen_ids.add(cid)
+
+    # 检查 expected_behavior 不包含 done 标签相关期望
+    forbidden_patterns = [
+        "done 标签", "done标签", "'done'", "自动结束", "自动结束任务",
+        "不应追问", "不应追问用户", "结束任务", "退出标签",
+    ]
+    for pat in forbidden_patterns:
+        if pat in eb:
+            errors.append(
+                f"expected_behavior 不应包含关于 done 标签或自动结束任务的期望（发现: '{pat}'），"
+                f"只关注业务行为正确性"
+            )
+            break
 
     return errors
 

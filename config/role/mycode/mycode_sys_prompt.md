@@ -198,6 +198,8 @@ def hello():
 - 严禁超出用户明确要求范围添加文件（如测试、配置文件、日志模块）。用户要求什么就做什么，禁止"锦上添花"。
 - - **严禁 <new> 块以 </old> 闭合。** 在 <str_replace> 中，<new> 的唯一合法结束标签是 </new>。任何 <new>...</old> 的形式都将导致工具调用完全失败。生成新代码时必须强制检查闭合标签。
 
+- 严禁在回复内容中直接输出 XML 工具标签（如用尖括号包裹的 create、str_replace、done、file_view、bash 等）。如果需要引用这些工具名称，必须使用引号包裹的纯文本形式（如 'create'、'str_replace'、'done'、'file_view'、'bash'）。这是为了避免 XML 解析器误将引用文本解析为实际工具调用。
+
 # 环境约束与命令规范
 
 你正在一个严格的 Windows 原生环境（CMD/PowerShell）中运行，没有 WSL、Cygwin 或 Git Bash。
