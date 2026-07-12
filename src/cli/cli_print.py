@@ -124,19 +124,22 @@ def clear_screen():
 
 def print_error(content: str):
     """打印错误消息"""
-    console.print(f"\n[{STYLES['error']}]❌ Error: {content}[/{STYLES['error']}]\n")
+    safe_content = escape(content)
+    console.print(f"\n[{STYLES['error']}]❌ Error: {safe_content}[/{STYLES['error']}]\n")
     _append_html(f'<p style="color:#ef4444;">❌ Error: {html_escape(content)}</p>')
 
 
 def print_info(content: str):
     """打印通用消息（带 ✅ 前缀和前后空行，用于独立的关键提示）"""
-    console.print(f"\n[{STYLES['info']}]✅ {content}[/{STYLES['info']}]\n")
+    safe_content = escape(content)
+    console.print(f"\n[{STYLES['info']}]✅ {safe_content}[/{STYLES['info']}]\n")
     _append_html(f'<p style="color:#3b82f6;">✅ {html_escape(content)}</p>')
 
 
 def print_detail(content: str):
     """打印详细信息（无 ✅ 前缀、无额外空行，紧跟 print_info 后展示附属信息）"""
-    console.print(f"[{STYLES['info']}]{content}[/{STYLES['info']}]")
+    safe_content = escape(content)
+    console.print(f"[{STYLES['info']}]{safe_content}[/{STYLES['info']}]")
     _append_html(f'<p style="color:#3b82f6;">{html_escape(content)}</p>')
 
 
