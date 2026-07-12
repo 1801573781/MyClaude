@@ -555,6 +555,10 @@ class MyClaudeCLI:
             # 只输入文件名时使用当前工作目录
             log_file = Path.cwd() / log_file.name
 
+        # 如果日志路径是已存在的目录或无后缀路径，自动追加默认日志文件名
+        if log_file.is_dir() or (not log_file.exists() and not log_file.suffix):
+            log_file = log_file / "unit_test_log.txt"
+
         # 确保日志目录存在
         log_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -618,39 +622,31 @@ class MyClaudeCLI:
             start_time_str = start_time.strftime("%Y-%m-%d %H:%M:%S")
             cli_print.print_info(
                 f"单元测试开始时间: {start_time_str}\n"
-                f"共 {total_cases} 个测试用例"
+                f"\n共 {total_cases} 个测试用例"
             )
 
-            # ── 6. 执行测试（带进度回调） ──
+            # ── 6. 执行测试（使用统一进度显示器） ──
+            from src.cli.test_progress import TestProgressDisplay
+
             judge = LLMJudge()
             runner = UnitTestRunner(judge=judge)
 
-            # 进度行控制变量
-            progress_last_line = [""]
+            progress = TestProgressDisplay(total=total_cases, test_type="单元测试")
 
             def _on_progress(completed: int, total: int, results: list):
                 passed = sum(1 for r in results if r.status == TestStatus.PASS)
-                pass_rate = (passed / completed * 100) if completed > 0 else 0.0
-                line = (
-                    f"  进度: {completed}/{total} 已执行 | "
-                    f"通过 {passed}/{completed} ({pass_rate:.1f}%)"
+                progress.update(completed=completed, passed=passed)
+
+            progress.start()
+            try:
+                results = runner.execute(
+                    test_cases=test_cases,
+                    myclaude_root=global_cfg.base_path.project_root,
+                    progress_callback=_on_progress,
                 )
-                # 覆盖上一行进度信息（用 \r 回到行首）
-                if progress_last_line[0]:
-                    sys.stdout.write("\r" + " " * len(progress_last_line[0]) + "\r")
-                sys.stdout.write(line)
-                sys.stdout.flush()
-                progress_last_line[0] = line
-
-            results = runner.execute(
-                test_cases=test_cases,
-                myclaude_root=global_cfg.base_path.project_root,
-                progress_callback=_on_progress,
-            )
-
-            # 进度行结束，换行
-            sys.stdout.write("\n")
-            sys.stdout.flush()
+            finally:
+                progress.stop()
+            progress.print_final_progress()
 
             # ── 7. 打印结束时间 ──
             end_time = datetime.now()
@@ -680,7 +676,7 @@ class MyClaudeCLI:
                 f"  开始时间: {start_time_str}\n"
                 f"  结束时间: {end_time_str}\n"
                 f"  执行耗时: {elapsed_str}\n"
-                f"  成功: {passed}  失败: {failed}  错误: {error_count}  不确定: {inconclusive}\n"
+                f"  成功: {passed} | 失败: {failed + error_count} | 不确定: {inconclusive}\n"
                 f"  通过率: {pass_rate:.1f}%\n"
                 f"  测试用例文件: {json_file}\n"
                 f"  测试日志文件: {log_file}\n"
@@ -854,70 +850,47 @@ class MyClaudeCLI:
         cli_print.print_info(
             f"通过 A2A 协议提交单元测试任务...\n"
             f"MyOrch Agent: {myorch_url}\n"
-            f"共 {total_cases} 个测试用例"
+            f"\n共 {total_cases} 个测试用例"
         )
 
-        # ── 5. 逐条发送请求（显示 m/n 进度） ──
+        # ── 5. 逐条发送请求（使用统一进度显示器） ──
         start_time = datetime.now()
         start_time_str = start_time.strftime("%Y-%m-%d %H:%M:%S")
         cli_print.print_info(f"任务开始时间: {start_time_str}")
 
-        import sys
-        import time
-        import threading
+        from src.cli.test_progress import TestProgressDisplay
 
-        spinner_chars = ('⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏')
-        is_tty = sys.stdout.isatty()
+        progress = TestProgressDisplay(total=total_cases, test_type="单元测试")
+        progress.start()
 
         all_results = []
         all_errors = []
 
-        for idx, tc in enumerate(test_cases, 1):
-            all_done = threading.Event()
-            spin_start = time.time()
+        try:
+            for idx, tc in enumerate(test_cases, 1):
+                try:
+                    with httpx.Client(timeout=600) as client:
+                        resp = client.post(
+                            myorch_url,
+                            json={
+                                "test_cases": [tc],
+                                "myclaude_root": str(global_cfg.base_path.project_root),
+                                "report_output_dir": str(report_dir),
+                            },
+                        )
+                        resp.raise_for_status()
+                        all_results.append(resp.json())
+                except Exception as e:
+                    all_errors.append(f"用例 {idx}/{total_cases}: {e}")
 
-            def _spin():
-                i = 0
-                last_heartbeat = time.time()
-                while not all_done.is_set():
-                    char = spinner_chars[i % len(spinner_chars)]
-                    elapsed = int(time.time() - spin_start)
-                    total_elapsed = int(time.time() - start_time.timestamp())
-                    if is_tty:
-                        msg = f"  {char} 正在执行 {idx}/{total_cases} 单元测试用例 (已耗时 {elapsed}s，总耗时 {total_elapsed}s)..."
-                        sys.stdout.write(f"\r{msg.ljust(80)}")
-                        sys.stdout.flush()
-                    else:
-                        now = time.time()
-                        if now - last_heartbeat >= 5.0:
-                            print(f"  ... 正在执行 {idx}/{total_cases} 单元测试用例 (已耗时 {elapsed}s，总耗时 {total_elapsed}s)")
-                            last_heartbeat = now
-                    time.sleep(0.15)
-                    i += 1
+                # 更新进度
+                completed = idx
+                passed = sum(r.get("passed", 0) for r in all_results)
+                progress.update(completed=completed, passed=passed)
+        finally:
+            progress.stop()
 
-            spinner_thread = threading.Thread(target=_spin, daemon=True)
-            spinner_thread.start()
-
-            try:
-                with httpx.Client(timeout=600) as client:
-                    resp = client.post(
-                        myorch_url,
-                        json={
-                            "test_cases": [tc],
-                            "myclaude_root": str(global_cfg.base_path.project_root),
-                            "report_output_dir": str(report_dir),
-                        },
-                    )
-                    resp.raise_for_status()
-                    all_results.append(resp.json())
-            except Exception as e:
-                all_errors.append(f"用例 {idx}/{total_cases}: {e}")
-
-            all_done.set()
-            spinner_thread.join(timeout=1.0)
-            if is_tty:
-                sys.stdout.write(f"\r{' ' * 80}\r")
-                sys.stdout.flush()
+        progress.print_final_progress()
 
         if not all_results and all_errors:
             cli_print.print_error(
@@ -954,22 +927,22 @@ class MyClaudeCLI:
             error_detail = f"  异常用例: {len(all_errors)} 个\n"
 
         cli_print.print_info(
-            "A2A 单元测试报告\n"
-            + "=" * 60 + "\n"
+            "\n" + "=" * 60 + "\n"
+            "  单元测试总结\n"
             f"  任务 ID: {task_id}\n"
             f"  共执行 {total} 个用例\n"
             f"  开始时间: {start_time_str}\n"
             f"  结束时间: {end_time_str}\n"
             f"  执行耗时: {elapsed:.1f} 秒\n"
             f"  状态: {status}\n"
-            f"  成功: {passed}  失败: {total - passed}\n"
+            f"  成功: {passed} | 失败: {total - passed} | 不确定: 0\n"
             f"  通过率: {pass_rate * 100:.1f}%\n"
             + error_detail
             + f"  测试用例文件: {json_file}\n"
             f"  测试报告文件: {report_display}\n"
+            f"  如需获取详细信息，请直接查阅上述文件。\n"
             + "=" * 60
         )
-        cli_print.print_info(f"任务结束时间: {end_time_str}，执行耗时：{elapsed:.1f} 秒")
 
 
     def _run_system_test_exec(self,
@@ -998,6 +971,11 @@ class MyClaudeCLI:
         log_file = Path(log_path)
         if not log_file.is_absolute():
             log_file = Path.cwd() / log_file.name
+
+        # 如果路径是已存在的目录，或无扩展名（视为目录），自动生成日志文件名
+        if log_file.is_dir() or (not log_file.exists() and not log_file.suffix):
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            log_file = log_file / f"system_test_{timestamp}.log"
 
         log_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1060,37 +1038,32 @@ class MyClaudeCLI:
             start_time_str = start_time.strftime("%Y-%m-%d %H:%M:%S")
             cli_print.print_info(
                 f"系统测试开始时间: {start_time_str}\n"
-                f"共 {total_cases} 个测试用例"
+                f"\n共 {total_cases} 个测试用例"
             )
 
-            # ── 6. 执行测试 ──
+            # ── 6. 执行测试（使用统一进度显示器） ──
+            from src.cli.test_progress import TestProgressDisplay
+
             judge = LLMJudge()
             sandbox_mgr = SandboxManager()
             runner = SystemTestRunner(sandbox_mgr=sandbox_mgr, judge=judge)
 
-            progress_last_line = [""]
+            progress = TestProgressDisplay(total=total_cases, test_type="系统测试")
 
             def _on_progress(completed: int, total: int, results: list):
                 passed = sum(1 for r in results if r.status == TestStatus.PASS)
-                pass_rate = (passed / completed * 100) if completed > 0 else 0.0
-                line = (
-                    f"  进度: {completed}/{total} 已执行 | "
-                    f"通过 {passed}/{completed} ({pass_rate:.1f}%)"
+                progress.update(completed=completed, passed=passed)
+
+            progress.start()
+            try:
+                results = runner.execute(
+                    test_cases=test_cases,
+                    myclaude_root=global_cfg.base_path.project_root,
+                    progress_callback=_on_progress,
                 )
-                if progress_last_line[0]:
-                    sys.stdout.write("\r" + " " * len(progress_last_line[0]) + "\r")
-                sys.stdout.write(line)
-                sys.stdout.flush()
-                progress_last_line[0] = line
-
-            results = runner.execute(
-                test_cases=test_cases,
-                myclaude_root=global_cfg.base_path.project_root,
-                progress_callback=_on_progress,
-            )
-
-            sys.stdout.write("\n")
-            sys.stdout.flush()
+            finally:
+                progress.stop()
+            progress.print_final_progress()
 
             # ── 7. 打印结束时间 ──
             end_time = datetime.now()
@@ -1120,7 +1093,7 @@ class MyClaudeCLI:
                 f"  开始时间: {start_time_str}\n"
                 f"  结束时间: {end_time_str}\n"
                 f"  执行耗时: {elapsed_str}\n"
-                f"  成功: {passed}  失败: {failed}  错误: {error_count}  不确定: {inconclusive}\n"
+                f"  成功: {passed} | 失败: {failed + error_count} | 不确定: {inconclusive}\n"
                 f"  通过率: {pass_rate:.1f}%\n"
                 f"  测试用例文件: {json_file}\n"
                 f"  测试日志文件: {log_file}\n"
@@ -1196,70 +1169,50 @@ class MyClaudeCLI:
         cli_print.print_info(
             f"通过 A2A 协议提交系统测试任务...\n"
             f"MyOrch Agent: {myorch_url}\n"
-            f"共 {total_cases} 个测试用例"
+            f"\n共 {total_cases} 个测试用例"
         )
 
-        # ── 5. 逐条提交用例（显示 m/n 进度），最后统一生成单份报告 ──
+        # ── 5. 逐条提交用例（使用统一进度显示器），最后统一生成单份报告 ──
         start_time = datetime.now()
         start_time_str = start_time.strftime("%Y-%m-%d %H:%M:%S")
         cli_print.print_info(f"任务开始时间: {start_time_str}")
 
-        import sys
-        import time
-        import threading
+        from src.cli.test_progress import TestProgressDisplay
 
-        spinner_chars = ('⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏')
-        is_tty = sys.stdout.isatty()
+        progress = TestProgressDisplay(total=total_cases, test_type="系统测试")
+        progress.start()
 
         case_results = {}  # 用例序号(1-based) -> MyOrch 响应 dict
         case_errors = {}   # 用例序号(1-based) -> 异常信息
 
-        for idx, tc in enumerate(test_cases, 1):
-            all_done = threading.Event()
-            spin_start = time.time()
+        try:
+            for idx, tc in enumerate(test_cases, 1):
+                try:
+                    with httpx.Client(timeout=600) as client:
+                        resp = client.post(
+                            myorch_url,
+                            json={
+                                "test_cases": [tc],
+                                "myclaude_root": str(global_cfg.base_path.project_root),
+                                "report_output_dir": None,
+                            },
+                        )
+                        resp.raise_for_status()
+                        case_results[idx] = resp.json()
+                except Exception as e:
+                    case_errors[idx] = str(e)
 
-            def _spin():
-                i = 0
-                last_heartbeat = time.time()
-                while not all_done.is_set():
-                    char = spinner_chars[i % len(spinner_chars)]
-                    elapsed = int(time.time() - spin_start)
-                    total_elapsed = int(time.time() - start_time.timestamp())
-                    if is_tty:
-                        msg = f"  {char} 正在执行 {idx}/{total_cases} 系统测试用例 (已耗时 {elapsed}s，总耗时 {total_elapsed}s)..."
-                        sys.stdout.write(f"\r{msg.ljust(90)}")
-                        sys.stdout.flush()
-                    else:
-                        now = time.time()
-                        if now - last_heartbeat >= 5.0:
-                            print(f"  ... 正在执行 {idx}/{total_cases} 系统测试用例 (已耗时 {elapsed}s，总耗时 {total_elapsed}s)")
-                            last_heartbeat = now
-                    time.sleep(0.15)
-                    i += 1
+                # 更新进度
+                completed = idx
+                passed = sum(
+                    1 for r in case_results.values()
+                    if r.get("status") == "PASS"
+                )
+                progress.update(completed=completed, passed=passed)
+        finally:
+            progress.stop()
 
-            spinner_thread = threading.Thread(target=_spin, daemon=True)
-            spinner_thread.start()
-
-            try:
-                with httpx.Client(timeout=600) as client:
-                    resp = client.post(
-                        myorch_url,
-                        json={
-                            "test_cases": [tc],
-                            "myclaude_root": str(global_cfg.base_path.project_root),
-                            "report_output_dir": None,
-                        },
-                    )
-                    resp.raise_for_status()
-                    case_results[idx] = resp.json()
-            except Exception as e:
-                case_errors[idx] = str(e)
-
-            all_done.set()
-            spinner_thread.join(timeout=1.0)
-            if is_tty:
-                sys.stdout.write(f"\r{' ' * 90}\r")
-                sys.stdout.flush()
+        progress.print_final_progress()
 
         if not case_results and case_errors:
             cli_print.print_error(
@@ -1335,19 +1288,19 @@ class MyClaudeCLI:
             error_detail = f"  异常用例: {len(case_errors)} 个\n"
 
         cli_print.print_info(
-            "A2A 系统测试报告\n"
-            + "=" * 60 + "\n"
+            "\n" + "=" * 60 + "\n"
+            "  系统测试总结\n"
             f"  任务 ID: {task_id}\n"
             f"  共执行 {total} 个用例\n"
             f"  开始时间: {start_time_str}\n"
             f"  结束时间: {end_time_str}\n"
             f"  执行耗时: {elapsed:.1f} 秒\n"
             f"  状态: {status}\n"
-            f"  成功: {passed}  失败: {total - passed}\n"
+            f"  成功: {passed} | 失败: {total - passed} | 不确定: 0\n"
             f"  通过率: {pass_rate * 100:.1f}%\n"
             + error_detail
             + f"  测试用例文件: {json_file}\n"
             f"  测试报告文件: {report_display}\n"
+            f"  如需获取详细信息，请直接查阅上述文件。\n"
             + "=" * 60
         )
-        cli_print.print_info(f"任务结束时间: {end_time_str}，执行耗时：{elapsed:.1f} 秒")
