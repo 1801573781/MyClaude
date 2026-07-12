@@ -1,7 +1,8 @@
 """
-SystemTest A2A 服务入口
+UnitTest A2A 服务入口
 
-提供系统测试执行器的 REST API，支持系统测试用例的执行。
+提供单元测试执行器的 REST API，支持单元测试用例的执行。
+与 st/main.py 结构对齐。
 """
 
 from __future__ import annotations
@@ -16,11 +17,10 @@ from python_a2a import A2AServer
 
 from .agent_card import get_agent_card
 from ..models import (
-    RunSystemTestRequest, RunSystemTestResponse,
+    RunUnitTestRequest, RunUnitTestResponse,
     TestRunState, TestStatus,
 )
-from .system_test_runner import SystemTestRunner
-from ..sandbox import SandboxManager
+from .unit_test_runner import UnitTestRunner
 from ..judge import LLMJudge
 
 logger = logging.getLogger(__name__)
@@ -29,8 +29,7 @@ logger = logging.getLogger(__name__)
 # 应用初始化
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title="SystemTest Agent", version="1.0.0")
-sandbox_mgr = SandboxManager()
+app = FastAPI(title="UnitTest Agent", version="1.0.0")
 judge = LLMJudge()
 
 # A2A Server 包装
@@ -49,23 +48,22 @@ async def serve_agent_card():
 async def health():
     return {
         "status": "ok",
-        "service": "test",
-        "docker_available": sandbox_mgr.is_available(),
+        "service": "unittest",
     }
 
 
-# ------------------------------ 系统测试 --------------------------------
+# ------------------------------ 单元测试 --------------------------------
 
-@app.post("/a2a/run_system_tests", response_model=RunSystemTestResponse)
-async def run_system_tests(req: RunSystemTestRequest):
-    """执行系统测试用例（在沙箱中启动 MyClaude，LLM 评判结果）"""
+@app.post("/a2a/run_unit_tests", response_model=RunUnitTestResponse)
+async def run_unit_tests(req: RunUnitTestRequest):
+    """执行单元测试用例（直接 import 被测模块，LLM 评判结果）"""
     t0 = time.perf_counter()
-    task_id = req.task_id or f"st-{int(t0)}"
+    task_id = req.task_id or f"ut-{int(t0)}"
 
-    logger.info("Starting system-test run [task_id=%s] cases=%d",
+    logger.info("Starting unit-test run [task_id=%s] cases=%d",
                 task_id, len(req.test_cases))
 
-    runner = SystemTestRunner(sandbox_mgr=sandbox_mgr, judge=judge)
+    runner = UnitTestRunner(judge=judge)
     results = runner.execute(
         test_cases=req.test_cases,
         myclaude_root=req.myclaude_root,
@@ -75,21 +73,21 @@ async def run_system_tests(req: RunSystemTestRequest):
     total = len(results)
     elapsed = round(time.perf_counter() - t0, 2)
 
-    logger.info("System tests complete [task_id=%s] %d/%d passed (%.1f%%) in %.1fs",
+    logger.info("Unit tests complete [task_id=%s] %d/%d passed (%.1f%%) in %.1fs",
                 task_id, passed, total, passed / total * 100 if total else 0, elapsed)
 
     # 生成 Excel 报告
     report_path = None
     try:
         report_output_dir = getattr(req, "report_output_dir", None)
-        report_path = SystemTestRunner.generate_excel_report(
+        report_path = UnitTestRunner.generate_excel_report(
             results,
             output_dir=report_output_dir,
         )
     except Exception as report_err:
-        logger.error("Failed to generate system-test Excel report: %s", report_err)
+        logger.error("Failed to generate unit-test Excel report: %s", report_err)
 
-    return RunSystemTestResponse(
+    return RunUnitTestResponse(
         task_id=task_id,
         state=TestRunState.COMPLETED,
         passed=passed,
@@ -107,14 +105,13 @@ async def run_system_tests(req: RunSystemTestRequest):
 async def metrics():
     """Prometheus 指标端点（简化版）"""
     return JSONResponse(content={
-        "service": "test",
+        "service": "unittest",
         "uptime_seconds": time.perf_counter(),
-        "docker_available": sandbox_mgr.is_available(),
     })
 
 
 # ========================================================================
-# CLI 模式：python -m src.A2A.test.st.main --json D:/.../u9.json
+# CLI 模式：python -m src.A2A.test.ut.main --json D:/.../ut_cases.json
 # ========================================================================
 
 if __name__ == "__main__":
@@ -126,7 +123,7 @@ if __name__ == "__main__":
     from src.utility.config_loader import global_cfg
 
     parser = argparse.ArgumentParser(
-        description="SystemTest CLI — 执行系统测试用例"
+        description="UnitTest CLI — 执行单元测试用例"
     )
     parser.add_argument(
         "--json",
@@ -136,7 +133,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--log",
         default=None,
-        help="日志文件全路径（可选，默认输出到 logs_root/systemtest_cli.log）",
+        help="日志文件全路径（可选，默认输出到 logs_root/unittest_cli.log）",
     )
     parser.add_argument(
         "--output",
@@ -161,7 +158,7 @@ if __name__ == "__main__":
         handlers.append(logging.FileHandler(log_file, encoding="utf-8"))
     else:
         handlers.append(logging.FileHandler(
-            logs_root / "systemtest_cli.log", encoding="utf-8",
+            logs_root / "unittest_cli.log", encoding="utf-8",
         ))
 
     logging.basicConfig(
@@ -182,16 +179,16 @@ if __name__ == "__main__":
     with open(json_path, encoding="utf-8") as f:
         test_cases = json.load(f)
 
-    logger.info("从 %s 加载了 %d 条系统测试用例", json_path, len(test_cases))
+    logger.info("从 %s 加载了 %d 条单元测试用例", json_path, len(test_cases))
 
-    # ── 执行系统测试 ──────────────────────────────────────────────
-    runner = SystemTestRunner(sandbox_mgr=sandbox_mgr, judge=judge)
+    # ── 执行单元测试 ──────────────────────────────────────────────
+    runner = UnitTestRunner(judge=judge)
     results = runner.execute(
         test_cases=test_cases,
         myclaude_root=myclaude_root,
     )
 
-    report_path = SystemTestRunner.generate_excel_report(
+    report_path = UnitTestRunner.generate_excel_report(
         results,
         output_dir=str(logs_root),
     )
@@ -200,7 +197,7 @@ if __name__ == "__main__":
     total = len(results)
     failed = total - passed
     print("\n" + "=" * 60)
-    print("  系统测试完成")
+    print("  单元测试完成")
     print(f"  通过: {passed}  失败: {failed}  合计: {total}")
     print(f"  通过率: {passed / total * 100:.1f}%" if total else "  无测试用例")
     print(f"  Excel 报告: {report_path}")

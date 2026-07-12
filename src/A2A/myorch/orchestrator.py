@@ -48,8 +48,10 @@ class MyOrchestrator:
             system_test_url: SystemTest Agent 的基地址。
         """
         self._store = context_store or ContextStore()
-        cfg = a2a_global_cfg.system_test
-        self._sys_test_url = system_test_url or f"http://{cfg.host}:{cfg.port}"  # noqa: E231
+        st_cfg = a2a_global_cfg.system_test
+        ut_cfg = a2a_global_cfg.unit_test
+        self._sys_test_url = system_test_url or f"http://{st_cfg.host}:{st_cfg.port}"  # noqa: E231
+        self._unit_test_url = f"http://{ut_cfg.host}:{ut_cfg.port}"
 
         # 判定阈值
         self._regression_threshold = a2a_global_cfg.threshold.regression_pass_rate
@@ -301,9 +303,9 @@ class MyOrchestrator:
                 report_output_dir=report_output_dir,
             )
 
-            # 通过 A2A 协议委派任务给 SystemTest Agent
+            # 通过 A2A 协议委派任务给 UnitTest Agent
             resp = self._http.post(
-                f"{self._sys_test_url}/a2a/run_unit_tests",
+                f"{self._unit_test_url}/a2a/run_unit_tests",
                 json=ut_req.model_dump(),
             )
             resp.raise_for_status()

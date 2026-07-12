@@ -1,7 +1,8 @@
 """
-SystemTest A2A Agent Card 定义
+UnitTest A2A Agent Card 定义
 
-定义系统测试执行服务的身份、能力和端点，符合 python_a2a 标准。
+定义单元测试执行服务的身份、能力和端点，符合 python_a2a 标准。
+与 st/agent_card.py 结构对齐。
 """
 
 import os
@@ -9,20 +10,20 @@ import os
 from python_a2a import AgentCard, AgentSkill
 
 
-SYSTEMTEST_AGENT_CARD = {
-    "agent_id": "systemtest-ex-001",
-    "name": "SystemTest - 系统测试执行器 (systemtest-001)",
+UNITTEST_AGENT_CARD = {
+    "agent_id": "unittest-ex-001",
+    "name": "UnitTest - 单元测试执行器 (unittest-001)",
     "description": (
-        "在 Docker 沙箱中启动 MyClaude，执行系统测试用例，"
-        "返回结构化测试报告"
+        "直接 import 被测模块、调用被测函数，"
+        "通过 LLMJudge 评判返回值/异常，返回结构化测试报告"
     ),
     "version": "1.0.0",
     "skills": [
         {
-            "id": "run_system_tests",
-            "name": "run_system_tests",
-            "description": "执行系统测试用例，在沙箱中运行 MyClaude 并通过 LLM 评判结果",
-            "tags": ["testing", "system-test"],
+            "id": "run_unit_tests",
+            "name": "run_unit_tests",
+            "description": "执行单元测试用例，动态导入被测函数并通过 LLM 评判结果",
+            "tags": ["testing", "unit-test"],
         },
     ],
 }
@@ -30,7 +31,7 @@ SYSTEMTEST_AGENT_CARD = {
 
 def _get_service_url() -> str:
     """从环境变量或配置获取服务 URL。"""
-    url = os.environ.get("SYSTEMTEST_URL")
+    url = os.environ.get("UNITTEST_URL")
     if url:
         return url
     try:
@@ -42,12 +43,12 @@ def _get_service_url() -> str:
                 return test_cfg.url
     except Exception:
         pass
-    return "http://localhost:8002"
+    return "http://localhost:8003"
 
 
 def get_agent_card() -> AgentCard:
-    """构建并返回 SystemTest 服务的 A2A AgentCard 对象。"""
-    card_data = SYSTEMTEST_AGENT_CARD
+    """构建并返回 UnitTest 服务的 A2A AgentCard 对象。"""
+    card_data = UNITTEST_AGENT_CARD
     skills = [
         AgentSkill(
             id=s["id"],

@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import logging
 import time
 import traceback
@@ -45,10 +46,7 @@ class UnitTestRunner:
 
         for i, raw_case in enumerate(test_cases):
             # 归一化：dict → UnitTestCase，统一用属性访问
-            if isinstance(raw_case, dict):
-                case = UnitTestCase(**raw_case)
-            else:
-                case = raw_case
+            case = self._normalize_case(raw_case)
             logger.info("Running unit-test case [id=%s] %s", case.id, case.description)
             result = self._run_one(case, myclaude_root)
             # 注入原始用例数据，供 Excel 报告使用（Pydantic v2 需绕过 __setattr__）
@@ -61,6 +59,59 @@ class UnitTestRunner:
                 progress_callback(i + 1, total, results)
 
         return results
+
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def load_test_cases(json_path: str | Path) -> list[dict]:
+        """从 JSON 文件加载单元测试用例。
+
+        Args:
+            json_path: JSON 文件路径
+
+        Returns:
+            测试用例 dict 列表
+        """
+        path = Path(json_path)
+        if not path.exists():
+            raise FileNotFoundError(f"测试用例文件不存在: {path}")
+
+        with open(path, "r", encoding="utf-8") as f:
+            cases = json.load(f)
+
+        if not isinstance(cases, list):
+            raise ValueError(f"测试用例文件格式错误，期望 list，得到 {type(cases)}")
+
+        logger.info("Loaded %d unit test cases from %s", len(cases), path)
+        return cases
+
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _normalize_case(raw_case) -> UnitTestCase:
+        """将 dict 或 UnitTestCase 对象归一化为 UnitTestCase。
+
+        如果 raw_case 是 dict，尝试直接转换为 UnitTestCase。
+        如果因额外字段导致转换失败，
+        则过滤掉不支持的字段后重试。
+        """
+        if isinstance(raw_case, UnitTestCase):
+            return raw_case
+
+        if isinstance(raw_case, dict):
+            try:
+                return UnitTestCase(**raw_case)
+            except Exception:
+                # 过滤掉 UnitTestCase 可能不支持的字段
+                known_fields = {
+                    "id", "description", "target_module",
+                    "target_function", "test_input",
+                    "expected_behavior", "check_type",
+                }
+                filtered = {k: v for k, v in raw_case.items() if k in known_fields}
+                return UnitTestCase(**filtered)
+
+        raise TypeError(f"不支持的用例类型: {type(raw_case)}")
 
     # ------------------------------------------------------------------
 
@@ -727,16 +778,40 @@ class UnitTestRunner:
 
 
 if __name__ == "__main__":
-    # 配置日志输出到控制台和文件
+    import argparse
+    import sys
+
     from src.utility.config_loader import global_cfg
 
-    logs_root = Path(global_cfg.base_path.logs_root)
+    parser = argparse.ArgumentParser(
+        description="UnitTestRunner CLI — 直接执行单元测试用例"
+    )
+    parser.add_argument(
+        "--json",
+        required=True,
+        help="单元测试用例 JSON 文件路径",
+    )
+    parser.add_argument(
+        "--output",
+        default=None,
+        help="报告输出目录（默认使用 config 中 logs_root）",
+    )
+    parser.add_argument(
+        "--myclaude-root",
+        default=None,
+        help="MyClaude 源码根目录（默认使用 config 中 project_root）",
+    )
+    args = parser.parse_args()
+
+    # ── 配置日志 ──
+    logs_root = Path(args.output) if args.output else Path(global_cfg.base_path.logs_root)
     logs_root.mkdir(parents=True, exist_ok=True)
 
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         handlers=[
+            logging.StreamHandler(sys.stdout),
             logging.FileHandler(
                 logs_root / "unit_test_runner.log",
                 encoding="utf-8",
@@ -744,27 +819,41 @@ if __name__ == "__main__":
         ],
     )
 
-    judege = LLMJudge()
-    ut = UnitTestRunner(judge=judege)
+    # ── 加载测试用例 ──
+    json_path = Path(args.json)
+    if not json_path.exists():
+        logger.error("JSON 文件不存在: %s", json_path)
+        sys.exit(1)
 
-    ut_test_cases = [
-        {
-            "id": "UT-FO-001",
-            "description": "file_create 在文件不存在时成功创建新文件",
-            "target_module": "src.utility.file_tool",
-            "target_function": "file_create",
-            "test_input": "'root' : 'D:/AI/MyClaude/code_output', 'path' : 'test_fo001.py', 'content' : 'x = 1'",
-            "expected_behavior": "file_create 应在 D:/AI/MyClaude/code_output/ 目录下创建 test_fo001.py 文件，文件内容为 'x = 1'。返回结果不应包含 [BLOCKED] 或 [ERROR]，应包含成功创建的信息。",
-            "check_type": "file_created"
-        },
-    ]
+    ut_test_cases = UnitTestRunner.load_test_cases(json_path)
+    logger.info("从 %s 加载了 %d 条单元测试用例", json_path, len(ut_test_cases))
 
-    myclaude_root_path = global_cfg.base_path.project_root
+    # ── 初始化组件 ──
+    judge = LLMJudge()
+    runner = UnitTestRunner(judge=judge)
 
-    results = ut.execute(test_cases=ut_test_cases, myclaude_root=myclaude_root_path)
+    myclaude_root = args.myclaude_root or global_cfg.base_path.project_root
 
-    # 生成 Excel 报告，输出到 logs_root
+    # ── 执行测试 ──
+    results = runner.execute(
+        test_cases=ut_test_cases,
+        myclaude_root=myclaude_root,
+    )
+
+    # ── 生成 Excel 报告 ──
     report_path = UnitTestRunner.generate_excel_report(
         results, output_dir=str(logs_root)
     )
-    print(f"Excel report saved to: {report_path}")
+
+    # ── 打印总结 ──
+    passed = sum(1 for r in results if r.status == TestStatus.PASS)
+    total = len(results)
+    print("\n" + "=" * 60)
+    print("  单元测试完成")
+    print(f"  通过: {passed}  失败: {total - passed}  合计: {total}")
+    if total:
+        print(f"  通过率: {passed / total * 100:.1f}%")
+    else:
+        print("  无测试用例")
+    print(f"  Excel 报告: {report_path}")
+    print("=" * 60)

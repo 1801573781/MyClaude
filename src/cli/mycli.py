@@ -56,14 +56,14 @@ class MyClaudeCLI:
                     "      --root    Python 项目根目录（绝对路径），默认从 config.yaml 读取\n"
                     "      --output  输出测试用例 JSON 文件路径（绝对路径）\n"
                     "\n"
-                    "  /test --ut-e <测试用例JSON> <日志文件> [报告目录]\n"
+                    "  /test --ut-e <测试用例JSON> [日志目录] [报告目录]\n"
                     "      执行单元测试用例\n"
                     "      <测试用例JSON>  测试用例 JSON 文件全路径\n"
-                    "      <日志文件>      日志文件全路径\n"
+                    "      [日志目录]      日志文件所在的目录（可选，默认与报告目录相同）\n"
                     "      [报告目录]      报告输出目录（可选）\n"
                     "\n"
                     "  /test --ut-a2a <测试用例JSON> [报告目录]\n"
-                    "      通过 A2A 协议执行单元测试（MyOrch → SystemTest）\n"
+                    "      通过 A2A 协议执行单元测试（MyOrch → UnitTest）\n"
                     "      <测试用例JSON>  测试用例 JSON 文件全路径\n"
                     "      [报告目录]      报告输出目录（可选）\n"
                     "\n"
@@ -73,10 +73,10 @@ class MyClaudeCLI:
                     "      --spec    系统规格文档路径（绝对路径），默认读取 spec/myclaude_spec.md\n"
                     "      --output  输出测试用例 JSON 文件路径（绝对路径）\n"
                     "\n"
-                    "  /test --st-e <测试用例JSON> <日志文件> [报告目录]\n"
+                    "  /test --st-e <测试用例JSON> [日志目录] [报告目录]\n"
                     "      执行系统测试用例\n"
                     "      <测试用例JSON>  测试用例 JSON 文件全路径\n"
-                    "      <日志文件>      日志文件全路径\n"
+                    "      [日志目录]      日志文件所在的目录（可选，默认与报告目录相同）\n"
                     "      [报告目录]      报告输出目录（可选）\n"
                     "\n"
                     "  /test --st-a2a <测试用例JSON> [报告目录]\n"
@@ -133,21 +133,21 @@ class MyClaudeCLI:
                 return True
 
             elif sub_flag == "--ut-e":
-                # /test --ut-e <测试用例JSON路径> <日志文件路径> [<报告输出目录>]
+                # /test --ut-e <测试用例JSON路径> [<日志目录路径>] [<报告输出目录>]
                 try:
                     ut_args = shlex.split(remaining, posix=False)
                 except ValueError as e:
                     cli_print.print_error(f"参数解析错误: {e}")
                     return True
 
-                if len(ut_args) < 2:
-                    cli_print.print_error("缺少必选参数：测试用例JSON路径 和 日志文件路径")
-                    cli_print.print_info("用法: /test --ut-e <测试用例JSON全路径> <日志文件全路径> [<报告输出目录>]")
-                    cli_print.print_info("示例: /test --ut-e D:/AI/MyClaude/tests/cases.json D:/AI/MyClaude/logs/output.txt D:/AI/MyClaude/logs")
+                if len(ut_args) < 1:
+                    cli_print.print_error("缺少必选参数：测试用例JSON路径")
+                    cli_print.print_info("用法: /test --ut-e <测试用例JSON全路径> [<日志目录路径>] [<报告输出目录>]")
+                    cli_print.print_info("示例: /test --ut-e D:/AI/MyClaude/tests/cases.json D:/AI/MyClaude/logs D:/AI/MyClaude/logs")
                     return True
 
                 p1 = ut_args[0]
-                p2 = ut_args[1]
+                p2 = ut_args[1] if len(ut_args) > 1 else None
                 p3 = ut_args[2] if len(ut_args) > 2 else None
                 self._run_unit_test_exec(p1, p2, p3)
                 return True
@@ -207,21 +207,21 @@ class MyClaudeCLI:
                 return True
 
             elif sub_flag == "--st-e":
-                # /test --st-e <测试用例JSON路径> <日志文件路径> [<报告输出目录>]
+                # /test --st-e <测试用例JSON路径> [<日志目录路径>] [<报告输出目录>]
                 try:
                     st_args = shlex.split(remaining, posix=False)
                 except ValueError as e:
                     cli_print.print_error(f"参数解析错误: {e}")
                     return True
 
-                if len(st_args) < 2:
-                    cli_print.print_error("缺少必选参数：测试用例JSON路径 和 日志文件路径")
-                    cli_print.print_info("用法: /test --st-e <测试用例JSON全路径> <日志文件全路径> [<报告输出目录>]")
-                    cli_print.print_info("示例: /test --st-e D:/AI/MyClaude/tests/s20.json D:/AI/MyClaude/logs/st_output.txt D:/AI/MyClaude/logs")
+                if len(st_args) < 1:
+                    cli_print.print_error("缺少必选参数：测试用例JSON路径")
+                    cli_print.print_info("用法: /test --st-e <测试用例JSON全路径> [<日志目录路径>] [<报告输出目录>]")
+                    cli_print.print_info("示例: /test --st-e D:/AI/MyClaude/tests/s20.json D:/AI/MyClaude/logs D:/AI/MyClaude/logs")
                     return True
 
                 p1 = st_args[0]
-                p2 = st_args[1]
+                p2 = st_args[1] if len(st_args) > 1 else None
                 p3 = st_args[2] if len(st_args) > 2 else None
                 self._run_system_test_exec(p1, p2, p3)
                 return True
@@ -530,7 +530,7 @@ class MyClaudeCLI:
 
     def _run_unit_test_exec(self,
                             json_path: str,
-                            log_path: str,
+                            log_dir_path: str | None = None,
                             report_output_dir: str | None = None):
         """执行 /ut-e 命令：加载 JSON 测试用例并执行单元测试，打印进度与总结"""
         import json
@@ -550,24 +550,27 @@ class MyClaudeCLI:
             cli_print.print_error(f"测试用例路径必须是绝对路径: {json_path}")
             return
 
-        log_file = Path(log_path)
-        if not log_file.is_absolute():
-            # 只输入文件名时使用当前工作目录
-            log_file = Path.cwd() / log_file.name
-
-        # 如果日志路径是已存在的目录或无后缀路径，自动追加默认日志文件名
-        if log_file.is_dir() or (not log_file.exists() and not log_file.suffix):
-            log_file = log_file / "unit_test_log.txt"
-
-        # 确保日志目录存在
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-
-        # 报告输出目录：优先 p3，其次 config logs_root
+        # 报告输出目录：优先 report_output_dir，其次 config logs_root
         if report_output_dir:
             report_dir = Path(report_output_dir)
         else:
             report_dir = Path(global_cfg.base_path.logs_root)
         report_dir.mkdir(parents=True, exist_ok=True)
+
+        # 日志目录：优先 log_dir_path，否则与报告目录相同
+        if log_dir_path:
+            log_dir = Path(log_dir_path)
+            if not log_dir.is_absolute():
+                log_dir = Path.cwd() / log_dir.name
+        else:
+            log_dir = report_dir
+
+        # 确保日志目录存在
+        log_dir.mkdir(parents=True, exist_ok=True)
+
+        # 在日志目录下生成带时间戳的日志文件
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        log_file = log_dir / f"unit_test_{timestamp}.log"
 
         cli_print.print_info(
             f"测试用例文件: {json_file}\n"
@@ -704,15 +707,22 @@ class MyClaudeCLI:
             return False
 
 
-    def _ensure_a2a_services(self) -> bool:
-        """检查并启动 A2A 服务（MyOrch + SystemTest）
+    def _ensure_a2a_services(self, test_type: str = "all") -> bool:
+        """检查并启动 A2A 服务
 
         在 base_path.project_root 目录下启动服务：
         - MyOrch:      python -m src.A2A.myorch.main  (端口 8200)
-        - SystemTest:  python -m uvicorn src.A2A.test.main:app --host 127.0.0.1 --port 8201
+        - SystemTest:  python -m uvicorn src.A2A.test.st.main:app --host 127.0.0.1 --port 8201
+        - UnitTest:    python -m uvicorn src.A2A.test.ut.main:app --host 127.0.0.1 --port 8202
+
+        Args:
+            test_type: 测试类型，决定启动哪些服务
+                - "ut": 仅启动 MyOrch + UnitTest
+                - "st": 仅启动 MyOrch + SystemTest
+                - "all": 启动全部三个服务（默认）
 
         Returns:
-            True 如果两个服务都已就绪，False 如果有服务启动失败
+            True 如果所需服务都已就绪，False 如果有服务启动失败
         """
         import sys
         import time
@@ -724,7 +734,7 @@ class MyClaudeCLI:
         cfg = a2a_global_cfg
         project_root = str(Path(global_cfg.base_path.project_root))
 
-        services = [
+        all_services = [
             {
                 "name": "MyOrch",
                 "host": cfg.myorch.host,
@@ -742,7 +752,27 @@ class MyClaudeCLI:
                     "--port", str(cfg.system_test.port),
                 ],
             },
+            {
+                "name": "UnitTest",
+                "host": cfg.unit_test.host,
+                "port": cfg.unit_test.port,
+                "cmd": [
+                    sys.executable, "-m", "uvicorn",
+                    "src.A2A.test.ut.main:app",
+                    "--host", cfg.unit_test.host,
+                    "--port", str(cfg.unit_test.port),
+                ],
+            },
         ]
+
+        # 根据 test_type 过滤需要启动的服务
+        # MyOrch 是编排器，始终需要；ut 只需 UnitTest，st 只需 SystemTest，all 全部
+        if test_type == "ut":
+            services = [s for s in all_services if s["name"] in ("MyOrch", "UnitTest")]
+        elif test_type == "st":
+            services = [s for s in all_services if s["name"] in ("MyOrch", "SystemTest")]
+        else:
+            services = all_services
 
         all_ready = True
 
@@ -802,8 +832,8 @@ class MyClaudeCLI:
         from src.utility.config_loader import global_cfg
         from src.A2A.shared.config import a2a_global_cfg
 
-        # ── 0. 检查并启动 A2A 服务 ──
-        if not self._ensure_a2a_services():
+        # ── 0. 检查并启动 A2A 服务（单元测试只需 MyOrch + UnitTest） ──
+        if not self._ensure_a2a_services(test_type="ut"):
             cli_print.print_error("A2A 服务未就绪，无法执行测试。请手动启动服务后重试。")
             return
 
@@ -947,7 +977,7 @@ class MyClaudeCLI:
 
     def _run_system_test_exec(self,
                               json_path: str,
-                              log_path: str,
+                              log_dir_path: str | None = None,
                               report_output_dir: str | None = None):
         """执行 /st-e 命令：加载 JSON 测试用例并执行系统测试，打印进度与总结"""
         import json
@@ -968,22 +998,27 @@ class MyClaudeCLI:
             cli_print.print_error(f"测试用例路径必须是绝对路径: {json_path}")
             return
 
-        log_file = Path(log_path)
-        if not log_file.is_absolute():
-            log_file = Path.cwd() / log_file.name
-
-        # 如果路径是已存在的目录，或无扩展名（视为目录），自动生成日志文件名
-        if log_file.is_dir() or (not log_file.exists() and not log_file.suffix):
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            log_file = log_file / f"system_test_{timestamp}.log"
-
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-
+        # 报告输出目录：优先 report_output_dir，其次 config logs_root
         if report_output_dir:
             report_dir = Path(report_output_dir)
         else:
             report_dir = Path(global_cfg.base_path.logs_root)
         report_dir.mkdir(parents=True, exist_ok=True)
+
+        # 日志目录：优先 log_dir_path，否则与报告目录相同
+        if log_dir_path:
+            log_dir = Path(log_dir_path)
+            if not log_dir.is_absolute():
+                log_dir = Path.cwd() / log_dir.name
+        else:
+            log_dir = report_dir
+
+        # 确保日志目录存在
+        log_dir.mkdir(parents=True, exist_ok=True)
+
+        # 在日志目录下生成带时间戳的日志文件
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        log_file = log_dir / f"system_test_{timestamp}.log"
 
         cli_print.print_info(
             f"测试用例文件: {json_file}\n"
@@ -1122,8 +1157,8 @@ class MyClaudeCLI:
         from src.utility.config_loader import global_cfg
         from src.A2A.shared.config import a2a_global_cfg
 
-        # ── 0. 检查并启动 A2A 服务 ──
-        if not self._ensure_a2a_services():
+        # ── 0. 检查并启动 A2A 服务（系统测试只需 MyOrch + SystemTest） ──
+        if not self._ensure_a2a_services(test_type="st"):
             cli_print.print_error("A2A 服务未就绪，无法执行测试。请手动启动服务后重试。")
             return
 

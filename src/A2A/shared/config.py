@@ -32,6 +32,12 @@ def load_config() -> SimpleNamespace:
             port=int(_env("SYSTEMTEST_PORT", "8201")),
             auth_token=_env("SYSTEMTEST_AUTH_TOKEN", ""),
         ),
+        # UnitTest 服务配置
+        unit_test=SimpleNamespace(
+            host=_env("UNITTEST_HOST", "127.0.0.1"),
+            port=int(_env("UNITTEST_PORT", "8202")),
+            auth_token=_env("UNITTEST_AUTH_TOKEN", ""),
+        ),
         # MyClaude 源码根目录（用于沙箱挂载）
         myclaude_root=_env(
             "MYCLAUDE_ROOT", os.path.dirname(os.path.dirname(os.path.dirname(
