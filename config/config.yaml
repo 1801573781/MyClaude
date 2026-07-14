@@ -34,6 +34,12 @@ cli:
   max_turns: 500           # 工具调用最大轮次
   show_thinking: False    # 是否显示 <thinking> 内容
 
+# 斜杠命令系统配置
+command:
+  cmd_dir: ".myclaude/commands"    # 命令目录名（相对于项目根目录）
+  auto_scan: true         # 启动时自动扫描
+  profile: "core"         # 工作流模式：core 或 expanded
+
 # log配置
 log:
   format: "html"   # 可选 "md" 或 "html"

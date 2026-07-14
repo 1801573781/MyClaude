@@ -13,6 +13,18 @@ class MyClaudeCLI:
         self.query_loop = QueryLoop(role=role)
         self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 
+        # 初始化斜杠命令系统：扫描 .myclaude/ 目录注册命令
+        from src.command.scanner import CommandScanner
+        from src.command.dispatcher import CommandDispatcher
+        from src.utility.config_loader import global_cfg
+
+        project_root = global_cfg.base_path.project_root
+        scanner = CommandScanner(project_root)
+        self.registry = scanner.scan()
+        self.dispatcher = CommandDispatcher(self.registry)
+
+        # 静默加载斜杠命令，不打印提示信息
+
 
     def handle_command(self, command: str) -> bool:
         """处理命令，返回是否应该继续对话"""
@@ -332,8 +344,43 @@ class MyClaudeCLI:
                 cli_print.print_error("Usage: /save <filename> [all]")
             return True
 
+        elif cmd == '/opsx':
+            # /opsx — 列出所有已注册的 OpenSpec 斜杠命令
+            cli_print.print_command_list(self.registry)
+            return True
+
         elif cmd.startswith('/'):
-            cli_print.print_unknown_cmd(command)
+            # 尝试匹配已注册的斜杠命令（如 /opsx:propose）
+            command_info = self.dispatcher.parse_and_lookup(command)
+            if command_info:
+                # 提取用户参数
+                user_arg = self.dispatcher.extract_argument(command, command_info)
+                # 打印命令调用提示
+                cli_print.print_command_invoked(
+                    command_info.command_name, user_arg, command_info.file_path
+                )
+                # 组装命令上下文
+                ctx = self.dispatcher.build_context(command_info, user_arg)
+                # 记录用户消息
+                cli_print.print_user_input(command)
+                # 每次对话前重置推理历史
+                cli_print.reset_reasoning()
+                # 通过命令上下文启动 QueryLoop
+                self.query_loop.run(
+                    command,
+                    cli_print.show_status,
+                    cli_print.print_info,
+                    cli_print.typewriter_then_markdown,
+                    cli_print.print_tool_call,
+                    cli_print.print_tool_result,
+                    cli_print.typewriter_then_collapse,
+                    command_context=ctx,
+                )
+                cli_print.print_blank()
+            else:
+                cli_print.print_command_unknown(
+                    command, self.registry.list_command_names()
+                )
             return True
 
         return True

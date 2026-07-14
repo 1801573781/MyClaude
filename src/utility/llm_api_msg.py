@@ -7,6 +7,7 @@ class LLMAPIMessage:
 
     def __init__(self, role: str = "mycode"):
         self.project_root = Path(__file__).resolve().parent.parent.parent
+        self.role = role
 
         # 从同目录加载 sys_prompt.md 作为系统提示词
         self.api_messages = self._load_system_prompt(role)
@@ -102,7 +103,7 @@ class LLMAPIMessage:
 
     def init_api_msg(self, user_input):
         """
-        初始化发送给 LLM 的 messages 列表：复制系统提示词，追加用户消息。
+        初始化发送给 LLM 的 messages 列列：复制系统提示词，追加用户消息。
         """
         msg = {
             "role": "user",
@@ -110,6 +111,85 @@ class LLMAPIMessage:
         }
 
         self._append_info(msg)
+
+    def build_command_messages(
+        self,
+        command_name: str,
+        command_content: str,
+        user_argument: str,
+        project_context: str,
+        directory_tree: str,
+    ) -> list[dict[str, str]]:
+        """组装斜杠命令的 api_messages
+
+        采用方案 A（推荐）：命令内容作为会话重置。
+        system 消息 = 系统提示词 + 命令指令 + 项目上下文 + 目录树，
+        user 消息 = 用户参数（或默认提示语）。
+
+        Args:
+            command_name: 斜杠命令名，如 "/opsx:propose"
+            command_content: 命令 .md 文件的正文内容
+            user_argument: 用户在命令后输入的参数
+            project_context: 项目上下文文本
+            directory_tree: 目录树文本
+
+        Returns:
+            组装好的 api_messages 列表
+        """
+        messages = []
+
+        # system 消息：系统提示词 + 命令指令 + 项目上下文 + 目录树
+        system_prompt = self._load_system_prompt(role=self.role)[0]["content"]
+        command_prompt = f"# 斜杠命令: {command_name}\n\n{command_content}"
+        parts = [system_prompt, command_prompt]
+        if project_context:
+            parts.append(project_context)
+        if directory_tree:
+            parts.append(directory_tree)
+        messages.append({
+            "role": "system",
+            "content": "\n\n".join(parts),
+        })
+
+        # user 消息：用户参数（或默认提示语）
+        if user_argument.strip():
+            messages.append({
+                "role": "user",
+                "content": user_argument,
+            })
+        else:
+            messages.append({
+                "role": "user",
+                "content": "请按照上述命令指令开始执行。",
+            })
+
+        return messages
+
+    def reset_with_command(
+        self,
+        command_name: str,
+        command_content: str,
+        user_argument: str,
+    ) -> None:
+        """用斜杠命令上下文重置 api_messages（方案 A：会话重置）
+
+        Args:
+            command_name: 斜杠命令名
+            command_content: 命令 .md 正文内容
+            user_argument: 用户参数
+        """
+        project_context = self._load_project_context(self.role)
+        tree_cache = self._load_tree_cache()
+
+        new_messages = self.build_command_messages(
+            command_name=command_name,
+            command_content=command_content,
+            user_argument=user_argument,
+            project_context=project_context,
+            directory_tree=tree_cache,
+        )
+
+        self.api_messages = new_messages
 
     # 尾部添加微信息
     def append_micro_info(self, role, micro_info):

@@ -199,6 +199,7 @@ Welcome to MyClaude Code CLI! A beautiful terminal interface for AI Coding.
 - `/init` - 创建MyClaude的项目工程树
 - `/cs` - 统计项目代码行数
 - `/test` - 单元测试和系统测试，/test --help 显示test命令帮助信息
+- `/opsx` - openspec相关命令，输入 /opsx 查看命令列表
 - `/h2m <p1> <p2> [<p3>] [<p4>]` - 将 Session Log HTML 转换为 Markdown（参数值含空格请用引号）
 - `/save <filename> [all]` - Save last interaction (or all with "all" flag) to HTML file
 - `/quit` or `/exit` - Exit the application
@@ -380,6 +381,55 @@ def show_token_count(token_stats: dict):
         f'输入(未命中)={token_stats["prompt_cache_miss"]:,}, '
         f'输出={token_stats["completion_tokens"]:,}, '
         f'总计={token_stats["total"]:,}</p>'
+    )
+
+
+def print_command_list(registry) -> None:
+    """打印已注册的斜杠命令列表"""
+    commands = registry.list_commands()
+    if not commands:
+        print_info("当前没有已注册的斜杠命令。")
+        return
+
+    table = Table(title="OpenSpec 命令列表", show_header=True, border_style="blue")
+    table.add_column("命令", style="cyan", min_width=20)
+    table.add_column("用途", style="white")
+
+    for cmd in commands:
+        table.add_row(cmd.command_name, cmd.description or "(无描述)")
+
+    console.print(table)
+    _append_html('<p style="color:#3b82f6;">✅ OpenSpec 命令列表已显示</p>')
+
+
+def print_command_invoked(command_name: str, user_arg: str, file_path: str = "") -> None:
+    """打印斜杠命令调用提示"""
+    console.print(f"\n[bold yellow]⚡ 命令: {escape(command_name)}[/bold yellow]")
+    if user_arg:
+        console.print(f"[dim]📝 参数: {escape(user_arg)}[/dim]")
+    if file_path:
+        console.print(f"[dim]📋 指令来源: {escape(file_path)}[/dim]")
+    console.print(f"[dim]{'─' * 40}[/dim]\n")
+
+    _append_html(
+        f'<div style="margin:8px 0; padding:8px; border-left:3px solid #f59e0b;">'
+        f'<span style="color:#f59e0b;">⚡ 命令: {html_escape(command_name)}</span><br>'
+        f'{"<span style=\"color:#94a3b8;\">📝 参数: " + html_escape(user_arg) + "</span><br>" if user_arg else ""}'
+        f'{"<span style=\"color:#94a3b8;\">📋 指令来源: " + html_escape(file_path) + "</span><br>" if file_path else ""}'
+        f'</div>'
+    )
+
+
+def print_command_unknown(command_name: str, available: list[str]) -> None:
+    """打印未知斜杠命令提示"""
+    console.print(f"\n[bold red]⚠ 未知命令: {escape(command_name)}[/bold red]")
+    if available:
+        console.print(f"[dim]可用命令: {', '.join(available)}[/dim]")
+    console.print()
+
+    _append_html(
+        f'<p style="color:#ef4444;">⚠ 未知命令: {html_escape(command_name)}</p>'
+        f'<p style="color:#94a3b8;">可用命令: {html_escape(", ".join(available))}</p>'
     )
 
 

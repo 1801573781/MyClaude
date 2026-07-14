@@ -54,6 +54,9 @@ class QueryLoop:
         # 追问无工具兜底计数器
         self._no_tool_retry = 0
 
+        # 斜杠命令上下文（None 表示普通对话模式）
+        self._command_context = None
+
 
     def _init_memory(self):
         """通过工厂函数创建记忆实例，容错降级为 NoopMemory。"""
@@ -99,6 +102,7 @@ class QueryLoop:
             print_tool_call: Callable[[str, Dict], None],
             print_tool_result: Callable[[str], None],
             print_llm_reasoning: Callable[[str, int], None] = None,
+            command_context: dict | None = None,
     ):
 
         # 赋值
@@ -120,6 +124,16 @@ class QueryLoop:
         self.max_turns = global_cfg.cli.max_turns
         self._no_tool_retry = 0  # 每次新 session 重置追问计数器
         self.is_chat_mode = True
+
+        # 如果有斜杠命令上下文，用命令内容重置 api_messages
+        self._command_context = command_context
+        if command_context:
+            self.api_messages.reset_with_command(
+                command_name=command_context["command_name"],
+                command_content=command_context["command_content"],
+                user_argument=command_context["user_argument"],
+            )
+            self.is_chat_mode = False  # 命令模式视为编码任务
 
         # 新任务开始，执行记忆维护（遗忘过期记忆，不删除持久化数据）
         try:
@@ -194,12 +208,18 @@ class QueryLoop:
         if turn == 1:
             self.session.init_session()
 
-            self.api_messages.init_api_msg(user_input)
+            # 斜杠命令模式：api_messages 已由 reset_with_command 设置好，跳过 init_api_msg
+            if self._command_context:
+                # 用命令名+参数作为记忆检索的查询文本
+                query_text = self._command_context.get("user_argument") or user_input
+            else:
+                self.api_messages.init_api_msg(user_input)
+                query_text = user_input
 
             # 注入记忆上下文（通过 MemoryInterface 统一接口）
             # 先用 user_input 触发检索，再注入检索结果 + 工作记忆
             try:
-                mem_context = self._memory.get_context_for_query(user_input)
+                mem_context = self._memory.get_context_for_query(query_text)
                 self._memory_used = True
 
                 # 解析检索结果数量，打印 [记忆召回] 信息（即使0条也打印）
