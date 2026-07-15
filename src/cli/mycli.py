@@ -520,13 +520,13 @@ class MyClaudeCLI:
         # 包装回调：捕获工具执行结果并回填到最近一次工具调用记录中
         original_print_tool_result = cp.print_tool_result
 
-        def capturing_print_tool_result(tool_name: str, result: str):
+        def capturing_print_tool_result(tool_name: str, result: str, params: dict | None = None):
             # 回填结果到最近的同名工具调用
             for tc in reversed(test_data["tool_calls"]):
                 if tc["tool"] == tool_name and tc["result"] == "":
                     tc["result"] = result[:500]  # 截断防止过大
                     break
-            original_print_tool_result(tool_name, result)
+            original_print_tool_result(tool_name, result, params)
 
         try:
             self.query_loop.run(

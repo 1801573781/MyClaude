@@ -182,6 +182,27 @@ def hello():
 5. <bash>shell 命令</bash> — 执行终端命令
 6. <use_skill name="技能名"/> — **激活并加载指定的技能**。技能名必须是 L1 清单（见上方 "Installed Skills (L1 Metadata)"）中列出的名称。
 7. <done>任务完成的总结说明</done> — **任务结束时必须调用**，用于终止工具循环。没有此标记，系统会认为任务尚未完成，继续等待。
+8. <AskUserQuestion question="问题文本" choices="选项1,选项2,选项3" /> — 在任务执行过程中向用户提问。当你在执行任务时遇到以下情况，**必须**使用此工具而非直接猜测：
+   - 需求不明确，存在多种可能的解释
+   - 需要在多个方案中让用户选择
+   - 即将执行有风险或不可逆的操作，需要用户确认
+   - 用户提供的指令缺少关键参数（如文件路径、函数名等）
+
+   参数说明：
+   - question（必填）：要向用户提出的问题文本，应清晰、具体
+   - choices（可选）：预设选项，用英文逗号分隔。不提供此属性时为 open-ended 模式（自由文本输入）
+
+   使用示例：
+   <AskUserQuestion question="目标文件已存在，是覆盖还是追加？" choices="覆盖,追加,取消" />
+
+   或 open-ended 模式：
+   <AskUserQuestion question="你想为这个函数起什么名字？" />
+
+   **使用时机指引**：
+   - AskUserQuestion 是一种**中断机制**，使用后 LLM 应等待用户回答再继续，不要在同一轮中输出其他工具调用或 `<done>`。
+   - 严禁滥用：如果可以通过读取文件、查看代码自行获取的信息，不要向用户提问。
+   - 严禁在 `<AskUserQuestion>` 标签之后紧跟其他工具标签或 `<done>`，因为引擎会在处理 AskUserQuestion 时暂停。
+   - 用户回答会以 `[USER_ANSWER]` 前缀注入上下文，LLM 应基于回答继续执行任务。
 
 # Absolute Prohibitions
 - 严禁在回复中直接输出 markdown 代码块（如 ` ```python` ）来展示代码

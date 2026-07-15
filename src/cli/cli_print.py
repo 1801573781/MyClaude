@@ -533,7 +533,66 @@ def print_tool_call(tool_name: str, params: dict):
     _append_html(f'<p style="margin:4px 0 4px 20px; color:#22d3ee;">→ {html_escape(tool_name)} {html_escape(detail)}</p>')
 
 
-def print_tool_result(tool_name: str, content: str):
+def print_ask_user_question(question: str, choices: list[str] | None = None) -> str:
+    """
+    在终端渲染 LLM 的提问并等待用户输入。
+
+    Args:
+        question: 问题文本
+        choices: 可选预设选项列表
+
+    Returns:
+        str: 用户输入的回答文本
+    """
+    # 构建问题内容
+    content_lines = [question]
+    if choices:
+        content_lines.append("")
+        for i, choice in enumerate(choices, 1):
+            content_lines.append(f"  [{i}] {choice}")
+        content_lines.append("")
+        content_lines.append("[dim]请输入编号选择，或直接输入文本回答：[/dim]")
+
+    content = "\n".join(content_lines)
+
+    # 使用 Rich Panel 渲染问题，边框黄色表示需要用户关注
+    console.print(Panel(
+        content,
+        title="🤔 AI 提问",
+        border_style="yellow",
+        padding=(1, 2),
+        width=console.width - 2
+    ))
+
+    # 追加到 HTML 缓冲区
+    choices_html = ""
+    if choices:
+        choices_html = '<div style="margin-top:8px;">'
+        for i, choice in enumerate(choices, 1):
+            choices_html += f'<div>[{i}] {html_escape(choice)}</div>'
+        choices_html += '<div style="color:#94a3b8; margin-top:4px;">请输入编号选择，或直接输入文本回答</div></div>'
+
+    _append_html(
+        f'<div style="margin:12px 0; border:1px solid #f59e0b; border-radius:4px; padding:12px;">'
+        f'<div style="color:#f59e0b; font-weight:bold; margin-bottom:8px;">🤔 AI 提问</div>'
+        f'<div style="color:#e2e8f0;">{html_escape(question)}</div>'
+        f'{choices_html}'
+        f'</div>'
+    )
+
+    # 同步阻塞等待用户输入（与项目全同步架构一致）
+    user_input = Prompt.ask("\n[bold yellow]>[/bold yellow]")
+    return user_input
+
+
+def print_tool_result(tool_name: str, content: str, params: dict | None = None):
+    """打印工具执行结果。
+
+    Args:
+        tool_name: 工具名称
+        content: 工具执行返回的内容
+        params: 工具参数（可选，用于判断 bash openspec 等命令时抑制长输出）
+    """
     if not content:
         console.print("    [yellow]⚠ 无输出[/yellow]")
         _append_html('<p style="margin:4px 0 4px 40px; color:#f59e0b;">⚠ 无输出</p>')
@@ -541,14 +600,22 @@ def print_tool_result(tool_name: str, content: str):
 
     # 对于 file_view、use_skill、excel_view，不打印详细内容，只输出简洁提示
     if tool_name in ("file_view", "use_skill", "excel_view"):
-        # 注意：不要转义颜色标记部分，只转义可能出现在固定文本中的方括号（但这里固定文本没有方括号，所以无需转义）
         console.print(f"    [green]✓[/green] [{tool_name}]工具执行结果：详细内容略", markup=True)
         _append_html(f'<p style="margin:4px 0 4px 40px; color:#4ade80;">✓ [{tool_name}] 工具执行结果</p>')
         return
 
+    # 对于 bash openspec 命令，只打印简略提示（输出通常很长，且对用户无直接价值）
+    # LLM 仍会收到完整结果，仅 CLI 不打印
+    if tool_name == "bash" and params:
+        cmd_str = params.get("command", "").strip()
+        if cmd_str.startswith("openspec"):
+            console.print(f"    [green]✓[/green] [bash]工具执行结果：略", markup=True)
+            _append_html(f'<p style="margin:4px 0 4px 40px; color:#4ade80;">✓ [bash] 工具执行结果（openspec 命令，已折叠）</p>')
+            return
+
     # 其他工具正常打印
     if len(content) < 300:
-        safe_content = escape(content)  # 只转义用户内容
+        safe_content = escape(content)
         console.print(f"    [green]✓[/green] {safe_content}", markup=True)
         _append_html(f'<p style="margin:4px 0 4px 40px; color:#4ade80;">✓</p>'
                      f'<pre style="background:#2D2D3F; margin:4px 0 4px 40px; padding:8px; '

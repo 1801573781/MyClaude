@@ -7,13 +7,13 @@ import re
 # ======================== XML 标签集中管理 ========================
 # 所有 XML 工具标签（用于标签泄露清理和识别）。
 # 新增工具时必须同步更新这三个常量，其他地方全部引用它们。
-_ALL_XML_TAGS = {"create", "str_replace", "bash", "done", "file_view", "excel_view", "use_skill", "old", "new"}
+_ALL_XML_TAGS = {"create", "str_replace", "bash", "done", "file_view", "excel_view", "use_skill", "old", "new", "AskUserQuestion"}
 
 # 容器标签（需要闭合标签的，如 <create>...</create>）
 _CONTAINER_TAGS = {"create", "str_replace", "bash", "done"}
 
 # 自闭合标签（如 <file_view path="..."/>）
-_SELF_CLOSING_TAGS = {"file_view", "excel_view", "use_skill"}
+_SELF_CLOSING_TAGS = {"file_view", "excel_view", "use_skill", "AskUserQuestion"}
 
 
 def _final_clean_xml_tags(content: str) -> str:
@@ -362,8 +362,77 @@ def _find_str_replace_end(response: str, content_start: int, all_open_positions:
     return close_pos + len(close_tag), False
 
 
+def _find_markdown_code_ranges(text: str) -> list:
+    """识别 Markdown 代码块和行内代码的范围，返回 (start, end) 列表。
+
+    这些范围内的内容不应被解析为工具标签。
+    与 _find_container_end 中的 Markdown 感知逻辑保持一致。
+    """
+    ranges = []
+    pos = 0
+    in_code_block = False
+    code_block_start = 0
+    in_inline_code = False
+    inline_code_start = 0
+
+    while pos < len(text):
+        # 代码块检测（三反引号，可跨行）
+        if pos + 3 <= len(text) and text[pos:pos + 3] == '```':
+            if in_code_block:
+                ranges.append((code_block_start, pos + 3))
+                in_code_block = False
+            else:
+                if in_inline_code:
+                    # 行内代码遇到三反引号，先结束行内代码
+                    ranges.append((inline_code_start, pos))
+                    in_inline_code = False
+                in_code_block = True
+                code_block_start = pos
+            pos += 3
+            continue
+
+        # 行内代码检测（单反引号，不在代码块内时）
+        if not in_code_block and text[pos] == '`':
+            if in_inline_code:
+                ranges.append((inline_code_start, pos + 1))
+                in_inline_code = False
+            else:
+                in_inline_code = True
+                inline_code_start = pos
+            pos += 1
+            continue
+
+        # 行内代码遇到换行自动结束
+        if in_inline_code and text[pos] in '\n\r':
+            ranges.append((inline_code_start, pos))
+            in_inline_code = False
+            pos += 1
+            continue
+
+        pos += 1
+
+    # 未闭合的代码块/行内代码，取到末尾
+    if in_code_block:
+        ranges.append((code_block_start, len(text)))
+    if in_inline_code:
+        ranges.append((inline_code_start, len(text)))
+
+    return ranges
+
+
+def _is_position_in_code(pos: int, code_ranges: list) -> bool:
+    """检查位置是否在 Markdown 代码范围内。"""
+    for start, end in code_ranges:
+        if start <= pos < end:
+            return True
+    return False
+
+
 def _parse_tools_strict(response: str):
     """严格模式解析 AI 响应中的 XML 工具调用。"""
+    # 获取 Markdown 代码范围，用于过滤代码区域内的标签匹配
+    code_ranges = _find_markdown_code_ranges(response)
+
     all_matches = []
 
     # === 非容器工具（自闭合标签）：正则匹配 ===
@@ -371,9 +440,12 @@ def _parse_tools_strict(response: str):
         "file_view": re.compile(r'<file_view\s+path="([^"]*)"[^>]*/>'),
         "excel_view": re.compile(r'<excel_view\s+path="([^"]*)"[^>]*/>'),
         "use_skill": re.compile(r'<use_skill\s+name="([^"]*)"\s*/>'),
+        "AskUserQuestion": re.compile(r'<AskUserQuestion\s+question="([^"]*)"(?:\s+choices="([^"]*)")?\s*/?>'),
     }
     for tool_name, pattern in non_container_patterns.items():
         for m in pattern.finditer(response):
+            if _is_position_in_code(m.start(), code_ranges):
+                continue
             all_matches.append((m.start(), m.end(), tool_name, m))
 
     # === 容器工具：嵌套感知解析 ===
@@ -388,11 +460,13 @@ def _parse_tools_strict(response: str):
     all_open_positions = []
     for _, pattern in non_container_patterns.items():
         for m in pattern.finditer(response):
-            all_open_positions.append(m.start())
+            if not _is_position_in_code(m.start(), code_ranges):
+                all_open_positions.append(m.start())
     for tool_name in _CONTAINER_TAGS:
         if tool_name in container_open_patterns:
             for m in container_open_patterns[tool_name].finditer(response):
-                all_open_positions.append(m.start())
+                if not _is_position_in_code(m.start(), code_ranges):
+                    all_open_positions.append(m.start())
     all_open_positions.sort()
 
     for tool_name in _CONTAINER_TAGS:
@@ -403,6 +477,8 @@ def _parse_tools_strict(response: str):
         open_prefix = f'<{tool_name}'
 
         for m in open_pattern.finditer(response):
+            if _is_position_in_code(m.start(), code_ranges):
+                continue
             content_start = m.end()
 
             if tool_name == "str_replace":
@@ -546,6 +622,12 @@ def _build_result(response: str, all_matches: list, _is_inside_container):
 
         elif tool_name == "use_skill":
             tools.append({"llm_tool": "use_skill", "params": {"name": m.group(1)}})
+
+        elif tool_name == "AskUserQuestion":
+            question = m.group(1)
+            choices_raw = m.group(2)
+            choices = choices_raw.split(",") if choices_raw else None
+            tools.append({"llm_tool": "AskUserQuestion", "params": {"question": question, "choices": choices}})
 
         last_end = end
 
@@ -795,8 +877,24 @@ def execute_code_tool(tool):
         command = p.get("command", "")
         result = tool_bash(command)
 
+    elif name == "AskUserQuestion":
+        from src.tools.ask_user_question import ask_user_question
+        question = p.get("question", "")
+        choices_raw = p.get("choices")
+        if isinstance(choices_raw, str):
+            choices = choices_raw.split(",")
+        elif isinstance(choices_raw, list):
+            choices = choices_raw if choices_raw else None
+        else:
+            choices = None
+        result = ask_user_question(question=question, choices=choices)
+
     else:
         result = "unknown llm_tool"
+
+    # AskUserQuestion 已经返回标准 dict 格式，直接透传
+    if name == "AskUserQuestion" and isinstance(result, dict):
+        return result
 
     # 返回 dict，不是 list
     if name == "bash":

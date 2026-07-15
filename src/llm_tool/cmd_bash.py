@@ -32,7 +32,8 @@ def tool_bash(command: str) -> str:
 
     try:
         result = subprocess.run(
-            command, shell=True, capture_output=True, text=True, timeout=30
+            command, shell=True, capture_output=True, text=True, timeout=30,
+            encoding="utf-8", errors="replace"
         )
         output = result.stdout
         if result.stderr:

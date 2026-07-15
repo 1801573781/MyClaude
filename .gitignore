@@ -12,6 +12,7 @@ venv/
 .ruff_cache/
 logo/
 A2A_EX_Problem/
+openspec/
 src/crawler/
 src/spider/
 

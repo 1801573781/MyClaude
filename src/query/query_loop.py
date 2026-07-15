@@ -57,6 +57,9 @@ class QueryLoop:
         # 斜杠命令上下文（None 表示普通对话模式）
         self._command_context = None
 
+        # 死循环熔断：记录上一轮的工具签名（用于 AskUserQuestion 重复提问检测）
+        self._last_tool_sig = None
+
 
     def _init_memory(self):
         """通过工厂函数创建记忆实例，容错降级为 NoopMemory。"""
@@ -100,7 +103,7 @@ class QueryLoop:
             print_info: Callable[[str], None],
             print_llm_rsp: Callable[[str], None],
             print_tool_call: Callable[[str, Dict], None],
-            print_tool_result: Callable[[str], None],
+            print_tool_result: Callable[[str, str, dict | None], None],
             print_llm_reasoning: Callable[[str, int], None] = None,
             command_context: dict | None = None,
     ):
@@ -398,6 +401,29 @@ class QueryLoop:
         done_tools = [t for t in tools if t["llm_tool"] == "done"]
         exec_tools = [t for t in tools if t["llm_tool"] != "done"]
 
+        # ===== AskUserQuestion 特殊处理 =====
+        has_ask_user = any(t["llm_tool"] == "AskUserQuestion" for t in exec_tools)
+
+        if has_ask_user:
+            # 死循环熔断：检查是否连续两轮问了相同问题
+            ask_tools = [t for t in exec_tools if t["llm_tool"] == "AskUserQuestion"]
+            current_sig = "AskUserQuestion:" + "|".join(
+                t["params"].get("question", "") for t in ask_tools
+            )
+            if self._last_tool_sig == current_sig:
+                self._print_info("[熔断] 检测到连续两轮提出相同问题，强制终止以避免死循环")
+                self.session.log_dict_info({
+                    "role": "system",
+                    "content": "[熔断] AskUserQuestion 连续两轮相同问题，强制终止"
+                })
+                return ChatOrNot.QuitByNoneTool, []
+            self._last_tool_sig = current_sig
+
+            # AskUserQuestion 排到最前面优先执行
+            exec_tools.sort(key=lambda t: 0 if t["llm_tool"] == "AskUserQuestion" else 1)
+        else:
+            self._last_tool_sig = None
+
         tool_exec_info = []
 
         # 执行普通工具
@@ -417,7 +443,7 @@ class QueryLoop:
                         "content": f"[ERROR] 工具 {t['llm_tool']} 执行失败: {e}"
                     }
 
-                self._print_tool_result(t["llm_tool"], result_msg.get("content", ""))  # 打印：工具执行结果
+                self._print_tool_result(t["llm_tool"], result_msg.get("content", ""), t["params"])  # 打印：工具执行结果
                 self.session.log_tool_result(t["llm_tool"], result_msg)
 
                 # 将 tool 的执行结果，append 到 api_messages
@@ -429,6 +455,11 @@ class QueryLoop:
                     "params": t["params"],
                     "result": result_msg.get("content", "")[:500],  # 截断过长结果
                 })
+
+        # ===== AskUserQuestion 后跳过 done 检测 =====
+        # 如果本轮包含 AskUserQuestion，忽略同轮的 done 信号，强制继续下一轮
+        if has_ask_user:
+            return ChatOrNot.Continue, tool_exec_info
 
         # 处理 done
         if done_tools:
