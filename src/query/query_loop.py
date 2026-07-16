@@ -313,8 +313,8 @@ class QueryLoop:
     def _follow_up_for_tools(self):
         """无工具时追问 LLM 最多 3 次，尝试获取工具列表。
 
-        核心设计：使用临时消息副本，绝不污染正式的 api_messages 对话历史。
-        因为追问是"元操作"——它不应该成为 LLM 对话记忆的一部分。
+        追问成功后，将追问消息和 LLM 回复追加到正式 api_messages，
+        确保后续工具执行结果前面有完整的 assistant 消息，避免上下文断裂。
 
         Returns:
             解析到的工具列表；若 3 次追问仍无工具，返回空列表。
@@ -326,8 +326,14 @@ class QueryLoop:
 
         self._no_tool_retry += 1
         prompt = (
-            "[系统提醒] 我注意到你既没有输出任何工具调用，也没有输出 done。"
-            "请明确告诉我接下来应该执行什么工具，或者如果你认为任务已完成，请输出 done。"
+            "[系统提醒] 你上一轮没有输出任何 XML 工具标签。"
+            "你必须立即输出以下之一：\n"
+            "1. <bash>命令</bash> — 执行命令\n"
+            '2. <file_view path="..."/> — 查看文件\n'
+            '3. <create path="...">内容</create> — 创建文件\n'
+            '4. <str_replace path="..."><old>旧代码</old><new>新代码</new></str_replace> — 修改文件\n'
+            "5. <done>任务完成说明</done> — 结束任务\n"
+            "严禁只输出文字描述，必须输出 XML 工具标签。"
         )
         # 获取当前使用的 LLM 名称
         try:
@@ -358,10 +364,19 @@ class QueryLoop:
 
         # 解析工具（仅从 ai_response，不回退到 reasoning_content）
         ai_response_clean = strip_thinking(ai_response)
+
+        # 如果实际响应为空但推理内容存在，使用推理内容作为有效响应
+        if not ai_response_clean.strip() and reasoning_content:
+            ai_response_clean = reasoning_content.strip()
+
         _, tools = tool_executor.parse_tools(ai_response_clean)
 
         if tools:
             self._print_info(f"[追问结果] 成功获取到 {len(tools)} 个工具，进入执行")
+            # 追问成功：将追问消息和 LLM 回复追加到正式 api_messages，
+            # 确保后续工具执行结果前面有完整的 assistant 消息，避免上下文断裂
+            self.api_messages.append_micro_info("user", prompt)
+            self.api_messages.append_llm_response(ai_response_clean)
         else:
             self._print_info(f"[追问结果] 第 {self._no_tool_retry}/3 次仍未获得工具")
 
@@ -379,7 +394,16 @@ class QueryLoop:
                 self._print_info("LLM 未调用 done 工具，但已无后续操作，自动结束")
                 self.session.log_dict_info({"role": "system", "content": "LLM 未调用 done 工具，但已无后续操作，自动结束"})
                 return ChatOrNot.QuitByNoneTool, []
-            # 编码模式：无工具时循环追问 LLM（最多 3 次）
+
+            # 编码模式：第一次无工具时先温和提醒（不追问），给 LLM 自我恢复的机会
+            if self._no_tool_retry == 0:
+                self._no_tool_retry += 1
+                gentle_prompt = "[系统提醒] 请继续执行下一步操作，输出 XML 工具标签。"
+                self.api_messages.append_micro_info("user", gentle_prompt)
+                self._print_info("[温和提醒] 请继续执行下一步操作")
+                return ChatOrNot.Continue, []
+
+            # 第二次及以后无工具，正式追问 LLM（最多 2 次）
             while self._no_tool_retry < 3:
                 tools = self._follow_up_for_tools()
                 if tools:
@@ -388,11 +412,14 @@ class QueryLoop:
                     break
                 # 未获得工具，_follow_up_for_tools 已自增 _no_tool_retry，继续循环追问
             if not tools:
-                # 追问 3 次无果，兜底结束
+                # 追问无果，兜底结束
                 self._print_info("LLM 未调用 done 工具，但已无后续操作，自动结束")
                 self.session.log_dict_info({"role": "system", "content": "LLM 未调用 done 工具，但已无后续操作，自动结束"})
                 return ChatOrNot.QuitByNoneTool, []
             # 继续往下执行（会进入后面的 exec_tools / done_tools 处理）
+
+        # 有工具时重置追问计数器
+        self._no_tool_retry = 0
 
         # 如果 LLM response 中有工具，那就不是单纯的聊天
         self.is_chat_mode = False
