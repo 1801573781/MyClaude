@@ -454,6 +454,7 @@ def _parse_tools_strict(response: str):
         "str_replace": re.compile(r'<str_replace\s+path="([^"]*)"(?:\s+summary="([^"]*)")?\s*>'),
         "bash": re.compile(r'<bash>'),
         "done": re.compile(r'<done>'),
+        "todowrite": re.compile(r'<todowrite>'),
     }
 
     # 收集所有工具的开标签位置（用于未闭合时的软边界）
@@ -614,6 +615,11 @@ def _build_result(response: str, all_matches: list, _is_inside_container):
             info = m
             content = info["content"].strip()
             tools.append({"llm_tool": "bash", "params": {"command": content, "_is_unclosed": info["is_unclosed"]}})
+
+        elif tool_name == "todowrite":
+            info = m
+            content = info["content"]
+            tools.append({"llm_tool": "todowrite", "params": {"content": content, "_is_unclosed": info["is_unclosed"]}})
 
         elif tool_name == "done":
             info = m

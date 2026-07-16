@@ -374,6 +374,7 @@ class MyClaudeCLI:
                     cli_print.print_tool_call,
                     cli_print.print_tool_result,
                     cli_print.typewriter_then_collapse,
+                    on_todo_update=cli_print.print_todo_list,
                     command_context=ctx,
                 )
                 cli_print.print_blank()
@@ -413,7 +414,8 @@ class MyClaudeCLI:
                                 cli_print.typewriter_then_markdown,
                                 cli_print.print_tool_call,
                                 cli_print.print_tool_result,
-                                cli_print.typewriter_then_collapse)
+                                cli_print.typewriter_then_collapse,
+                                on_todo_update=cli_print.print_todo_list)
 
             cli_print.print_blank()
 

@@ -8,6 +8,7 @@ from src.llm_tool import tool_executor
 from src.utility.config_loader import global_cfg
 from src.utility.normal_utility import strip_thinking
 from src.query.session_log import SessionLog
+from src.query.todo_manager import TodoManager
 from src.memory.factory import create_memory
 import logging
 
@@ -60,6 +61,11 @@ class QueryLoop:
         # 死循环熔断：记录上一轮的工具签名（用于 AskUserQuestion 重复提问检测）
         self._last_tool_sig = None
 
+        # TodoWrite 有状态进度管理
+        self._todo_manager = TodoManager()
+        self._on_todo_update = None  # 回调：todo 列表更新时通知 CLI 渲染
+        self._last_todo_sig = None  # 死循环熔断：上一轮 todo 状态签名
+
 
     def _init_memory(self):
         """通过工厂函数创建记忆实例，容错降级为 NoopMemory。"""
@@ -106,6 +112,7 @@ class QueryLoop:
             print_tool_result: Callable[[str, str, dict | None], None],
             print_llm_reasoning: Callable[[str, int], None] = None,
             command_context: dict | None = None,
+            on_todo_update: Callable[[dict], None] = None,
     ):
 
         # 赋值
@@ -114,6 +121,7 @@ class QueryLoop:
         self._print_tool_call = print_tool_call
         self._print_tool_result = print_tool_result
         self._print_llm_reasoning = print_llm_reasoning
+        self._on_todo_update = on_todo_update
 
         """
         每一次 query_loop.run 的调用，都是与LLM的一次新的session
@@ -127,6 +135,7 @@ class QueryLoop:
         self.max_turns = global_cfg.cli.max_turns
         self._no_tool_retry = 0  # 每次新 session 重置追问计数器
         self.is_chat_mode = True
+        self._todo_manager.reset()  # 每次新 session 重置 todo 列表
 
         # 如果有斜杠命令上下文，用命令内容重置 api_messages
         self._command_context = command_context
@@ -240,6 +249,12 @@ class QueryLoop:
         if turn == self.max_turns and not self.is_chat_mode:
             command = "命令：如果你已完成所有修改，请立即调用 <llm_tool>done</llm_tool> 结束任务。不要继续调用其他工具。"
             self.api_messages.append_micro_info("user", command)
+
+        # 每轮注入 [TODO_STATUS] 上下文（如果有活跃的 todo 列表）
+        todo_context = self._todo_manager.get_context_message()
+        if todo_context:
+            self.api_messages.append_micro_info("user", todo_context)
+            self.session.log_dict_info({"role": "user", "content": todo_context})
 
         # 事前记录轮次及发送给LLM的req
         self.session.log_turn(turn)
@@ -451,6 +466,10 @@ class QueryLoop:
         else:
             self._last_tool_sig = None
 
+        # TodoWrite 排到最前面优先执行（先更新计划，再执行动作）
+        # 排序键：todowrite=0, AskUserQuestion=1, 其他=2
+        exec_tools.sort(key=lambda t: 0 if t["llm_tool"] == "todowrite" else (1 if t["llm_tool"] == "AskUserQuestion" else 2))
+
         tool_exec_info = []
 
         # 执行普通工具
@@ -461,17 +480,37 @@ class QueryLoop:
                 self._print_tool_call(t["llm_tool"], t["params"])  # 打印：工具名称，工具参数
                 self.session.log_tool_call(t["llm_tool"], t["params"])
 
-                try:
-                    result_msg = tool_executor.execute_code_tool(t)  # 工具执行
-                except Exception as e:
-                    logger.error(f"工具执行异常 [{t['llm_tool']}]: {e}")
-                    result_msg = {
-                        "role": "user",
-                        "content": f"[ERROR] 工具 {t['llm_tool']} 执行失败: {e}"
-                    }
+                # ===== TodoWrite 拦截：交给 TodoManager 处理 =====
+                if t["llm_tool"] == "todowrite":
+                    try:
+                        result_msg = self._todo_manager.update_from_xml(
+                            t["params"].get("content", "")
+                        )
+                        # 通知 CLI 渲染 todo 列表
+                        if self._on_todo_update:
+                            self._on_todo_update(self._todo_manager.get_display_data())
+                    except Exception as e:
+                        logger.error(f"TodoWrite 执行异常: {e}")
+                        result_msg = {
+                            "role": "user",
+                            "content": f"[ERROR] TodoWrite 执行失败: {e}"
+                        }
+                else:
+                    try:
+                        result_msg = tool_executor.execute_code_tool(t)  # 工具执行
+                    except Exception as e:
+                        logger.error(f"工具执行异常 [{t['llm_tool']}]: {e}")
+                        result_msg = {
+                            "role": "user",
+                            "content": f"[ERROR] 工具 {t['llm_tool']} 执行失败: {e}"
+                        }
 
                 self._print_tool_result(t["llm_tool"], result_msg.get("content", ""), t["params"])  # 打印：工具执行结果
                 self.session.log_tool_result(t["llm_tool"], result_msg)
+
+                # TodoWrite 执行后记录 todo 快照到会话日志
+                if t["llm_tool"] == "todowrite":
+                    self.session.log_todo_snapshot(self._todo_manager.get_display_data())
 
                 # 将 tool 的执行结果，append 到 api_messages
                 self.api_messages.append_tool_exec_result(result_msg)
@@ -488,12 +527,32 @@ class QueryLoop:
         if has_ask_user:
             return ChatOrNot.Continue, tool_exec_info
 
+        # ===== 死循环熔断：纯 todowrite 轮的状态变化检测 =====
+        non_todo_tools = [t for t in exec_tools if t["llm_tool"] != "todowrite"]
+        has_todowrite = any(t["llm_tool"] == "todowrite" for t in exec_tools)
+
+        if has_todowrite and not non_todo_tools:
+            # 纯 todowrite 轮：检查 todo 状态是否有变化
+            current_todo_sig = self._todo_manager.todo_list.status_signature()
+            if self._last_todo_sig is not None and self._last_todo_sig == current_todo_sig:
+                self._print_info("[熔断] 连续两轮纯 todowrite 且状态无变化，强制终止")
+                self.session.log_dict_info({
+                    "role": "system",
+                    "content": "[熔断] TodoWrite 连续两轮状态无变化，强制终止"
+                })
+                return ChatOrNot.QuitByNoneTool, tool_exec_info
+            self._last_todo_sig = current_todo_sig
+        else:
+            # 有非 todowrite 工具，重置签名
+            self._last_todo_sig = None
+
         # 处理 done
         if done_tools:
             msg = done_tools[0]["params"].get("message", "任务完成")
             self._print_info(msg)
             self.session.log_dict_info({"role": "assistant", "content": msg})
 
+            self._todo_manager.reset()  # 任务完成，清空 todo 列表
             return ChatOrNot.QuitByDone, tool_exec_info
 
         # self._print_info("no tools")

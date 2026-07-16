@@ -15,6 +15,7 @@ A2A_EX_Problem/
 openspec/
 src/crawler/
 src/spider/
+src/chicken_farm/
 
 # 忽略这些目录下的所有内容
 code_output/*

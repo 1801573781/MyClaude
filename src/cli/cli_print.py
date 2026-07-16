@@ -758,6 +758,84 @@ def show_status(text: str = "Thinking...", spinner: str = "dots"):
         yield  # 把控制权交还给调用方
 
 
+def print_todo_list(todo_list):
+    """用 Rich 渲染 todo 列表，显示进度条和各条目状态。
+
+    Args:
+        todo_list: TodoList 对象（来自 src.query.todo_manager）
+    """
+    if todo_list is None or todo_list.is_empty():
+        return
+
+    items = todo_list.items
+    total = len(items)
+    completed = todo_list.completed_count()
+    in_progress = todo_list.current_in_progress()
+
+    # 构建进度条
+    bar_width = 20
+    filled = int(bar_width * completed / total) if total > 0 else 0
+    bar = "█" * filled + "░" * (bar_width - filled)
+    pct = int(completed / total * 100) if total > 0 else 0
+
+    # 构建表格
+    table = Table(show_header=False, box=None, padding=(0, 1))
+    table.add_column("状态", width=3)
+    table.add_column("任务", style="white")
+
+    for item in items:
+        if item.status.value == "completed":
+            status_icon = "[green]✅[/green]"
+            content_style = "dim"
+        elif item.status.value == "in_progress":
+            status_icon = "[yellow]▶[/yellow]"
+            content_style = "bold yellow"
+            suffix = f" [dim]— {item.active_form}[/dim]" if item.active_form else ""
+        else:
+            status_icon = "[dim]○[/dim]"
+            content_style = "dim"
+            suffix = ""
+
+        # 使用 markup 转义内容中的方括号
+        safe_content = escape(item.content)
+        if item.status.value == "in_progress":
+            table.add_row(status_icon, f"[{content_style}]{safe_content}[/{content_style}]{suffix}")
+        else:
+            table.add_row(status_icon, f"[{content_style}]{safe_content}[/{content_style}]")
+
+    # 使用 Panel 包裹
+    panel = Panel(
+        table,
+        title=f"[bold cyan]📋 Todo [{bar}] {completed}/{total} ({pct}%)[/bold cyan]",
+        border_style="cyan",
+        padding=(0, 1),
+    )
+
+    console.print(panel)
+
+    # HTML 缓冲区
+    todo_html_lines = []
+    for item in items:
+        if item.status.value == "completed":
+            icon = "✅"
+            color = "#4ade80"
+        elif item.status.value == "in_progress":
+            icon = "▶"
+            color = "#f59e0b"
+        else:
+            icon = "○"
+            color = "#94a3b8"
+        todo_html_lines.append(
+            f'<div style="color:{color};">{icon} {html_escape(item.content)}</div>'
+        )
+    _append_html(
+        f'<div style="margin:12px 0; border:1px solid #22d3ee; border-radius:4px; padding:12px;">'
+        f'<div style="color:#22d3ee; font-weight:bold; margin-bottom:8px;">📋 Todo [{bar}] {completed}/{total} ({pct}%)</div>'
+        f'{"".join(todo_html_lines)}'
+        f'</div>'
+    )
+
+
 def get_input() -> str:
     """获取用户输入"""
     try:

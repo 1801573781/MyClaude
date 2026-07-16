@@ -95,6 +95,28 @@ class SessionLog:
         }
         self.log_dict_info(dict_info)
 
+    def log_todo_snapshot(self, todo_list):
+        """记录当前 Turn 的 Todo 快照到会话日志。
+
+        Args:
+            todo_list: TodoList 对象（来自 src.query.todo_manager）
+        """
+        if todo_list is None or todo_list.is_empty():
+            return
+        items = todo_list.items
+        total = len(items)
+        completed = todo_list.completed_count()
+        lines = [f"**Todo 状态**: {completed}/{total}"]
+        for item in items:
+            status_icon = {
+                "completed": "✅",
+                "in_progress": "▶",
+                "pending": "○",
+            }.get(item.status.value, "?")
+            lines.append(f"- {status_icon} {item.content} ({item.status.value})")
+        dict_info = {"todo_snapshot": "\n".join(lines)}
+        self.log_dict_info(dict_info)
+
 
     def log_dict_info(self, dict_info):
         timestamp = datetime.now().strftime("%Y-%m-%d %H : %M : %S")
@@ -388,6 +410,12 @@ class SessionLog:
                 if current_section != "tool":
                     _flush_section()
                     current_section = "tool"
+                    current_items = []
+                current_items.append(item)
+            elif "todo_snapshot" in item:
+                if current_section != "todo":
+                    _flush_section()
+                    current_section = "todo"
                     current_items = []
                 current_items.append(item)
 
@@ -928,6 +956,12 @@ class SessionLog:
                         lines.append(result.get("content", str(result)))
                 else:
                     lines.append(f"**结果:** {str(result)}")
+
+        # Todo 快照
+        if "todo_snapshot" in item:
+            lines.append(f"### 📋 Todo 快照")
+            lines.append("")
+            lines.append(item["todo_snapshot"])
 
         return "\n".join(lines)
 
