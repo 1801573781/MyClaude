@@ -30,6 +30,9 @@ class LLMAPIMessage:
             }
             self._append_info(tree_cache_msg)
 
+        # 记录初始化后的消息数量，用于 reset_context 时保留系统级消息
+        self._initial_msg_count = len(self.api_messages)
+
 
     def _resolve_placeholders(self, text: str) -> str:
         """将文本中的 ${project_root} 占位符替换为实际项目根目录路径。
@@ -99,6 +102,12 @@ class LLMAPIMessage:
 
     def get_msg(self):
         return self.api_messages
+
+    def reset_context(self):
+        """重置上下文：保留初始化时的系统级消息（system prompt + 项目上下文 + 目录树），
+        清空其后的所有对话历史。
+        """
+        self.api_messages = self.api_messages[:self._initial_msg_count]
 
 
     def init_api_msg(self, user_input):

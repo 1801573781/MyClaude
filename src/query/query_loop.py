@@ -32,10 +32,10 @@ class QueryLoop:
         self.show_thinking = show_thinking
         self.role = role
 
-        self.api_messages = None
+        self.api_messages = llm_api_msg.LLMAPIMessage(role=self.role)
         self.session = None
         self.max_turns = 0
-        self.is_chat_mode = True
+        self.is_multi_turns = None
 
         # 通过工厂函数创建记忆实例（根据 config.yaml memory.backend 选择后端）
         self._init_memory()
@@ -88,6 +88,14 @@ class QueryLoop:
             return 0
         return self._memory.clear_all()
 
+    def reset_context(self):
+        """重置上下文：保留 system prompt 及初始化消息，清空对话历史。
+        供 CLI 的 /r ctx 命令调用。
+        """
+        if self.api_messages:
+            self.api_messages.reset_context()
+            logger.info("上下文已重置（保留系统提示词，清空对话历史）")
+
 
     def get_tokens(self):
         """返回详细的 token 统计字典。
@@ -124,18 +132,18 @@ class QueryLoop:
         self._on_todo_update = on_todo_update
 
         """
-        每一次 query_loop.run 的调用，都是与LLM的一次新的session
-        相关变量都需要重新初始化
+        每一次 query_loop.run 的调用，都是与 LLM 的一次新 Turn。
+        api_messages 跨 Turn 累积，不在此处重置。
+        只有 /r 或 /r ctx 才会清空上下文。
         """
         turn = 0
         quit_chat = ChatOrNot.Continue
 
-        self.api_messages = llm_api_msg.LLMAPIMessage(role=self.role)
         self.session = SessionLog()
         self.max_turns = global_cfg.cli.max_turns
-        self._no_tool_retry = 0  # 每次新 session 重置追问计数器
-        self.is_chat_mode = True
-        self._todo_manager.reset()  # 每次新 session 重置 todo 列表
+        self._no_tool_retry = 0  # 每次新 Turn 重置追问计数器
+        self.is_multi_turns = None  # 每次 Turn 开始时未确定
+        self._todo_manager.reset()  # 每次新 Turn 重置 todo 列表
 
         # 如果有斜杠命令上下文，用命令内容重置 api_messages
         self._command_context = command_context
@@ -145,7 +153,6 @@ class QueryLoop:
                 command_content=command_context["command_content"],
                 user_argument=command_context["user_argument"],
             )
-            self.is_chat_mode = False  # 命令模式视为编码任务
 
         # 新任务开始，执行记忆维护（遗忘过期记忆，不删除持久化数据）
         try:
@@ -246,7 +253,7 @@ class QueryLoop:
                 logger.warning(f"记忆上下文注入失败: {e}")
 
         # 倒数最后一轮，命令式提醒
-        if turn == self.max_turns and not self.is_chat_mode:
+        if turn == self.max_turns and self.is_multi_turns:
             command = "命令：如果你已完成所有修改，请立即调用 <llm_tool>done</llm_tool> 结束任务。不要继续调用其他工具。"
             self.api_messages.append_micro_info("user", command)
 
@@ -325,6 +332,22 @@ class QueryLoop:
         return tools, remaining_text
 
 
+    def _get_follow_up_prompt(self, retry_count: int) -> str:
+        """根据追问次数返回递进式的提醒消息，给 LLM 两条路：输出工具或输出 done。
+
+        Args:
+            retry_count: 追问次数（1, 2, 3）
+
+        Returns:
+            对应次数的追问消息文本
+        """
+        prompts = {
+            1: "[系统提醒] 你既没有输出工具，也没有输出 <done>。如果任务尚未完成，请继续输出下一个工具。如果你在等待用户的回应，请输出 <done> 结束本轮。",
+            2: "[系统追问] 请立即输出工具继续执行，或输出 <done> 结束本轮。",
+            3: "[最终提醒] 这是你最后的机会。输出工具继续，或输出 <done> 结束。否则本轮将自动结束，等待用户输入。",
+        }
+        return prompts.get(retry_count, prompts[3])
+
     def _follow_up_for_tools(self):
         """无工具时追问 LLM 最多 3 次，尝试获取工具列表。
 
@@ -340,26 +363,11 @@ class QueryLoop:
             return []
 
         self._no_tool_retry += 1
-        prompt = (
-            "[系统提醒] 你上一轮没有输出任何 XML 工具标签。"
-            "你必须立即输出以下之一：\n"
-            "1. <bash>命令</bash> — 执行命令\n"
-            '2. <file_view path="..."/> — 查看文件\n'
-            '3. <create path="...">内容</create> — 创建文件\n'
-            '4. <str_replace path="..."><old>旧代码</old><new>新代码</new></str_replace> — 修改文件\n'
-            "5. <done>任务完成说明</done> — 结束任务\n"
-            "严禁只输出文字描述，必须输出 XML 工具标签。"
-        )
-        # 获取当前使用的 LLM 名称
-        try:
-            llm_name = global_cfg.model.model_name
-        except Exception:
-            llm_name = "LLM"
-        user_msg = (
-            f"[系统提醒] 系统注意到{llm_name}既没有输出任何工具调用，也没有输出 done。"
-            f"系统会追问{llm_name}，接下来应该执行什么工具，或者如果{llm_name}认为任务已完成，也会请{llm_name}输出 done。"
-        )
-        self._print_info(f"[追问 {self._no_tool_retry}/3] {user_msg}")
+        prompt = self._get_follow_up_prompt(self._no_tool_retry)
+        # 方案 E：第一次追问静默（不打印到屏幕），只注入给 LLM
+        silent = (self._no_tool_retry == 1)
+        if not silent:
+            self._print_info(f"[追问 {self._no_tool_retry}/3] {prompt}")
 
         try:
             # 构建临时消息列表（深拷贝，不污染正式对话历史）
@@ -387,13 +395,15 @@ class QueryLoop:
         _, tools = tool_executor.parse_tools(ai_response_clean)
 
         if tools:
-            self._print_info(f"[追问结果] 成功获取到 {len(tools)} 个工具，进入执行")
+            if not silent:
+                self._print_info(f"[追问结果] 成功获取到 {len(tools)} 个工具，进入执行")
             # 追问成功：将追问消息和 LLM 回复追加到正式 api_messages，
             # 确保后续工具执行结果前面有完整的 assistant 消息，避免上下文断裂
             self.api_messages.append_micro_info("user", prompt)
             self.api_messages.append_llm_response(ai_response_clean)
         else:
-            self._print_info(f"[追问结果] 第 {self._no_tool_retry}/3 次仍未获得工具")
+            if not silent:
+                self._print_info(f"[追问结果] 第 {self._no_tool_retry}/3 次仍未获得工具")
 
         return tools
 
@@ -404,21 +414,13 @@ class QueryLoop:
         """
         # 1. 如果 LLM response 中没有工具
         if not tools:
-            # 聊天/问答模式：直接结束，不需要追问
-            if self.is_chat_mode:
-                self._print_info("LLM 未调用 done 工具，但已无后续操作，自动结束")
-                self.session.log_dict_info({"role": "system", "content": "LLM 未调用 done 工具，但已无后续操作，自动结束"})
+            # 第一轮（is_multi_turns 未确定）：无工具无 done → 单轮场景
+            if self.is_multi_turns is None:
+                self.is_multi_turns = False
+                self.session.log_dict_info({"role": "system", "content": "LLM 未调用工具，本轮结束，等待用户输入"})
                 return ChatOrNot.QuitByNoneTool, []
 
-            # 编码模式：第一次无工具时先温和提醒（不追问），给 LLM 自我恢复的机会
-            if self._no_tool_retry == 0:
-                self._no_tool_retry += 1
-                gentle_prompt = "[系统提醒] 请继续执行下一步操作，输出 XML 工具标签。"
-                self.api_messages.append_micro_info("user", gentle_prompt)
-                self._print_info("[温和提醒] 请继续执行下一步操作")
-                return ChatOrNot.Continue, []
-
-            # 第二次及以后无工具，正式追问 LLM（最多 2 次）
+            # is_multi_turns = True 的后续轮次：无工具无 done → 触发追问
             while self._no_tool_retry < 3:
                 tools = self._follow_up_for_tools()
                 if tools:
@@ -427,17 +429,18 @@ class QueryLoop:
                     break
                 # 未获得工具，_follow_up_for_tools 已自增 _no_tool_retry，继续循环追问
             if not tools:
-                # 追问无果，兜底结束
-                self._print_info("LLM 未调用 done 工具，但已无后续操作，自动结束")
-                self.session.log_dict_info({"role": "system", "content": "LLM 未调用 done 工具，但已无后续操作，自动结束"})
+                # 追问无果，兜底结束 Turn
+                self._print_info("追问 3 次后仍未获得工具，本轮结束，等待用户输入")
+                self.session.log_dict_info({"role": "system", "content": "追问 3 次后仍未获得工具，本轮结束，等待用户输入"})
                 return ChatOrNot.QuitByNoneTool, []
             # 继续往下执行（会进入后面的 exec_tools / done_tools 处理）
 
         # 有工具时重置追问计数器
         self._no_tool_retry = 0
 
-        # 如果 LLM response 中有工具，那就不是单纯的聊天
-        self.is_chat_mode = False
+        # 第一轮有工具 → 动态确定为多轮场景
+        if self.is_multi_turns is None:
+            self.is_multi_turns = True
 
         # 既然有工具，那就执行工具'''
         done_tools = [t for t in tools if t["llm_tool"] == "done"]

@@ -195,6 +195,8 @@ Welcome to MyClaude Code CLI! A beautiful terminal interface for AI Coding.
 - `/help` - Show this help message
 - `/tokens` - Show the tokens statistics
 - `/t number` - 展开指定 Turn 的思考过程
+- `/r` - 重置上下文与记忆（相当于 /r ctx + /r mem）
+- `/r ctx` - 重置上下文（清除对话历史，保留长期记忆）
 - `/r mem` - 清除所有记忆（短期 + 长期 + 工作记忆）
 - `/init` - 创建MyClaude的项目工程树
 - `/cs` - 统计项目代码行数
