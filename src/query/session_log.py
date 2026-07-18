@@ -638,7 +638,7 @@ class SessionLog:
         # 占位文本：明确的"没有记忆"标记
         if content.strip() == "没有召回到相关记忆":
             escaped = content.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-            return f'<pre style="color:#999; font-style:italic;">{escaped}</pre>'
+            return f'<pre style="color:#75715E; font-style:italic;">{escaped}</pre>'
 
         # ---- 前缀/正文分离（不使用正则，直接用字符串查找） ----
         # 查找第一个 "\n- [id=" 或 "\n- [Turn " 或 "\n- [(" 的位置
@@ -711,13 +711,13 @@ class SessionLog:
 
         if not memories:
             # 没有记忆条目 → 整个内容作为前缀展示
-            return f'<pre style="color:#666;">{prefix_html}</pre>'
+            return f'<pre style="color:#6b7280;">{prefix_html}</pre>'
 
         sub_html_parts = []
         if prefix_html:
             sub_html_parts.append(
-                f'<div style="padding:8px 12px; color:#666; font-size:14px; '
-                f'border-bottom:1px solid #e8e8e8;">{prefix_html}</div>'
+                f'<div style="padding:8px 12px; color:#6b7280; font-size:14px; '
+                f'border-bottom:1px solid #e0e0e0;">{prefix_html}</div>'
             )
 
         for i, mem in enumerate(memories):
@@ -827,8 +827,8 @@ class SessionLog:
         for i, r_content in enumerate(reasoning_blocks):
             r_content_escaped = r_content.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
             reasoning_html += (
-                f'<details style="margin: 8px 0; padding: 8px; background: #f0f4ff; border: 1px solid #c0d0f0; border-radius: 6px;">\n'
-                f'<summary style="cursor: pointer; font-weight: bold; color: #4a6da7;">展开查看推理过程</summary>\n'
+                f'<details style="margin: 8px 0; padding: 8px; background: #f8f9fa; border: 1px solid #e0e0e0; border-radius: 6px;">\n'
+                f'<summary style="cursor: pointer; font-weight: bold; color: #6b7280;">展开查看推理过程</summary>\n'
                 f'<pre style="margin-top: 8px; white-space: pre-wrap;">{r_content_escaped}</pre>\n'
                 f'</details>\n'
             )
@@ -947,6 +947,16 @@ class SessionLog:
             '.toggle-icon.collapsed { transform: rotate(-90deg); }\n'
             'h1, h2, h3 { color: #7c3aed; }\n'
             'strong { color: #10b981; }\n'
+            'code { \n'
+            '    background: #f0f0f0; \n'
+            '    padding: 1px 5px; \n'
+            '    border-radius: 3px; \n'
+            '    color: #d63384; \n'
+            '    font-family: "SF Mono", "Menlo", "Cascadia Code", "Roboto Mono", Consolas, "Courier New", monospace; \n'
+            '    font-size: 0.9em; \n'
+            '}\n'
+            '.md-header { color: #7c3aed; font-weight: 600; }\n'
+            '.md-code { background: #f0f0f0; padding: 1px 5px; border-radius: 3px; color: #d63384; font-family: "SF Mono", "Menlo", "Cascadia Code", "Roboto Mono", Consolas, "Courier New", monospace; font-size: 0.9em; }\n'
             '.log-body {\n'
             '    white-space: pre-wrap;\n'
             '    word-wrap: break-word;\n'
@@ -1194,17 +1204,77 @@ class SessionLog:
 
 
     def _highlight_inline_python(self, text: str) -> str:
-        """对文本中未被 Markdown 代码块包裹的多行 Python 代码进行高亮。
-        通过检测是否包含 def/class/import/from 等关键字且为多行来判断。"""
+        """对文本中未被 Markdown 代码块包裹的内容进行渲染。
+        如果检测到 Python 代码，进行语法高亮；否则进行 Markdown 风格彩色渲染。"""
         if '\n' not in text:
-            return text
+            return self._enhance_markdown_text(text)
 
         # 快速启发式检测：包含多行且至少有一行以 Python 关键字开头
-        if not re.search(r'(?:^|\n)[ \t]*(?:def|class|import|from)\b', text):
+        if re.search(r'(?:^|\n)[ \t]*(?:def|class|import|from)\b', text):
+            # 如果看起来像 Python 代码，进行高亮（XML 标签会被保护）
+            return self._highlight_python(text)
+
+        # 非 Python 代码，进行 Markdown 风格渲染
+        return self._enhance_markdown_text(text)
+
+
+    def _enhance_markdown_text(self, text: str) -> str:
+        """对非代码块的文本进行 Markdown 风格的彩色渲染。
+        保护已有 HTML 标签，对 Markdown 语法添加颜色。"""
+        if not text or not text.strip():
             return text
 
-        # 如果看起来像 Python 代码，进行高亮（XML 标签会被保护）
-        return self._highlight_python(text)
+        # 保护已有的 HTML 标签（仅限已知标签，避免误保护 LLM 输出中的 <create> 等）
+        html_placeholders = []
+
+        def protect_html(m):
+            idx = len(html_placeholders)
+            html_placeholders.append(m.group(0))
+            return f"__MDHTML_{idx}__"
+
+        text = re.sub(r'</?(?:details|summary)>', protect_html, text)
+
+        # HTML 转义剩余文本
+        text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
+        # Markdown 标题着色（### 或 ## 开头的行）
+        text = re.sub(
+            r'^(#{1,6}\s.+)$',
+            r'<span style="color:#7c3aed;font-weight:600">\1</span>',
+            text,
+            flags=re.MULTILINE
+        )
+
+        # 行内代码 `code`
+        text = re.sub(
+            r'`([^`]+)`',
+            r'<span style="background:#f0f0f0;padding:1px 5px;border-radius:3px;color:#d63384;font-family:Consolas,monospace;font-size:0.9em">\1</span>',
+            text
+        )
+
+        # 粗体 **text**
+        text = re.sub(
+            r'\*\*(.+?)\*\*',
+            r'<strong style="color:#059669">\1</strong>',
+            text
+        )
+
+        # 列表项标记着色
+        text = re.sub(
+            r'^(\s*)([-*])\s',
+            r'\1<span style="color:#10b981">\2</span> ',
+            text,
+            flags=re.MULTILINE
+        )
+
+        # 恢复 HTML 标签
+        def restore_html(m):
+            idx = int(m.group(1))
+            return html_placeholders[idx]
+
+        text = re.sub(r'__MDHTML_(\d+)__', restore_html, text)
+
+        return text
 
 
     def _highlight_python(self, code: str) -> str:
@@ -1242,8 +1312,8 @@ class SessionLog:
         # 5. 对剩余文本进行 HTML 转义（防止 < > & 破坏 HTML 结构）
         text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 
-        # 6. 应用高亮（优先级：装饰器 > 关键字 > 数字 > 内置函数）
-        text = re.sub(r'(@[\w_]+(?:\.[\w_]+)*)', r'<span style="color:#BBB529">\1</span>', text)
+        # 6. 应用高亮（PyCharm Light 浅色主题配色）
+        text = re.sub(r'(@[\w_]+(?:\.[\w_]+)*)', r'<span style="color:#0086B3">\1</span>', text)
         text = re.sub(
             r'\b(?:and|as|assert|async|await|break|class|continue|def|del|elif|else|except|finally|for|from|global|if|import|in|is|lambda|nonlocal|not|or|pass|raise|return|try|while|with|yield|True|False|None)\b',
             lambda m: f'<span style="color:#0033B3">{m.group(0)}</span>',
@@ -1251,12 +1321,12 @@ class SessionLog:
         )
         text = re.sub(
             r'\b(?:\d+\.\d+|\d+\.|\.\d+|\d+)(?:[eE][+-]?\d+)?[jJ]?\b',
-            lambda m: f'<span style="color:#0000FF">{m.group(0)}</span>',
+            lambda m: f'<span style="color:#1750EB">{m.group(0)}</span>',
             text
         )
         text = re.sub(
             r'\b(?:print|len|range|str|int|float|list|dict|set|tuple|open|enumerate|zip|map|filter|sum|min|max|abs|round|type|isinstance|getattr|hasattr|super|object|id|hex|bin|oct|chr|ord|repr|sorted|reversed|any|all|next|iter|input|format|eval|exec|compile|vars|locals|globals|dir|help|memoryview|bytearray|bytes|frozenset|property|staticmethod|classmethod|slice)\b',
-            lambda m: f'<span style="color:#7B0099">{m.group(0)}</span>',
+            lambda m: f'<span style="color:#00627A">{m.group(0)}</span>',
             text
         )
 
@@ -1267,9 +1337,9 @@ class SessionLog:
                 if stored_idx == idx:
                     safe = original.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
                     if ptype == 'string':
-                        return f'<span style="color:#008000">{safe}</span>'
+                        return f'<span style="color:#067D17">{safe}</span>'
                     elif ptype == 'comment':
-                        return f'<span style="color:#808080">{safe}</span>'
+                        return f'<span style="color:#8C8C8C;font-style:italic">{safe}</span>'
                     elif ptype == 'tag':
                         # 即使看起来像 XML 标签，在 <pre> 内也必须转义，否则破坏 HTML 结构
                         return original.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
