@@ -271,12 +271,6 @@ class MyClaudeCLI:
                 cli_print.print_error("Usage: /t number — 展开指定 Turn 的思考过程")
             return True
 
-        elif cmd == '/r ctx':
-            # /r ctx — 仅重置上下文（清除对话历史，保留长期记忆）
-            self.query_loop.reset_context()
-            cli_print.print_info("已重置上下文（清除对话历史，保留长期记忆）。")
-            return True
-
         elif cmd == '/r mem':
             # /r mem — 清除所有记忆（短期 + 长期 + 工作记忆）
             total = self.query_loop.clear_memory()
@@ -286,12 +280,11 @@ class MyClaudeCLI:
                 cli_print.print_info(f"已清除所有记忆（共 {total} 条）。")
             return True
 
-        elif cmd == '/r':
-            # /r — 重置上下文与记忆（相当于 /r ctx + /r mem）
-            self.query_loop.reset_context()
-            total = self.query_loop.clear_memory()
+        elif cmd == '/new session':
+            # /new session — 开启新 Session：清空上下文 + 清空记忆 + 新 SessionLog
+            total = self.query_loop.new_session()
             cli_print.print_info(
-                f"已重置上下文与记忆（清除记忆 {total} 条）。"
+                f"已开启新 Session（清除记忆 {total} 条，上下文已重置）。"
             )
             return True
 

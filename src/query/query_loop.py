@@ -33,9 +33,10 @@ class QueryLoop:
         self.role = role
 
         self.api_messages = llm_api_msg.LLMAPIMessage(role=self.role)
-        self.session = None
+        self.session = SessionLog()
         self.max_turns = 0
         self.is_multi_turns = None
+        self._query_counter = 0
 
         # 通过工厂函数创建记忆实例（根据 config.yaml memory.backend 选择后端）
         self._init_memory()
@@ -90,11 +91,39 @@ class QueryLoop:
 
     def reset_context(self):
         """重置上下文：保留 system prompt 及初始化消息，清空对话历史。
-        供 CLI 的 /r ctx 命令调用。
+        保留此方法用于内部调用，CLI 层不再直接映射到 /r ctx 命令。
         """
         if self.api_messages:
             self.api_messages.reset_context()
             logger.info("上下文已重置（保留系统提示词，清空对话历史）")
+
+
+    def new_session(self) -> int:
+        """开启一个新的 Session：清空 api_messages（仅保留 system_prompt）、
+        清空记忆、创建新的 SessionLog 实例。
+
+        Returns:
+            清除的记忆条数；若记忆模块未启用，返回 0
+        """
+        # 1. 重置 api_messages（仅保留 system_prompt）
+        self.api_messages.reset_context()
+
+        # 2. 清空记忆
+        cleared = self.clear_memory()
+
+        # 3. 创建新的 SessionLog 实例
+        self.session = SessionLog()
+
+        # 4. 重置 Query 计数器
+        self._query_counter = 0
+
+        # 5. 重置 token 统计
+        self.prompt_cache_hit = 0
+        self.prompt_cache_miss = 0
+        self.completion_tokens = 0
+
+        logger.info(f"新 Session 已开启，清除记忆 {cleared} 条")
+        return cleared
 
 
     def get_tokens(self):
@@ -132,14 +161,15 @@ class QueryLoop:
         self._on_todo_update = on_todo_update
 
         """
-        每一次 query_loop.run 的调用，都是与 LLM 的一次新 Turn。
-        api_messages 跨 Turn 累积，不在此处重置。
-        只有 /r 或 /r ctx 才会清空上下文。
+        每一次 query_loop.run 的调用，都是与 LLM 的一次新 Query。
+        api_messages 跨 Query 累积，不在此处重置。
+        只有 /new session 才会清空上下文。
         """
         turn = 0
         quit_chat = ChatOrNot.Continue
 
-        self.session = SessionLog()
+        self._query_counter += 1
+        self.session.start_query(self._query_counter, user_input)
         self.max_turns = global_cfg.cli.max_turns
         self._no_tool_retry = 0  # 每次新 Turn 重置追问计数器
         self.is_multi_turns = None  # 每次 Turn 开始时未确定
@@ -200,8 +230,8 @@ class QueryLoop:
             self._print_info(f"达到最大轮次限制 ({self.max_turns})，强制结束")
         # 否则的话，就是正常退出，这里不用打印任何信息
 
-        # 确保最后一个 Turn 的内容被持久化
-        self.session.flush_turn()
+        # 确保最后一个 Turn 的内容被持久化，并关闭当前 Query
+        self.session.end_query()
 
         # 会话结束时：执行记忆维护（压缩 + 遗忘）
         if self._memory_used:
@@ -223,7 +253,7 @@ class QueryLoop:
 
     # _on_llm_req，表示在发请求信息给LLM之前，做的（部分）事情，可能不是所有事情
     def _on_llm_req(self, turn, user_input):
-        # 第一轮，需要初始化
+        # 第一轮，需要初始化（init_session 内部有守护，只执行一次）
         if turn == 1:
             self.session.init_session()
 
@@ -377,6 +407,8 @@ class QueryLoop:
             ai_response, is_truncated, reasoning_content, usage = chat_llm.chat_with_retry(temp_msgs)
 
             # 记录追问对话到 session（用于日志审计）
+            reason = f"[系统追问] Turn 中未检测到工具调用，发起第 {self._no_tool_retry}/3 次追问，尝试获取工具或 done 信号"
+            self.session.log_dict_info({"role": "system", "content": reason})
             self.session.log_turn(-self._no_tool_retry)  # 负数 turn 表示追问
             self.session.log_llm_req(temp_msgs)
             self.session.log_llm_rsp(ai_response)
