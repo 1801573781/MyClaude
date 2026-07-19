@@ -168,6 +168,9 @@ class MemoryRetriever:
         Returns:
             list[dict]，每项含 id、content、score、llm_score、reason、timestamp 等字段
         """
+        # [临时绕过] memory 模块正在重构，召回功能暂时停用，直接返回 0 条记忆
+        return []
+
         if top_k is None:
             top_k = self._default_top_k
         top_k = min(top_k, self._max_top_k)

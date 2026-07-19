@@ -281,10 +281,10 @@ class MyClaudeCLI:
             return True
 
         elif cmd == '/new session':
-            # /new session — 开启新 Session：清空上下文 + 清空记忆 + 新 SessionLog
-            total = self.query_loop.new_session()
+            # /new session — 开启新 Session：重置上下文 + 新 SessionLog
+            self.query_loop.new_session()
             cli_print.print_info(
-                f"已开启新 Session（清除记忆 {total} 条，上下文已重置）。"
+                "已开启新Session（上下文已重置）。"
             )
             return True
 

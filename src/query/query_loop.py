@@ -98,32 +98,28 @@ class QueryLoop:
             logger.info("上下文已重置（保留系统提示词，清空对话历史）")
 
 
-    def new_session(self) -> int:
+    def new_session(self):
         """开启一个新的 Session：清空 api_messages（仅保留 system_prompt）、
-        清空记忆、创建新的 SessionLog 实例。
+        创建新的 SessionLog 实例。
 
-        Returns:
-            清除的记忆条数；若记忆模块未启用，返回 0
+        注意：记忆是跨 Session 的持久化数据，新开 Session 不清除记忆。
+        如需清除记忆，请使用 /r mem 命令。
         """
         # 1. 重置 api_messages（仅保留 system_prompt）
         self.api_messages.reset_context()
 
-        # 2. 清空记忆
-        cleared = self.clear_memory()
-
-        # 3. 创建新的 SessionLog 实例
+        # 2. 创建新的 SessionLog 实例
         self.session = SessionLog()
 
-        # 4. 重置 Query 计数器
+        # 3. 重置 Query 计数器
         self._query_counter = 0
 
-        # 5. 重置 token 统计
+        # 4. 重置 token 统计
         self.prompt_cache_hit = 0
         self.prompt_cache_miss = 0
         self.completion_tokens = 0
 
-        logger.info(f"新 Session 已开启，清除记忆 {cleared} 条")
-        return cleared
+        logger.info("新 Session 已开启（上下文已重置，记忆保留）")
 
 
     def get_tokens(self):
