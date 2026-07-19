@@ -13,6 +13,7 @@ venv/
 logo/
 A2A_EX_Problem/
 openspec/
+data/
 src/crawler/
 src/spider/
 src/chicken_farm/

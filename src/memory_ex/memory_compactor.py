@@ -1,0 +1,683 @@
+"""记忆整理模块。
+
+对应设计文档第三章。
+
+三段式处理流水线：
+1. Merge（合并）：同主题合并、时间线演进、因果链压缩、重复去重
+2. Demote（降级）：低价值条目从 Layer 1 移到 Layer 2，保留指针
+3. Evict（淘汰）：删除无用条目
+
+规则化优先，LLM 辅助。原子写入。可追溯日志。
+"""
+
+import json
+import logging
+import re
+from collections import defaultdict
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+from src.memory_ex.scoring import ImportanceScorer
+
+logger = logging.getLogger(__name__)
+
+_PROMPT_DIR = Path(__file__).parent / "prompts"
+
+
+def _load_prompt(filename: str) -> str:
+    """加载 Prompt 模板文件。"""
+    try:
+        return (_PROMPT_DIR / filename).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        logger.warning(f"Prompt 模板未找到: {filename}")
+        return ""
+
+
+class MemoryCompactor:
+    """记忆整理器。
+
+    执行三段式流水线（Merge → Demote → Evict），
+    将 Layer 1（MEMORY.md）维持在行数/token 限制内。
+    """
+
+    def __init__(self, mem_config: Any, store: Any):
+        """初始化整理器。
+
+        Args:
+            mem_config: memory_ex.yaml 配置对象
+            store: MemoryStore 实例
+        """
+        self._store = store
+        self._scorer = ImportanceScorer(mem_config.scoring)
+
+        comp_config = mem_config.compactor
+        self._temperature = float(getattr(comp_config, "temperature", 0.3))
+        self._max_tokens = int(getattr(comp_config, "max_tokens", 2048))
+
+        # 水位配置
+        wm = mem_config.watermarks
+        self._wm_warning = int(getattr(wm, "warning", 150))
+        self._wm_trigger = int(getattr(wm, "trigger", 180))
+        self._wm_hard_limit = int(getattr(wm, "hard_limit", 200))
+        self._wm_target_after = int(getattr(wm, "target_after", 160))
+
+        # 自动整理配置
+        auto_config = mem_config.auto_compaction
+        self._auto_enabled = bool(getattr(auto_config, "enabled", False))
+        self._light_query_interval = int(getattr(auto_config, "light_query_interval", 10))
+
+        self._llm_chat_fn = None
+
+    def set_llm_chat_fn(self, fn):
+        """注入 LLM 调用函数。"""
+        self._llm_chat_fn = fn
+
+    # ===== 公开接口 =====
+
+    def check_needed(self) -> bool:
+        """检查是否需要整理。
+
+        条件：
+        - Layer 1 行数 ≥ warning（150）或 token ≥ 1500
+        - 或距上次整理 ≥ 10 个 Query
+        """
+        stats = self._store.get_layer1_stats()
+        if stats["lines"] >= self._wm_warning or stats["tokens"] >= 1500:
+            return True
+
+        query_count = self._store.get_query_count_since_last_compaction()
+        if query_count >= self._light_query_interval:
+            return True
+
+        return False
+
+    def run_auto_compaction(self) -> dict:
+        """自动整理入口。
+
+        检查配置开关和水位，满足条件则同步执行。
+        """
+        if not self._auto_enabled:
+            return {"skipped": True, "reason": "auto_compaction disabled"}
+
+        warning, trigger, hard_limit = self._store.check_water_level()
+
+        if trigger or hard_limit:
+            return self.run_full_compaction(mode="full")
+        elif warning:
+            # 预警，下次触发（记录但不执行）
+            logger.info("Layer 1 水位预警，下次 Query 结束时触发整理")
+            return {"skipped": True, "reason": "warning_level"}
+
+        # 检查定时触发
+        query_count = self._store.get_query_count_since_last_compaction()
+        if query_count >= self._light_query_interval:
+            return self.run_full_compaction(mode="light")
+
+        return {"skipped": True, "reason": "below_threshold"}
+
+    def run_full_compaction(self, mode: str = "full") -> dict:
+        """执行完整三段式整理。
+
+        Args:
+            mode: "full"（Merge + Demote + Evict）或 "light"（仅 Merge）
+
+        Returns:
+            统计信息字典
+        """
+        start_time = datetime.now()
+        compaction_id = f"compact_{start_time.strftime('%Y%m%d_%H%M%S')}"
+
+        # 读取当前 Layer 1
+        layer1_content = self._store.read_layer1()
+        layer1_before_lines = layer1_content.count("\n") + 1 if layer1_content else 0
+
+        # 获取未被整理消费的 unprocessed 条目
+        unprocessed = self._store.get_unconsumed_entries()
+        layer0_consumed = len(unprocessed)
+
+        # Step 1: Merge
+        merged_count, layer1_content = self._step_merge(layer1_content, unprocessed)
+
+        stats = {
+            "compaction_id": compaction_id,
+            "trigger": "manual" if mode == "full" else "auto_light",
+            "mode": mode,
+            "layer0_consumed": layer0_consumed,
+            "layer1_before": layer1_before_lines,
+            "merged": merged_count,
+            "demoted": 0,
+            "evicted": 0,
+        }
+
+        if mode == "light":
+            # 轻量整理仅执行 Merge
+            self._store.write_layer1(layer1_content)
+            self._mark_consumed(unprocessed)
+            stats["layer1_after"] = layer1_content.count("\n") + 1 if layer1_content else 0
+            stats["duration_ms"] = int((datetime.now() - start_time).total_seconds() * 1000)
+            self._store.add_compaction_log(stats)
+            self._store.save_metadata()
+            return stats
+
+        # Step 2: Demote
+        demoted_count, layer1_content = self._step_demote(layer1_content)
+        stats["demoted"] = demoted_count
+
+        # Step 3: Evict
+        evicted_count, layer1_content = self._step_evict(layer1_content)
+        stats["evicted"] = evicted_count
+
+        # 写入 Layer 1
+        self._store.write_layer1(layer1_content)
+
+        # 标记已消费
+        self._mark_consumed(unprocessed)
+
+        stats["layer1_after"] = layer1_content.count("\n") + 1 if layer1_content else 0
+        stats["duration_ms"] = int((datetime.now() - start_time).total_seconds() * 1000)
+
+        # 记录日志
+        self._store.add_compaction_log(stats)
+        self._store.save_metadata()
+
+        logger.info(
+            f"整理完成: 合并 {merged_count}, 降级 {demoted_count}, "
+            f"淘汰 {evicted_count}, 耗时 {stats['duration_ms']}ms"
+        )
+
+        stats["total_processed"] = merged_count + demoted_count + evicted_count
+        return stats
+
+    def evict_by_id(self, memory_id: str) -> bool:
+        """从 Layer 1 淘汰指定条目。
+
+        Args:
+            memory_id: 条目 ID
+
+        Returns:
+            True 表示成功
+        """
+        layer1_content = self._store.read_layer1()
+        if not layer1_content:
+            return False
+
+        lines = layer1_content.split("\n")
+        new_lines = []
+        found = False
+
+        for line in lines:
+            if memory_id in line:
+                found = True
+                continue
+            new_lines.append(line)
+
+        if found:
+            self._store.write_layer1("\n".join(new_lines))
+            self._store.update_metadata_entry(memory_id, status="archived")
+            self._store.save_metadata()
+
+        return found
+
+    # ===== Step 1: Merge =====
+
+    def _step_merge(
+        self, layer1_content: str, unprocessed_entries: List[Dict]
+    ) -> Tuple[int, str]:
+        """执行合并步骤。
+
+        先将 unprocessed 条目追加到 Layer 1，
+        然后执行规则化合并 + LLM 辅助合并。
+
+        Returns:
+            (合并计数, 新 Layer 1 内容)
+        """
+        # 将 unprocessed 条目追加到 Layer 1
+        new_lines = []
+        for entry in unprocessed_entries:
+            tags = entry.get("tags", [])
+            content = entry.get("content", "")
+            tags_str = "".join(f"[{t}]" for t in tags)
+            line = f"- {tags_str} {content}"
+            if entry.get("id"):
+                line += f" (id={entry['id']})"
+            new_lines.append(line)
+
+        if new_lines:
+            if layer1_content and layer1_content.strip():
+                layer1_content = layer1_content.rstrip() + "\n" + "\n".join(new_lines)
+            else:
+                layer1_content = "\n".join(new_lines)
+
+        # 解析 Layer 1 条目
+        entries = self._parse_layer1_entries(layer1_content)
+        if len(entries) < 2:
+            return 0, layer1_content
+
+        # 规则化合并
+        merged_count, entries = self._rule_based_merge(entries)
+
+        # LLM 辅助合并（如果仍有冗余）
+        if self._llm_chat_fn and len(entries) > 5:
+            llm_merged, entries = self._llm_assisted_merge(entries)
+            merged_count += llm_merged
+
+        # 重建 Layer 1
+        new_content = self._rebuild_layer1(entries)
+        return merged_count, new_content
+
+    def _parse_layer1_entries(self, content: str) -> List[Dict]:
+        """解析 Layer 1 的 Markdown 条目。
+
+        格式：- [标签] 内容 (id=xxx)
+        或    - [EVOLVED][TYPE] 内容
+        """
+        entries = []
+        for line in content.split("\n"):
+            line = line.strip()
+            if not line or not line.startswith("- "):
+                continue
+
+            # 提取 id
+            id_match = re.search(r"\(id=([^)]+)\)", line)
+            entry_id = id_match.group(1) if id_match else ""
+
+            # 移除 id 部分
+            clean_line = re.sub(r"\s*\(id=[^)]+\)", "", line)
+
+            # 提取标签
+            tags = re.findall(r"\[([^\]]+)\]", clean_line)
+            is_evolved = "EVOLVED" in tags
+
+            # 提取内容（移除标签和前导 -）
+            content_text = re.sub(r"^\-\s*(\[.*?\])*\s*", "", clean_line)
+
+            entries.append({
+                "id": entry_id,
+                "tags": tags,
+                "content": content_text,
+                "raw_line": line,
+                "is_evolved": is_evolved,
+            })
+
+        return entries
+
+    def _rule_based_merge(self, entries: List[Dict]) -> Tuple[int, List[Dict]]:
+        """规则化合并（无需 LLM）。
+
+        策略：
+        1. 同标签 + 时间窗口内 → 拼接去重
+        2. 重复去重（content_hash 或 Jaccard 相似度 > 0.8）
+        """
+        merged_count = 0
+        result = []
+        used = set()
+
+        for i, entry in enumerate(entries):
+            if i in used:
+                continue
+
+            # 查找可合并的条目
+            merge_candidates = []
+            for j in range(i + 1, len(entries)):
+                if j in used:
+                    continue
+                other = entries[j]
+
+                # 不合并进化条目
+                if entry.get("is_evolved") or other.get("is_evolved"):
+                    continue
+
+                # 同标签合并
+                if self._same_tags(entry["tags"], other["tags"]):
+                    merge_candidates.append((j, other, "same_tags"))
+                # 重复去重
+                elif self._jaccard_similarity(entry["content"], other["content"]) > 0.8:
+                    merge_candidates.append((j, other, "duplicate"))
+
+            if merge_candidates:
+                # 合并到当前条目
+                merged_content = entry["content"]
+                merged_tags = list(entry["tags"])
+                for j, candidate, reason in merge_candidates:
+                    if reason == "same_tags":
+                        # 追加非重复内容
+                        if candidate["content"] not in merged_content:
+                            merged_content += f"；{candidate["content"]}"
+                    else:
+                        # 重复：保留信息更完整的
+                        if len(candidate["content"]) > len(merged_content):
+                            merged_content = candidate["content"]
+                    # 合并标签
+                    for tag in candidate["tags"]:
+                        if tag not in merged_tags:
+                            merged_tags.append(tag)
+                    used.add(j)
+                    merged_count += 1
+
+                entry["content"] = merged_content
+                entry["tags"] = merged_tags
+                entry["raw_line"] = self._format_entry_line(entry)
+
+            result.append(entry)
+
+        return merged_count, result
+
+    def _llm_assisted_merge(self, entries: List[Dict]) -> Tuple[int, List[Dict]]:
+        """LLM 辅助合并（语义相似但标签不同、因果链压缩）。
+
+        Returns:
+            (合并计数, 合并后的条目列表)
+        """
+        if not self._llm_chat_fn:
+            return 0, entries
+
+        # 构建 Prompt
+        prompt_template = _load_prompt("merge_prompt.txt")
+        if not prompt_template:
+            prompt_template = self._get_builtin_merge_prompt()
+
+        entries_text = "\n".join(
+            f"{i}. [{', '.join(e['tags'])}] {e['content']}"
+            for i, e in enumerate(entries)
+            if not e.get("is_evolved")
+        )
+        prompt = prompt_template.replace("{memory_entries}", entries_text)
+
+        try:
+            response = self._call_llm(prompt, timeout=10)
+            if not response:
+                return 0, entries
+
+            # 解析 LLM 合并建议
+            merged_indices, merged_content = self._parse_merge_response(response, len(entries))
+            if not merged_indices:
+                return 0, entries
+
+            # 执行合并
+            merged_entry = entries[merged_indices[0]].copy()
+            merged_entry["content"] = merged_content
+            all_tags = []
+            for idx in merged_indices:
+                for tag in entries[idx]["tags"]:
+                    if tag not in all_tags:
+                        all_tags.append(tag)
+            merged_entry["tags"] = all_tags
+            merged_entry["raw_line"] = self._format_entry_line(merged_entry)
+
+            # 构建新列表
+            new_entries = [merged_entry]
+            for i, e in enumerate(entries):
+                if i not in merged_indices:
+                    new_entries.append(e)
+
+            return len(merged_indices) - 1, new_entries
+
+        except Exception as e:
+            logger.error(f"LLM 辅助合并失败: {e}")
+            return 0, entries
+
+    def _parse_merge_response(
+        self, response: str, total_entries: int
+    ) -> Tuple[List[int], str]:
+        """解析 LLM 合并响应。
+
+        预期格式：
+            MERGE: [0, 2, 5] → 合并后的内容描述
+        """
+        match = re.search(r"MERGE:\s*\[([^\]]*)\]\s*→\s*(.+)", response)
+        if not match:
+            return [], ""
+
+        try:
+            indices_str = match.group(1)
+            indices = [int(x.strip()) for x in indices_str.split(",") if x.strip()]
+            content = match.group(2).strip()
+            return indices, content
+        except (ValueError, AttributeError):
+            return [], ""
+
+    # ===== Step 2: Demote =====
+
+    def _step_demote(self, layer1_content: str) -> Tuple[int, str]:
+        """执行降级步骤。
+
+        将低价值条目从 Layer 1 移到 Layer 2 主题文件，
+        Layer 1 中替换为精简指针。
+
+        Returns:
+            (降级计数, 新 Layer 1 内容)
+        """
+        stats = self._store.get_layer1_stats()
+        if stats["lines"] <= self._wm_warning and stats["tokens"] <= 1500:
+            return 0, layer1_content
+
+        entries = self._parse_layer1_entries(layer1_content)
+        if not entries:
+            return 0, layer1_content
+
+        # 计算每条重要性分数
+        scored_entries = []
+        for entry in entries:
+            meta = self._store.get_metadata_entry(entry["id"]) if entry["id"] else None
+            score = self._scorer.score(
+                {"tags": entry["tags"], "content": entry["content"]},
+                meta,
+            )
+            tier = self._scorer.get_score_tier(score)
+            scored_entries.append((entry, score, tier))
+
+        # 排序：分数最低的在前（优先降级）
+        scored_entries.sort(key=lambda x: x[1])
+
+        demoted_count = 0
+        kept_entries = []
+
+        for entry, score, tier in scored_entries:
+            stats = self._store.get_layer1_stats()
+            current_lines = stats["lines"]
+            current_tokens = stats["tokens"]
+
+            # 检查是否需要继续降级
+            if current_lines <= self._wm_target_after and current_tokens <= 1600:
+                kept_entries.append(entry)
+                continue
+
+            # 进化条目不降级
+            if entry.get("is_evolved"):
+                kept_entries.append(entry)
+                continue
+
+            # 分数 ≥ 0.6 不降级
+            if score >= 0.6:
+                kept_entries.append(entry)
+                continue
+
+            # 分数 < 0.3 的降级
+            if score < 0.3:
+                self._demote_entry(entry)
+                demoted_count += 1
+            else:
+                # 0.3~0.6 视情况降级
+                if current_lines > self._wm_trigger:
+                    self._demote_entry(entry)
+                    demoted_count += 1
+                else:
+                    kept_entries.append(entry)
+
+        new_content = self._rebuild_layer1(kept_entries)
+        return demoted_count, new_content
+
+    def _demote_entry(self, entry: Dict) -> None:
+        """将条目降级到 Layer 2 主题文件。"""
+        tags = entry.get("tags", [])
+        if not tags:
+            tags = ["misc"]
+
+        # 取第一个标签作为主题
+        topic_tag = tags[0]
+        filename = self._store.get_or_create_topic_filename(topic_tag)
+
+        # 写入主题文件
+        content = entry.get("content", "")
+        topic_content = f"- {''.join(f'[{t}]' for t in tags)} {content}"
+        if entry.get("id"):
+            topic_content += f" (id={entry['id']})"
+        self._store.append_topic_file(filename, topic_content)
+
+        logger.info(f"降级条目到 {filename}: {content[:50]}")
+
+    # ===== Step 3: Evict =====
+
+    def _step_evict(self, layer1_content: str) -> Tuple[int, str]:
+        """执行淘汰步骤。
+
+        Returns:
+            (淘汰计数, 新 Layer 1 内容)
+        """
+        stats = self._store.get_layer1_stats()
+        if stats["lines"] <= self._wm_hard_limit and stats["tokens"] <= 2000:
+            return 0, layer1_content
+
+        entries = self._parse_layer1_entries(layer1_content)
+        if not entries:
+            return 0, layer1_content
+
+        # 计算分数并排序
+        scored_entries = []
+        for entry in entries:
+            meta = self._store.get_metadata_entry(entry["id"]) if entry["id"] else None
+            score = self._scorer.score(
+                {"tags": entry["tags"], "content": entry["content"]},
+                meta,
+            )
+            scored_entries.append((entry, score))
+
+        scored_entries.sort(key=lambda x: x[1])
+
+        # 最多淘汰 20%
+        max_evict = max(1, int(len(entries) * 0.2))
+        evicted_count = 0
+        kept_entries = []
+
+        for entry, score in scored_entries:
+            stats = self._store.get_layer1_stats()
+            if stats["lines"] <= self._wm_target_after and stats["tokens"] <= 1600:
+                kept_entries.append(entry)
+                continue
+
+            if evicted_count >= max_evict:
+                kept_entries.append(entry)
+                continue
+
+            # 进化条目不淘汰
+            if entry.get("is_evolved"):
+                kept_entries.append(entry)
+                continue
+
+            # 淘汰分数最低的
+            if score < 0.1:
+                if entry.get("id"):
+                    self._store.update_metadata_entry(entry["id"], status="archived")
+                    self._store.remove_metadata_entry(entry["id"])
+                evicted_count += 1
+                logger.info(f"淘汰条目: {entry.get('content', '')[:50]}")
+            else:
+                kept_entries.append(entry)
+
+        new_content = self._rebuild_layer1(kept_entries)
+        return evicted_count, new_content
+
+    # ===== 辅助方法 =====
+
+    def _mark_consumed(self, entries: List[Dict]) -> None:
+        """标记条目为已消费（is_consumed=True）。"""
+        for entry in entries:
+            self._store.update_metadata_entry(
+                entry.get("id", ""),
+                is_consumed=True,
+                last_accessed=datetime.now().isoformat(),
+            )
+
+    def _rebuild_layer1(self, entries: List[Dict]) -> str:
+        """从条目列表重建 Layer 1 内容。"""
+        lines = []
+        for entry in entries:
+            line = self._format_entry_line(entry)
+            if line:
+                lines.append(line)
+        return "\n".join(lines)
+
+    def _format_entry_line(self, entry: Dict) -> str:
+        """格式化单条记忆为 Layer 1 行。"""
+        tags = entry.get("tags", [])
+        content = entry.get("content", "")
+        tags_str = "".join(f"[{t}]" for t in tags) if tags else ""
+
+        line = f"- {tags_str} {content}".strip()
+        if entry.get("id"):
+            line += f" (id={entry['id']})"
+        return line
+
+    def _same_tags(self, tags_a: List[str], tags_b: List[str]) -> bool:
+        """判断两组标签是否相同。"""
+        return set(tags_a) == set(tags_b) and bool(tags_a)
+
+    def _jaccard_similarity(self, text_a: str, text_b: str) -> float:
+        """计算两段文本的 Jaccard 相似度。"""
+        set_a = set(text_a.split())
+        set_b = set(text_b.split())
+        if not set_a or not set_b:
+            return 0.0
+        intersection = set_a & set_b
+        union = set_a | set_b
+        return len(intersection) / len(union)
+
+    def _call_llm(self, prompt: str, timeout: int = 10) -> Optional[str]:
+        """调用 LLM，带超时保护。"""
+        if not self._llm_chat_fn:
+            return None
+
+        import threading
+
+        result = {"response": None, "done": False}
+
+        def _call():
+            try:
+                response = self._llm_chat_fn(
+                    prompt,
+                    temperature=self._temperature,
+                    max_tokens=self._max_tokens,
+                )
+                result["response"] = response
+            except Exception as e:
+                logger.error(f"LLM 调用异常: {e}")
+            finally:
+                result["done"] = True
+
+        thread = threading.Thread(target=_call, daemon=True)
+        thread.start()
+        thread.join(timeout=timeout)
+
+        if not result["done"]:
+            logger.warning(f"LLM 整理超时（{timeout}s）")
+            return None
+
+        return result["response"]
+
+    def _get_builtin_merge_prompt(self) -> str:
+        """内置合并 Prompt。"""
+        return (
+            "你是一个记忆合并专家。以下是记忆索引层中的多条记忆条目。\n"
+            "请分析哪些条目可以合并（语义相似但标签不同、因果链可压缩）。\n\n"
+            "合并规则：\n"
+            "1. 同一对象的不同描述 → 合并为一条完整描述\n"
+            "2. 因果关系链 → 压缩为最终结论\n"
+            "3. 保守原则：无法确定是否可合并时，不合并\n"
+            "4. 合并后必须包含所有关键信息\n\n"
+            "输出格式（每组合并一行）：\n"
+            "MERGE: [序号1, 序号2, ...] → 合并后的内容\n"
+            "或 NONE\n\n"
+            "记忆条目：\n"
+            "{memory_entries}"
+        )
