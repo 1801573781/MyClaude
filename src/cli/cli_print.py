@@ -304,25 +304,26 @@ def typewriter_then_markdown(text: str, delay: float = 0.005):
 
     with Live(console=console, refresh_per_second=60) as live:
         # 阶段1：逐字累积，Live 原地刷新纯文本
+        # 用 Text 对象包裹 buffer，避免 Rich 将原始文本中的 [/] 等字符误解析为 markup 标签
         for char in text:
             buffer += char
-            live.update(buffer)
+            live.update(Text(buffer))
             if delay:
                 time.sleep(delay)
 
-            # 阶段2：判断内容类型，选择最终渲染器
-            _CODE_KEYWORDS = ("def ", "import ", "class ", "include", "function ", "const ")
-            stripped = text.strip()
+        # 阶段2：判断内容类型，选择最终渲染器（循环结束后执行一次）
+        _CODE_KEYWORDS = ("def ", "import ", "class ", "include", "function ", "const ")
+        stripped = text.strip()
 
-            if stripped.startswith("```") or stripped.startswith("#") or "- " in stripped[:100]:
-                # 带 Markdown 标记：用 Markdown 渲染
-                live.update(Markdown(text))
-            elif any(kw in text for kw in _CODE_KEYWORDS):
-                # 纯代码（无 Markdown 包裹）：用 Syntax 代码高亮
-                live.update(Syntax(text, "python", theme="monokai", line_numbers=False))
-            else:
-                # 普通文本/聊天回复：用 Markdown
-                live.update(Markdown(text))
+        if stripped.startswith("```") or stripped.startswith("#") or "- " in stripped[:100]:
+            # 带 Markdown 标记：用 Markdown 渲染
+            live.update(Markdown(text))
+        elif any(kw in text for kw in _CODE_KEYWORDS):
+            # 纯代码（无 Markdown 包裹）：用 Syntax 代码高亮
+            live.update(Syntax(text, "python", theme="monokai", line_numbers=False))
+        else:
+            # 普通文本/聊天回复：用 Markdown
+            live.update(Markdown(text))
 
     # Live 退出后，Markdown 效果保留在终端上
     # 追加到 HTML 缓冲区（Markdown 文本 + 时间戳）
@@ -838,11 +839,17 @@ def print_todo_list(todo_list):
 
 
 def get_input() -> str:
-    """获取用户输入"""
+    """获取用户输入
+
+    使用 Python 内置 input() 代替 Rich Prompt.ask()，
+    以确保长输入时终端能正确自动滚动，避免文字重叠。
+    Rich Prompt.ask 内部的 ANSI 光标控制逻辑会与终端原生换行滚动冲突。
+    """
     try:
-        user_input = Prompt.ask(
-            f"\n[{STYLES['user']}]➤ You[/] "
-        )
+        # 先用 console.print 输出带颜色的提示符（不换行）
+        console.print(f"\n[{STYLES['user']}]➤ You :[/] ", end="")
+        # 使用内置 input() 读取，利用终端原生的换行滚动能力
+        user_input = input()
         return user_input.strip()
     except (KeyboardInterrupt, EOFError):
         return "/quit"

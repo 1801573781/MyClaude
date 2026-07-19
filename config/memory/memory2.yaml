@@ -5,17 +5,16 @@ memory_2:
     max_turns: 20           # 工作记忆保留最近 N 轮对话
 
   short_term:
-    max_items: 200          # 短期记忆最多 N 条
+    max_items: 200          # 短期记忆最多 N 条（未压缩条目）
     ttl_seconds: 86400      # 短期记忆存活时间（秒），超期自动遗忘
 
   long_term:
-    max_items: 2000         # 长期记忆最多 N 条
-    compression_threshold: 0.8  # 短期记忆占用率达此比例时触发压缩
+    compression_threshold: 0.8  # 未压缩条目数达 short_term.max_items 的此比例时触发压缩
 
   # --- LLM 召回配置 ---
   llm_retrieval:
     model: "default"            # 使用全局配置的模型，或指定 "deepseek" / "minimax"
-    system_prompt_file: "src/memory_xx/memory_2/retrieval_prompt.md"  # LLM 精排系统提示词文件
+    system_prompt_file: "src/memory/memory_2/retrieval_prompt.md"  # LLM 精排系统提示词文件
     max_candidates_per_batch: 50    # 单批最多候选记忆数（受 LLM token 窗口限制）
     temperature: 0.1            # 评分时温度，低温度保证一致性
     max_tokens: 4096            # 评分响应的最大 token
@@ -27,16 +26,9 @@ memory_2:
     time_window_days: 30        # 仅取最近 N 天的记忆（0 = 不限）
     filter_by_tags: []          # 按标签过滤（空 = 不限），如 ["coding", "debug"]
 
-  # --- 混合打分权重（可选，用于与 LLM 评分综合） ---
+  # --- 相关性阈值 ---
   scoring:
-    llm_score_weight: 0.7       # LLM 相关性评分权重
-    recency_weight: 0.2         # 时间新近度权重
-    importance_weight: 0.1      # 重要性权重
-
-  # --- 遗忘曲线 ---
-  forgetting:
-    strategy: "exponential"     # exponential / linear / static
-    half_life_hours: 72         # 半衰期（小时），仅 exponential 模式
+    min_relevance: 0.50         # 低于此分数的记忆不注入上下文
 
   # --- 存储 ---
   storage:
@@ -47,6 +39,7 @@ memory_2:
   retrieval:
     default_top_k: 5            # search() 默认召回条数
     max_top_k: 20               # search() 允许的最大召回条数（防止滥用）
+    cache_ttl_seconds: 60       # LLM 评分缓存 TTL（秒）
 
   # --- 压缩器 ---
   compressor:

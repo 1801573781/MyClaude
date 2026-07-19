@@ -265,12 +265,12 @@ class MemoryRetriever:
         """
         max_ideal = self._max_candidates_per_batch * 2
 
-        # Step 1: 时间窗口预过滤
+        # Step 1: 时间窗口预过滤（include_compressed=True 让压缩摘要纳入候选）
         candidates = store.query(
             tag_filter=tag_filter,
             time_window_days=time_window_days or 30,
             role_filter=role_filter,
-            exclude_compressed=True,
+            include_compressed=True,
             limit=max_ideal + 50,
         )
 
