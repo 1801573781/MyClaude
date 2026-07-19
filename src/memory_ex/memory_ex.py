@@ -9,6 +9,7 @@ MemoryEx 实现 MemoryExInterface 全部方法（兼容 MemoryInterface + 扩展
 """
 
 import logging
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
 from src.memory_ex.memory_interface import MemoryExInterface

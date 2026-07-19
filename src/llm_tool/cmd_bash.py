@@ -31,8 +31,10 @@ def tool_bash(command: str) -> str:
             )
 
     try:
+        # 先切换 CMD 代码页为 UTF-8（65001），避免中文输出乱码
+        full_command = f"chcp 65001 >nul 2>&1 && {command}"
         result = subprocess.run(
-            command, shell=True, capture_output=True, text=True, timeout=30,
+            full_command, shell=True, capture_output=True, text=True, timeout=30,
             encoding="utf-8", errors="replace"
         )
         output = result.stdout

@@ -9,7 +9,7 @@ from src.utility.config_loader import global_cfg
 from src.utility.normal_utility import strip_thinking
 from src.query.session_log import SessionLog
 from src.query.todo_manager import TodoManager
-from src.memory.factory import create_memory
+from src.memory_ex.factory import create_memory
 import logging
 
 logger = logging.getLogger(__name__)
@@ -73,6 +73,10 @@ class QueryLoop:
         try:
             self._memory = create_memory(global_cfg)
             logger.info(f"记忆模块初始化成功: {type(self._memory).__name__}")
+            # 注入 LLM 调用函数，供记忆系统的提取器/整理器/进化器使用
+            if hasattr(self._memory, 'set_llm_chat_fn'):
+                from src.query import chat_llm
+                self._memory.set_llm_chat_fn(chat_llm.simple_chat)
         except Exception as e:
             logger.warning(f"记忆模块初始化失败，降级为 NoopMemory: {e}")
             from src.memory.memory_interface import NoopMemory
@@ -229,11 +233,34 @@ class QueryLoop:
         # 确保最后一个 Turn 的内容被持久化，并关闭当前 Query
         self.session.end_query()
 
-        # 会话结束时：执行记忆维护（压缩 + 遗忘）
+        # Query 结束时：执行记忆生命周期维护（提取 → 自动整理/进化 + 提示）
+        # maintain() 已在新任务开始时执行，此处不再重复
         if self._memory_used:
             try:
-                self._memory.compact()
+                # 1. 提取器：从 raw 条目中提取结构化记忆（LLM 调用，Query 级别）
+                self._memory.extract()
+
+                # 2. 维护：检查水位、衰减评分（轻量，不做整理）
                 self._memory.maintain()
+
+                # 3. 自动整理（如果配置开启）
+                try:
+                    self._memory.auto_compact()
+                except Exception as e:
+                    logger.warning(f"自动整理失败: {e}")
+
+                # 4. 自动进化（如果配置开启）
+                try:
+                    self._memory.auto_evolve()
+                except Exception as e:
+                    logger.warning(f"自动进化失败: {e}")
+
+                # 5. 提示机制（如果自动关闭且需要执行）
+                if self._memory.check_compaction_needed():
+                    self._print_info("记忆需要整理，执行 /mem compaction 命令整理记忆")
+                if self._memory.check_evolution_needed():
+                    self._print_info("记忆需要进化，执行 /mem evolution 命令进化记忆")
+
                 logger.info("记忆生命周期维护完成")
             except Exception as e:
                 logger.error(f"记忆生命周期处理失败: {e}")

@@ -1,0 +1,62 @@
+memory_ex:
+  storage:
+    base_dir: "D:/AI/MyClaude/memory_storage/memory_ex/"
+    layer0_file: "memory.jsonl"
+    layer1_file: "MEMORY.md"
+    metadata_file: "metadata.json"
+    topics_dir: "topics/"
+    archive_dir: "archive/"
+
+  watermarks:
+    warning: 150
+    trigger: 180
+    hard_limit: 200
+    target_after: 160
+
+  auto_compaction:
+    enabled: false
+    light_query_interval: 10
+    mode: "full"
+
+  auto_evolution:
+    enabled: false
+    accumulation_threshold: 10
+    trend_query_interval: 200
+    batch_size: 50
+
+  extractor:
+    model: "default"
+    temperature: 0.2
+    max_tokens: 512
+    max_entries_per_query: 3
+
+  compactor:
+    model: "default"
+    temperature: 0.3
+    max_tokens: 2048
+
+  evolver:
+    model: "default"
+    temperature: 0.3
+    max_tokens: 1024
+
+  scoring:
+    recency_weight: 0.20
+    relevance_weight: 0.25
+    user_explicit_weight: 0.20
+    cross_module_weight: 0.10
+    access_frequency_weight: 0.15
+    code_absorbed_penalty: 0.40
+    recency_halflife_days: 7
+    access_frequency_max: 10
+
+  archive:
+    trigger_lines: 1000
+    max_archive_files: 5
+
+  retrieval:
+    default_top_k: 5
+    max_top_k: 20
+
+  injection:
+    max_tokens: 2000

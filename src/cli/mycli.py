@@ -288,6 +288,63 @@ class MyClaudeCLI:
             )
             return True
 
+        elif cmd.startswith('/mem'):
+            # /mem compaction | /mem cpct | /mem evolution | /mem evol
+            parts = command.strip().split(maxsplit=1)
+            sub_cmd = parts[1].lower().strip() if len(parts) > 1 else ""
+
+            if sub_cmd in ("compaction", "cpct"):
+                # 手动触发记忆整理
+                memory = self.query_loop._memory
+                if not hasattr(memory, "compact_detailed"):
+                    cli_print.print_error("当前记忆后端不支持手动整理。")
+                    return True
+
+                cli_print.print_info("开始执行记忆整理...")
+                try:
+                    result = memory.compact_detailed()
+                    if result.get("skipped"):
+                        cli_print.print_info(f"记忆整理已跳过: {result.get('reason', '未知原因')}")
+                    else:
+                        cli_print.print_info(
+                            f"记忆整理完成:\n"
+                            f"  合并: {result.get('merged', 0)} 条\n"
+                            f"  降级: {result.get('demoted', 0)} 条\n"
+                            f"  淘汰: {result.get('evicted', 0)} 条\n"
+                            f"  Layer 1 行数: {result.get('layer1_before', 0)} → {result.get('layer1_after', 0)}"
+                        )
+                except Exception as e:
+                    cli_print.print_error(f"记忆整理执行失败: {e}")
+                return True
+
+            elif sub_cmd in ("evolution", "evol"):
+                # 手动触发记忆进化
+                memory = self.query_loop._memory
+                if not hasattr(memory, "evolve"):
+                    cli_print.print_error("当前记忆后端不支持手动进化。")
+                    return True
+
+                cli_print.print_info("开始执行记忆进化...")
+                try:
+                    result = memory.evolve()
+                    if result.get("skipped"):
+                        cli_print.print_info(f"记忆进化已跳过: {result.get('reason', '未知原因')}")
+                    else:
+                        cli_print.print_info(
+                            f"记忆进化完成:\n"
+                            f"  消费记录: {result.get('layer0_consumed', 0)} 条\n"
+                            f"  生成认知: {result.get('evolutions_generated', 0)} 条\n"
+                            f"  模式识别: {result.get('patterns_found', 0)} 个\n"
+                            f"  归纳规则: {result.get('generalizations_found', 0)} 条"
+                        )
+                except Exception as e:
+                    cli_print.print_error(f"记忆进化执行失败: {e}")
+                return True
+
+            else:
+                cli_print.print_error("未知的 /mem 子命令。可用: /mem compaction (或 /mem cpct), /mem evolution (或 /mem evol)")
+                return True
+
         elif cmd.startswith('/init'):
             # /init — 创建 MyClaude 项目工程树
             from src.cli.tree_visualizer import create_project_tree

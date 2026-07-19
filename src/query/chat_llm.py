@@ -3,6 +3,9 @@ from openai import OpenAI, APIConnectionError, RateLimitError, APIError
 from src.utility.config_loader import global_cfg
 import httpx
 import types
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def _to_dict(obj):
@@ -142,6 +145,39 @@ def stream_chat(msg, max_tokens=global_cfg.model_chat.initial_max_tokens):
         return f"[API_ERROR: 流式读取异常，{e}]", is_truncated, "", None
 
     return full_content, is_truncated, reasoning_content, usage
+
+
+def simple_chat(prompt: str, temperature: float = 0.3, max_tokens: int = 1024) -> str:
+    """非流式单轮调用，供记忆系统（提取器/整理器/进化器）使用。
+
+    接收纯文本 prompt，构建单条 user 消息发送给 LLM，返回纯文本响应。
+    发生异常时返回空字符串，不抛出异常，确保记忆系统流程不被中断。
+
+    Args:
+        prompt: 完整的提示词文本
+        temperature: 采样温度
+        max_tokens: 最大输出 token 数
+
+    Returns:
+        LLM 响应的纯文本内容；异常时返回空字符串
+    """
+    try:
+        api_kwargs = dict(
+            model=model_name,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=max_tokens,
+            temperature=temperature,
+            stream=False,
+        )
+        if extra_body:
+            api_kwargs["extra_body"] = _to_dict(extra_body)
+
+        response = client.chat.completions.create(**api_kwargs)
+        content = response.choices[0].message.content or ""
+        return content.strip()
+    except Exception as e:
+        logger.error(f"simple_chat 调用失败: {e}")
+        return ""
 
 
 """

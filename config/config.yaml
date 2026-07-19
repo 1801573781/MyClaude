@@ -16,7 +16,7 @@ tool_parse:
 
 # 记忆系统存储配置
 memory:
-  backend: "memory_2"                                 # 记忆后端: memory_1 / memory_2 / none
+  backend: "memory_ex"                                # 记忆后端: memory_ex / none
 
 # 项目基本目录结构
 base_path:
