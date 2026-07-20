@@ -29,6 +29,7 @@ memory_ex:
     temperature: 0.2
     max_tokens: 512
     max_entries_per_query: 3
+    timeout: 60              # LLM 提取超时秒数（非流式调用，建议 30~120）
 
   compactor:
     model: "default"

@@ -119,6 +119,9 @@ class MemoryCompactor:
     def run_full_compaction(self, mode: str = "full") -> dict:
         """执行完整三段式整理。
 
+        仅对 Layer 1 已有内容做整理（Merge → Demote → Evict），
+        不再负责从 Layer 0 搬运条目（构建职责已归还给 extractor）。
+
         Args:
             mode: "full"（Merge + Demote + Evict）或 "light"（仅 Merge）
 
@@ -132,18 +135,13 @@ class MemoryCompactor:
         layer1_content = self._store.read_layer1()
         layer1_before_lines = layer1_content.count("\n") + 1 if layer1_content else 0
 
-        # 获取未被整理消费的 unprocessed 条目
-        unprocessed = self._store.get_unconsumed_entries()
-        layer0_consumed = len(unprocessed)
-
-        # Step 1: Merge
-        merged_count, layer1_content = self._step_merge(layer1_content, unprocessed)
+        # Step 1: Merge（仅对 Layer 1 已有内容合并）
+        merged_count, layer1_content = self._step_merge(layer1_content)
 
         stats = {
             "compaction_id": compaction_id,
             "trigger": "manual" if mode == "full" else "auto_light",
             "mode": mode,
-            "layer0_consumed": layer0_consumed,
             "layer1_before": layer1_before_lines,
             "merged": merged_count,
             "demoted": 0,
@@ -153,7 +151,6 @@ class MemoryCompactor:
         if mode == "light":
             # 轻量整理仅执行 Merge
             self._store.write_layer1(layer1_content)
-            self._mark_consumed(unprocessed)
             stats["layer1_after"] = layer1_content.count("\n") + 1 if layer1_content else 0
             stats["duration_ms"] = int((datetime.now() - start_time).total_seconds() * 1000)
             self._store.add_compaction_log(stats)
@@ -170,9 +167,6 @@ class MemoryCompactor:
 
         # 写入 Layer 1
         self._store.write_layer1(layer1_content)
-
-        # 标记已消费
-        self._mark_consumed(unprocessed)
 
         stats["layer1_after"] = layer1_content.count("\n") + 1 if layer1_content else 0
         stats["duration_ms"] = int((datetime.now() - start_time).total_seconds() * 1000)
@@ -221,34 +215,15 @@ class MemoryCompactor:
 
     # ===== Step 1: Merge =====
 
-    def _step_merge(
-        self, layer1_content: str, unprocessed_entries: List[Dict]
-    ) -> Tuple[int, str]:
+    def _step_merge(self, layer1_content: str) -> Tuple[int, str]:
         """执行合并步骤。
 
-        先将 unprocessed 条目追加到 Layer 1，
-        然后执行规则化合并 + LLM 辅助合并。
+        对 Layer 1 已有内容执行规则化合并 + LLM 辅助合并。
+        不再负责从 Layer 0 搬运条目（构建职责已归还给 extractor）。
 
         Returns:
             (合并计数, 新 Layer 1 内容)
         """
-        # 将 unprocessed 条目追加到 Layer 1
-        new_lines = []
-        for entry in unprocessed_entries:
-            tags = entry.get("tags", [])
-            content = entry.get("content", "")
-            tags_str = "".join(f"[{t}]" for t in tags)
-            line = f"- {tags_str} {content}"
-            if entry.get("id"):
-                line += f" (id={entry['id']})"
-            new_lines.append(line)
-
-        if new_lines:
-            if layer1_content and layer1_content.strip():
-                layer1_content = layer1_content.rstrip() + "\n" + "\n".join(new_lines)
-            else:
-                layer1_content = "\n".join(new_lines)
-
         # 解析 Layer 1 条目
         entries = self._parse_layer1_entries(layer1_content)
         if len(entries) < 2:
@@ -589,15 +564,6 @@ class MemoryCompactor:
         return evicted_count, new_content
 
     # ===== 辅助方法 =====
-
-    def _mark_consumed(self, entries: List[Dict]) -> None:
-        """标记条目为已消费（is_consumed=True）。"""
-        for entry in entries:
-            self._store.update_metadata_entry(
-                entry.get("id", ""),
-                is_consumed=True,
-                last_accessed=datetime.now().isoformat(),
-            )
 
     def _rebuild_layer1(self, entries: List[Dict]) -> str:
         """从条目列表重建 Layer 1 内容。"""

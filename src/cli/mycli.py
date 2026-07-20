@@ -341,8 +341,32 @@ class MyClaudeCLI:
                     cli_print.print_error(f"记忆进化执行失败: {e}")
                 return True
 
+            elif sub_cmd == "extract":
+                # 手动触发记忆提取（从 Layer 0 raw 条目中用 LLM 提取结构化记忆）
+                memory = self.query_loop._memory
+                if not hasattr(memory, "extract"):
+                    cli_print.print_error("当前记忆后端不支持手动提取。")
+                    return True
+
+                cli_print.print_info("开始执行记忆提取（调用 LLM，可能需要数秒）...")
+                try:
+                    result = memory.extract()
+                    if result.get("skipped"):
+                        cli_print.print_info(f"记忆提取已跳过: {result.get('reason', '未知原因')}")
+                    else:
+                        cli_print.print_info(
+                            f"记忆提取完成:\n"
+                            f"  处理条目: {result.get('processed', 0)} 条\n"
+                            f"  提取记忆: {result.get('extracted', 0)} 条\n"
+                            f"  归档条目: {result.get('archived', 0)} 条\n"
+                            f"  前置过滤: {result.get('filtered', 0)} 条"
+                        )
+                except Exception as e:
+                    cli_print.print_error(f"记忆提取执行失败: {e}")
+                return True
+
             else:
-                cli_print.print_error("未知的 /mem 子命令。可用: /mem compaction (或 /mem cpct), /mem evolution (或 /mem evol)")
+                cli_print.print_error("未知的 /mem 子命令。可用: /mem extract, /mem compaction (或 /mem cpct), /mem evolution (或 /mem evol)")
                 return True
 
         elif cmd.startswith('/init'):

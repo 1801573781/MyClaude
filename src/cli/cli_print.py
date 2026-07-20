@@ -197,6 +197,7 @@ Welcome to MyClaude Code CLI! A beautiful terminal interface for AI Coding.
 - `/t number` - 展开指定 Turn 的思考过程
 - `/new session` - 开启新 Session（清空上下文 + 清空记忆 + 新日志文件）
 - `/r mem` - 清除所有记忆（短期 + 长期 + 工作记忆）
+- `/mem extract` - 手动触发记忆提取（从原始对话中提取结构化记忆）
 - `/mem compaction` (或 `/mem cpct`) - 手动触发记忆整理（合并、降级、淘汰）
 - `/mem evolution` (或 `/mem evol`) - 手动触发记忆进化（模式识别、矛盾解决、归纳、趋势）
 - `/init` - 创建MyClaude的项目工程树

@@ -102,6 +102,7 @@ def _get_default_config() -> SimpleNamespace:
             temperature=0.2,
             max_tokens=512,
             max_entries_per_query=3,
+            timeout=60,
         ),
         compactor=SimpleNamespace(
             model="default",

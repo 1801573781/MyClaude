@@ -237,25 +237,34 @@ class QueryLoop:
         # maintain() 已在新任务开始时执行，此处不再重复
         if self._memory_used:
             try:
-                # 1. 提取器：从 raw 条目中提取结构化记忆（LLM 调用，Query 级别）
-                self._memory.extract()
-
-                # 2. 维护：检查水位、衰减评分（轻量，不做整理）
+                # 1. 维护：检查水位、衰减评分（轻量，不做整理）
                 self._memory.maintain()
 
-                # 3. 自动整理（如果配置开启）
+                # 2. 自动整理（如果配置开启）
                 try:
                     self._memory.auto_compact()
                 except Exception as e:
                     logger.warning(f"自动整理失败: {e}")
 
-                # 4. 自动进化（如果配置开启）
+                # 3. 自动进化（如果配置开启）
                 try:
                     self._memory.auto_evolve()
                 except Exception as e:
                     logger.warning(f"自动进化失败: {e}")
 
-                # 5. 提示机制（如果自动关闭且需要执行）
+                # 4. 提示机制
+                # 4.1 raw 条目累积提示（提醒用户手动执行提取）
+                try:
+                    stats = self._memory.stats()
+                    raw_count = stats.get("layer0_raw", 0)
+                    if raw_count >= 10:
+                        self._print_info(
+                            f"已有 {raw_count} 条未提取记忆，执行 /mem extract 提取记忆"
+                        )
+                except Exception:
+                    pass
+
+                # 4.2 整理与进化提示（如果自动关闭且需要执行）
                 if self._memory.check_compaction_needed():
                     self._print_info("记忆需要整理，执行 /mem compaction 命令整理记忆")
                 if self._memory.check_evolution_needed():
@@ -650,6 +659,9 @@ class QueryLoop:
                 "turn": turn,
                 "has_tools": bool(tool_exec_info),
                 "has_reasoning": bool(reasoning_content),
+                "query_id": self._query_counter,
+                "user_input": user_input,
+                "session_id": getattr(self.session, 'session_id', ''),
             })
             logger.debug(f"Turn {turn} 完整记忆已存储，长度: {len(content)}")
         except Exception as e:

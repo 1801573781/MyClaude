@@ -57,6 +57,7 @@ class MemoryExtractor:
         self._temperature = float(getattr(ext_config, "temperature", 0.2))
         self._max_tokens = int(getattr(ext_config, "max_tokens", 512))
         self._max_entries_per_query = int(getattr(ext_config, "max_entries_per_query", 3))
+        self._timeout = int(getattr(ext_config, "timeout", 60))
 
         # LLM 调用函数（延迟注入）
         self._llm_chat_fn = None
@@ -210,6 +211,15 @@ class MemoryExtractor:
             raw_parts.append(entry.get("content", ""))
         raw_entries_text = "\n---\n".join(raw_parts)
 
+        # 输入长度截断保护：防止多轮对话拼接后过长导致 LLM 超时
+        MAX_INPUT_CHARS = 12000
+        if len(raw_entries_text) > MAX_INPUT_CHARS:
+            logger.info(
+                f"原始记录过长（{len(raw_entries_text)} 字符），截断至 {MAX_INPUT_CHARS} 字符"
+            )
+            raw_entries_text = raw_entries_text[:MAX_INPUT_CHARS]
+            raw_entries_text += "\n\n[注意：原始记录过长，已截断，仅展示前部分内容]"
+
         # 加载 Prompt 模板
         prompt_template = _load_prompt("extraction_prompt.txt")
         if not prompt_template:
@@ -222,7 +232,7 @@ class MemoryExtractor:
         prompt = self._add_entity_context(prompt)
 
         try:
-            response = self._call_llm_with_timeout(prompt, timeout=5)
+            response = self._call_llm_with_timeout(prompt, timeout=30)
             if response is None:
                 # 超时
                 self._consecutive_timeout_count += 1
@@ -436,6 +446,20 @@ class MemoryExtractor:
             memory.get("tags", []),
             memory.get("content", ""),
         )
+
+        # 追加写入 Layer 1（MEMORY.md）—— 构建职责
+        # extract() 负责将提取的记忆写入 Layer 1，不再依赖 compact() 来搬运
+        tags_str = "".join(f"[{t}]" for t in memory.get("tags", []))
+        layer1_line = f"- {tags_str} {memory.get('content', '')}"
+        if entry_id:
+            layer1_line += f" (id={entry_id})"
+
+        existing_layer1 = self._store.read_layer1()
+        if existing_layer1 and existing_layer1.strip():
+            new_layer1 = existing_layer1.rstrip() + "\n" + layer1_line
+        else:
+            new_layer1 = layer1_line
+        self._store.write_layer1(new_layer1)
 
         return entry_id
 
