@@ -88,6 +88,21 @@ class MemoryExtractor:
         total_extracted = 0
         total_archived = 0
         total_filtered = 0
+        total_timed_out = 0
+        details: List[Dict[str, Any]] = []
+
+        def _entry_brief(entry: Dict) -> Dict:
+            """提取条目的摘要信息（用于明细展示）。"""
+            meta = entry.get("metadata", {})
+            user_input = meta.get("user_input", "")
+            content_preview = entry.get("content", "")[:80].replace("\n", " ")
+            return {
+                "id": entry.get("id", ""),
+                "query_id": entry.get("query_id", 0),
+                "turn": meta.get("turn", 0),
+                "user_input": user_input,
+                "content_preview": content_preview,
+            }
 
         for qid, entries in query_groups.items():
             # 前置过滤
@@ -99,6 +114,11 @@ class MemoryExtractor:
                         {"status": "archived"},
                     )
                     self._store.update_metadata_entry(entry["id"], status="archived")
+                    details.append({
+                        **_entry_brief(entry),
+                        "action": "前置过滤归档",
+                        "reason": "对话过短或无技术关键词，不值得提取",
+                    })
                 total_filtered += len(entries)
                 total_archived += len(entries)
                 continue
@@ -106,12 +126,26 @@ class MemoryExtractor:
             # 雪崩防护：连续 2 次超时则跳过
             if self._consecutive_timeout_count >= 2:
                 logger.warning("连续 2 次提取超时，跳过本轮提取")
-                break
+                for entry in entries:
+                    details.append({
+                        **_entry_brief(entry),
+                        "action": "超时跳过",
+                        "reason": "连续 2 次 LLM 提取超时，雪崩防护",
+                    })
+                total_timed_out += len(entries)
+                continue
 
             # LLM 提取
             extracted_memories = self._extract_with_llm(entries)
             if extracted_memories is None:
                 # 超时或失败，保留 raw 状态
+                for entry in entries:
+                    details.append({
+                        **_entry_brief(entry),
+                        "action": "超时/失败",
+                        "reason": "LLM 提取超时或调用失败，保留 raw 状态",
+                    })
+                total_timed_out += len(entries)
                 continue
 
             if not extracted_memories:
@@ -122,13 +156,21 @@ class MemoryExtractor:
                         {"status": "archived"},
                     )
                     self._store.update_metadata_entry(entry["id"], status="archived")
+                    details.append({
+                        **_entry_brief(entry),
+                        "action": "LLM判定无价值归档",
+                        "reason": "LLM 返回 NONE，认为无可提取的长期记忆",
+                    })
                 total_archived += len(entries)
                 continue
 
             # 写入提取结果
+            extracted_summaries = []
             for memory in extracted_memories:
                 self._write_extracted_memory(entries[0], memory)
                 total_extracted += 1
+                tags_str = "".join(f"[{t}]" for t in memory.get("tags", []))
+                extracted_summaries.append(f"{tags_str} {memory.get('content', '')[:60]}")
 
             # 将原始条目标记为 archived（已提取）
             for entry in entries:
@@ -137,6 +179,12 @@ class MemoryExtractor:
                     {"status": "archived", "source": "query_extraction"},
                 )
                 self._store.update_metadata_entry(entry["id"], status="archived")
+                details.append({
+                    **_entry_brief(entry),
+                    "action": "成功提取后归档",
+                    "reason": f"提取出 {len(extracted_memories)} 条记忆: " + " | ".join(extracted_summaries),
+                })
+            total_archived += len(entries)
 
         # 持久化元数据
         self._store.save_metadata()
@@ -146,6 +194,8 @@ class MemoryExtractor:
             "extracted": total_extracted,
             "archived": total_archived,
             "filtered": total_filtered,
+            "timed_out": total_timed_out,
+            "details": details,
         }
 
     def _should_skip_extraction(self, entries: List[Dict]) -> bool:

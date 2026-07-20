@@ -79,19 +79,23 @@ class QueryLoop:
                 self._memory.set_llm_chat_fn(chat_llm.simple_chat)
         except Exception as e:
             logger.warning(f"记忆模块初始化失败，降级为 NoopMemory: {e}")
-            from src.memory.memory_interface import NoopMemory
+            from src.memory_ex.memory_interface import NoopMemory
             self._memory = NoopMemory()
 
 
     def clear_memory(self) -> int:
-        """清除所有记忆（封装调用，CLI 不直接接触记忆模块细节）。
+        """清除所有持久化记忆（Layer 0/1/2 + 元数据）。
+
+        仅清除记忆系统的持久化数据，不影响当前会话上下文（api_messages）。
+        下次新 Query 开始时，记忆检索将返回空结果，LLM 不再获得旧记忆。
 
         Returns:
             清除的记忆条数；若记忆模块未启用，返回 0
         """
         if self._memory is None:
             return 0
-        return self._memory.clear_all()
+        count = self._memory.clear_all()
+        return count
 
     def reset_context(self):
         """重置上下文：保留 system prompt 及初始化消息，清空对话历史。
@@ -257,7 +261,8 @@ class QueryLoop:
                 try:
                     stats = self._memory.stats()
                     raw_count = stats.get("layer0_raw", 0)
-                    if raw_count >= 10:
+                    threshold = getattr(self._memory, "raw_prompt_threshold", 10)
+                    if raw_count >= threshold:
                         self._print_info(
                             f"已有 {raw_count} 条未提取记忆，执行 /mem extract 提取记忆"
                         )

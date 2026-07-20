@@ -6,6 +6,7 @@ Layer 2（主题文件）的读写操作，提供原子写入、slug 映射、�
 对应设计文档第一章（存储架构）、第二章（slug 生成）、第三章（原子写入）。
 """
 
+import copy
 import json
 import logging
 import os
@@ -202,7 +203,7 @@ class MemoryStore:
         if not self._layer1_path.exists():
             self._layer1_path.write_text("", encoding="utf-8")
         if not self._metadata_path.exists():
-            _atomic_write_json(self._metadata_path, self._DEFAULT_METADATA.copy())
+            _atomic_write_json(self._metadata_path, copy.deepcopy(self._DEFAULT_METADATA))
 
     def _cleanup_tmp_files(self):
         """清理上次崩溃可能残留的 .tmp 文件。"""
@@ -222,7 +223,7 @@ class MemoryStore:
         except Exception as e:
             logger.warning(f"加载 metadata.json 失败，使用默认值: {e}")
 
-        return self._DEFAULT_METADATA.copy()
+        return copy.deepcopy(self._DEFAULT_METADATA)
 
     def _calc_next_seq(self) -> int:
         """计算下一个序号（基于现有 Layer 0 的最大序号）。"""
@@ -854,7 +855,7 @@ class MemoryStore:
         self._layer1_path.write_text("", encoding="utf-8")
 
         # 清空元数据
-        self._metadata_cache = self._DEFAULT_METADATA.copy()
+        self._metadata_cache = copy.deepcopy(self._DEFAULT_METADATA)
         _atomic_write_json(self._metadata_path, self._metadata_cache)
 
         # 清空主题文件

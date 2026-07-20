@@ -272,7 +272,7 @@ class MyClaudeCLI:
             return True
 
         elif cmd == '/r mem':
-            # /r mem — 清除所有记忆（短期 + 长期 + 工作记忆）
+            # /r mem — 清除所有持久化记忆（Layer 0/1/2 + 元数据）
             total = self.query_loop.clear_memory()
             if total == 0:
                 cli_print.print_info("当前没有记忆。")
@@ -354,13 +354,45 @@ class MyClaudeCLI:
                     if result.get("skipped"):
                         cli_print.print_info(f"记忆提取已跳过: {result.get('reason', '未知原因')}")
                     else:
-                        cli_print.print_info(
-                            f"记忆提取完成:\n"
-                            f"  处理条目: {result.get('processed', 0)} 条\n"
-                            f"  提取记忆: {result.get('extracted', 0)} 条\n"
-                            f"  归档条目: {result.get('archived', 0)} 条\n"
-                            f"  前置过滤: {result.get('filtered', 0)} 条"
-                        )
+                        processed = result.get('processed', 0)
+                        extracted = result.get('extracted', 0)
+                        archived = result.get('archived', 0)
+                        filtered = result.get('filtered', 0)
+                        timed_out = result.get('timed_out', 0)
+                        llm_archived = archived - filtered  # NONE归档 + 成功提取后的原始条目
+                        details = result.get('details', [])
+
+                        # 构建明细输出
+                        lines = [
+                            f"记忆提取完成:\n",
+                            f"  处理条目: {processed} 条（原始 raw 记录总数）",
+                            f"  提取记忆: {extracted} 条（LLM 从中提炼出的结构化记忆，已写入 Layer 1）",
+                            f"  归档条目: {archived} 条（原始 raw 记录被标记为 archived，不再参与后续提取）",
+                            f"    其中前置过滤: {filtered} 条（对话过短/无技术关键词，未调用 LLM 直接归档）",
+                            f"    其中LLM处理: {llm_archived} 条（LLM 判定无价值返回 NONE，或成功提取后原始条目归档）",
+                            f"  超时跳过: {timed_out} 条（LLM 超时/失败，保留 raw 状态待下次提取）",
+                            f"  等式验证: {filtered} + {llm_archived} + {timed_out} = {filtered + llm_archived + timed_out}\n",
+                        ]
+
+                        if details:
+                            lines.append("  ── 逐条明细 ──")
+                            for d in details:
+                                qid = d.get('query_id', 0)
+                                turn = d.get('turn', 0)
+                                eid = d.get('id', '')
+                                user_in = d.get('user_input', '')[:40]
+                                preview = d.get('content_preview', '')[:50]
+                                action = d.get('action', '')
+                                reason = d.get('reason', '')
+                                lines.append(
+                                    f"  [Q{qid} T{turn}] {eid}\n"
+                                    f"    用户输入: {user_in}\n"
+                                    f"    内容预览: {preview}\n"
+                                    f"    去向: {action}\n"
+                                    f"    原因: {reason}"
+                                )
+
+                        cli_print.print_info("\n".join(lines))
                 except Exception as e:
                     cli_print.print_error(f"记忆提取执行失败: {e}")
                 return True

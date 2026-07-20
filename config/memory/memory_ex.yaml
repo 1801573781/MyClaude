@@ -27,9 +27,10 @@ memory_ex:
   extractor:
     model: "default"
     temperature: 0.2
-    max_tokens: 512
+    max_tokens: 2048
     max_entries_per_query: 3
     timeout: 60              # LLM 提取超时秒数（非流式调用，建议 30~120）
+    raw_prompt_threshold: 10 # raw 条目累积到此数量时提示用户执行 /mem extract
 
   compactor:
     model: "default"

@@ -100,9 +100,10 @@ def _get_default_config() -> SimpleNamespace:
         extractor=SimpleNamespace(
             model="default",
             temperature=0.2,
-            max_tokens=512,
+            max_tokens=2048,
             max_entries_per_query=3,
             timeout=60,
+            raw_prompt_threshold=10,
         ),
         compactor=SimpleNamespace(
             model="default",
@@ -181,6 +182,11 @@ class MemoryEx(MemoryExInterface):
     def set_progress_callback(self, callback):
         """注入进化进度回调函数。"""
         self._evolver.set_progress_callback(callback)
+
+    @property
+    def raw_prompt_threshold(self) -> int:
+        """raw 条目累积提示阈值，供 query_loop 读取。"""
+        return int(getattr(self._mem_config.extractor, "raw_prompt_threshold", 10))
 
     # ===== 兼容 MemoryInterface 的方法 =====
 

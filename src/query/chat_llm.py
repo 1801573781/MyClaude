@@ -153,6 +153,9 @@ def simple_chat(prompt: str, temperature: float = 0.3, max_tokens: int = 1024) -
     接收纯文本 prompt，构建单条 user 消息发送给 LLM，返回纯文本响应。
     发生异常时返回空字符串，不抛出异常，确保记忆系统流程不被中断。
 
+    注意：刻意不传 extra_body（关闭 thinking 模式），因为记忆系统的提取/
+    整理/进化是纯文本任务，thinking 会消耗大量 token 导致 content 为空。
+
     Args:
         prompt: 完整的提示词文本
         temperature: 采样温度
@@ -169,11 +172,19 @@ def simple_chat(prompt: str, temperature: float = 0.3, max_tokens: int = 1024) -
             temperature=temperature,
             stream=False,
         )
-        if extra_body:
-            api_kwargs["extra_body"] = _to_dict(extra_body)
+        # 刻意不传 extra_body，避免 thinking 模式消耗 token 导致 content 为空
 
         response = client.chat.completions.create(**api_kwargs)
-        content = response.choices[0].message.content or ""
+        choice = response.choices[0]
+        content = choice.message.content or ""
+
+        # 检查是否因 max_tokens 不足被截断
+        if choice.finish_reason == "length":
+            logger.warning(
+                f"simple_chat 响应被截断 (finish_reason=length, max_tokens={max_tokens})，"
+                f"返回内容可能不完整"
+            )
+
         return content.strip()
     except Exception as e:
         logger.error(f"simple_chat 调用失败: {e}")
