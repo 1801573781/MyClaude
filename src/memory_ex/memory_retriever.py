@@ -1,4 +1,4 @@
-"""记忆召回模块。
+﻿"""记忆召回模块。
 
 对应设计文档第二章。
 
@@ -13,9 +13,22 @@
 
 import logging
 import re
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+# Prompt 模板路径
+_PROMPT_DIR = Path(__file__).parent / "prompts"
+
+
+def _load_prompt(filename: str) -> str:
+    """加载 Prompt 模板文件。"""
+    try:
+        return (_PROMPT_DIR / filename).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        logger.warning(f"Prompt 模板未找到: {filename}")
+        return ""
 
 
 class MemoryRetriever:
@@ -23,6 +36,11 @@ class MemoryRetriever:
 
     正常情况下召回方只读 Layer 1 + Layer 2。
     如果 LLM 发现索引层信息不够，可以主动搜索 Layer 0 原始数据。
+
+    召回策略：
+    - retrieve_for_query(): LLM 预检索，根据查询相关性筛选 Layer 1 条目
+    - get_layer1_content(): 全量返回（向后兼容）
+    - search(): 关键词搜索（CLI 手动调用）
     """
 
     def __init__(self, mem_config: Any, store: Any):
@@ -43,10 +61,210 @@ class MemoryRetriever:
             getattr(injection_config, "max_tokens", 2000)
         )
 
-    def get_layer1_content(self) -> str:
-        """读取 Layer 1（MEMORY.md）内容。
+        # LLM 调用函数（延迟注入）
+        self._llm_chat_fn = None
 
-        这是召回的主路径——Layer 1 始终注入到 api_messages 的固定区末尾。
+    def set_llm_chat_fn(self, fn):
+        """注入 LLM 调用函数。"""
+        self._llm_chat_fn = fn
+
+    def retrieve_for_query(self, query: str) -> List[Dict[str, Any]]:
+        """根据查询相关性筛选 Layer 1 记忆（LLM 预检索）。
+
+        将 Layer 1 条目和用户查询发给 LLM，由 LLM 判断相关性并返回编号列表。
+        原则：宁可不召回也不瞎召回。LLM 不可用、超时、返回 NONE 时一律返回空列表。
+
+        Args:
+            query: 增强后的用户查询（可能含文件内容）
+
+        Returns:
+            筛选后的记忆条目列表，每个元素含 id, tags, content, raw_line。
+            空列表表示无相关记忆或召回失败。
+        """
+        layer1_content = self._store.read_layer1()
+        if not layer1_content or not layer1_content.strip():
+            return []
+
+        entries = self._parse_layer1_entries(layer1_content)
+        if not entries:
+            return []
+
+        # 无 LLM 函数时不召回
+        if not self._llm_chat_fn:
+            logger.info("LLM 调用函数未注入，跳过召回")
+            return []
+
+        # 构建预检索 Prompt
+        prompt = self._build_retrieval_prompt(query, entries)
+        if not prompt:
+            return []
+
+        # 调用 LLM 筛选
+        try:
+            response = self._call_llm_with_timeout(prompt, timeout=15)
+            if response is None:
+                logger.warning("LLM 预检索超时，跳过召回")
+                return []
+
+            selected_indices = self._parse_retrieval_response(response, len(entries))
+
+            if not selected_indices:
+                # LLM 返回 NONE 或解析失败，不召回
+                logger.info("LLM 预检索无匹配，不召回")
+                return []
+
+            selected = [entries[i] for i in selected_indices if i < len(entries)]
+            logger.info(f"LLM 预检索命中 {len(selected)}/{len(entries)} 条记忆")
+            return selected
+
+        except Exception as e:
+            logger.error(f"LLM 预检索失败: {e}，跳过召回")
+            return []
+
+    def _parse_layer1_entries(self, layer1_content: str) -> List[Dict[str, Any]]:
+        """解析 Layer 1 内容为结构化条目列表。
+
+        Args:
+            layer1_content: MEMORY.md 的原始内容
+
+        Returns:
+            条目列表，每个元素含 id, tags, content, raw_line
+        """
+        entries = []
+        for line in layer1_content.split("\n"):
+            line = line.strip()
+            if not line.startswith("- "):
+                continue
+
+            # 解析格式: - [tag1][tag2] content (id=xxx)
+            raw_line = line
+
+            # 提取 ID
+            id_match = re.search(r"\(id=([^)]+)\)", line)
+            entry_id = id_match.group(1) if id_match else ""
+
+            # 提取标签
+            tags = re.findall(r"\[([^\]]+)\]", line)
+            # 过滤掉 id 标签
+            tags = [t for t in tags if not t.startswith("id=")]
+
+            # 提取内容（去掉前导 "- " 和所有 [tag] 和 (id=...)）
+            content = re.sub(r"^\-\s+", "", line)
+            content = re.sub(r"\[[^\]]+\]", "", content).strip()
+            content = re.sub(r"\(id=[^)]+\)", "", content).strip()
+
+            entries.append({
+                "id": entry_id,
+                "tags": tags,
+                "content": content,
+                "raw_line": raw_line,
+            })
+
+        return entries
+
+    def _build_retrieval_prompt(self, query: str, entries: List[Dict]) -> str:
+        """构建预检索 Prompt。
+
+        Args:
+            query: 增强后的用户查询
+            entries: Layer 1 条目列表
+
+        Returns:
+            完整的预检索 Prompt 字符串
+        """
+        prompt_template = _load_prompt("retrieval_prompt.txt")
+        if not prompt_template:
+            logger.warning("retrieval_prompt.txt 未找到，跳过 LLM 预检索")
+            return ""
+
+        # 构建记忆列表（带编号）
+        memory_lines = []
+        for i, entry in enumerate(entries, 1):
+            tags_str = "".join(f"[{t}]" for t in entry.get("tags", []))
+            memory_lines.append(f"{i}. {tags_str} {entry.get('content', '')}")
+
+        memories_text = "\n".join(memory_lines)
+
+        prompt = prompt_template.replace("{query}", query)
+        prompt = prompt.replace("{memories}", memories_text)
+
+        return prompt
+
+    def _parse_retrieval_response(self, response: str, total: int) -> List[int]:
+        """解析 LLM 预检索响应。
+
+        Args:
+            response: LLM 响应文本
+            total: 总条目数（用于边界检查）
+
+        Returns:
+            选中的条目编号列表（0-based 索引）
+        """
+        if not response:
+            return []
+
+        response = response.strip()
+
+        # 检查 NONE
+        if response.upper().startswith("NONE"):
+            return []
+
+        # 匹配 RELATED: 1,3,5
+        match = re.match(r"RELATED:\s*([\d,\s]+)", response, re.IGNORECASE)
+        if not match:
+            logger.warning(f"无法解析预检索响应: {response[:100]}")
+            return []
+
+        # 解析编号
+        numbers_str = match.group(1)
+        numbers = [int(n.strip()) for n in numbers_str.split(",") if n.strip().isdigit()]
+
+        # 转为 0-based 索引，并做边界检查
+        indices = [n - 1 for n in numbers if 1 <= n <= total]
+
+        return indices
+
+    def _call_llm_with_timeout(self, prompt: str, timeout: int = 15) -> Optional[str]:
+        """调用 LLM，带超时保护。
+
+        Args:
+            prompt: 完整 Prompt
+            timeout: 超时秒数
+
+        Returns:
+            LLM 响应文本，None 表示超时
+        """
+        import threading
+
+        result = {"response": None, "done": False}
+
+        def _call():
+            try:
+                response = self._llm_chat_fn(
+                    prompt,
+                    temperature=0.1,
+                    max_tokens=128,
+                )
+                result["response"] = response
+            except Exception as e:
+                logger.error(f"LLM 预检索调用异常: {e}")
+            finally:
+                result["done"] = True
+
+        thread = threading.Thread(target=_call, daemon=True)
+        thread.start()
+        thread.join(timeout=timeout)
+
+        if not result["done"]:
+            logger.warning(f"LLM 预检索超时（{timeout}s）")
+            return None
+
+        return result["response"]
+
+    def get_layer1_content(self) -> str:
+        """读取 Layer 1（MEMORY.md）内容（全量，向后兼容）。
+
+        新的召回主路径是 retrieve_for_query()，此方法保留供回退和调试使用。
 
         Returns:
             Layer 1 的 Markdown 内容，空字符串表示无内容
@@ -57,57 +275,10 @@ class MemoryRetriever:
         """获取 Layer 1 的行数和 token 估算。"""
         return self._store.get_layer1_stats()
 
-    def parse_topic_pointers(self, layer1_content: str) -> List[Dict]:
-        """解析 Layer 1 中的主题文件指针。
-
-        指针格式：- [主题标签] 一句话概括 → 详见 topics/{topic_slug}.md
-
-        Args:
-            layer1_content: Layer 1 的 Markdown 内容
-
-        Returns:
-            指针信息列表，每个元素含 tag, summary, filename
-        """
-        pointers = []
-        if not layer1_content:
-            return pointers
-
-        # 匹配指针行
-        # 格式: - [标签] 概括 → 详见 topics/xxx.md
-        pattern = re.compile(
-            r"^-\s*\[([^\]]+)\]\s*(.+?)\s*→\s*详见\s*topics/(\S+\.md)",
-            re.MULTILINE,
-        )
-
-        for match in pattern.finditer(layer1_content):
-            tag = match.group(1).strip()
-            summary = match.group(2).strip()
-            filename = match.group(3).strip()
-            pointers.append({
-                "tag": tag,
-                "summary": summary,
-                "filename": filename,
-            })
-
-        return pointers
-
-    def get_topic_file_content(self, filename: str) -> str:
-        """读取 Layer 2 主题文件内容（懒加载）。
-
-        LLM 判断需要某主题细节时，通过 file_view 或此方法读取。
-
-        Args:
-            filename: 主题文件名（如 "database.md"）
-
-        Returns:
-            主题文件内容，空字符串表示文件不存在
-        """
-        return self._store.read_topic_file(filename)
-
     def search(self, query: str, top_k: int = None, **filters) -> List[Dict]:
-        """搜索 Layer 0 + Layer 2。
+        """搜索 Layer 0。
 
-        供 CLI /mem search 命令调用。
+        供 CLI /mem search 命令调用。仅搜索 Layer 0。
 
         利用倒排索引进行快速定位，避免全量扫描 JSONL。
 
@@ -152,10 +323,6 @@ class MemoryRetriever:
 
             if len(results) >= top_k:
                 break
-
-        # 3. 也搜索 Layer 2 主题文件
-        topic_results = self._search_topic_files(keywords, top_k - len(results))
-        results.extend(topic_results)
 
         return results[:top_k]
 
@@ -235,45 +402,4 @@ class MemoryRetriever:
 
         return True
 
-    def _search_topic_files(
-        self, keywords: List[str], max_results: int
-    ) -> List[Dict]:
-        """搜索 Layer 2 主题文件。
 
-        Args:
-            keywords: 关键词列表
-            max_results: 最大返回数
-
-        Returns:
-            匹配的主题文件内容条目
-        """
-        if max_results <= 0:
-            return []
-
-        results = []
-        topic_files = self._store.list_topic_files()
-
-        for filename in topic_files:
-            content = self._store.read_topic_file(filename)
-            if not content:
-                continue
-
-            # 检查是否包含关键词
-            if any(kw.lower() in content.lower() for kw in keywords):
-                # 解析主题文件中的条目
-                for line in content.split("\n"):
-                    line = line.strip()
-                    if line.startswith("- ") and any(
-                        kw.lower() in line.lower() for kw in keywords
-                    ):
-                        results.append({
-                            "id": "",
-                            "source": "topic_file",
-                            "tags": [filename.replace(".md", "")],
-                            "content": line,
-                            "filename": filename,
-                        })
-                        if len(results) >= max_results:
-                            return results
-
-        return results

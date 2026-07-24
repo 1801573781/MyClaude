@@ -1,10 +1,10 @@
 memory_ex:
   storage:
     base_dir: "D:/AI/MyClaude/memory_storage/memory_ex/"
-    layer0_file: "memory.jsonl"
+    layer0_file: "raw_memory.jsonl"
+    layer0_md_file: "raw_memory.md"
     layer1_file: "MEMORY.md"
     metadata_file: "metadata.json"
-    topics_dir: "topics/"
     archive_dir: "archive/"
 
   watermarks:

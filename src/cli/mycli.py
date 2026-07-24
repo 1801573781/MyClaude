@@ -26,6 +26,102 @@ class MyClaudeCLI:
         # 静默加载斜杠命令，不打印提示信息
 
 
+    @staticmethod
+    def _format_estimated_time(raw_count: int) -> str:
+        """根据 raw 记忆条目数量预估 LLM 处理时间。
+
+        每组 raw 条目平均约 5 秒（含网络延迟和 LLM 推理），
+        实际按 query_id 分组后每组约 5 秒，粗略按每条 1.5 秒估算。
+
+        Args:
+            raw_count: raw 记忆条目总数
+
+        Returns:
+            格式化后的时间字符串，如 "15秒"、"2分30秒"、"1小时5分30秒"
+        """
+        # 粗略估算：每条 raw 记忆约 1.5 秒
+        total_seconds = int(raw_count * 1.5)
+        if total_seconds < 60:
+            return f"{total_seconds}秒"
+        elif total_seconds < 3600:
+            minutes = total_seconds // 60
+            seconds = total_seconds % 60
+            return f"{minutes}分{seconds}秒"
+        else:
+            hours = total_seconds // 3600
+            minutes = (total_seconds % 3600) // 60
+            seconds = total_seconds % 60
+            return f"{hours}小时{minutes}分{seconds}秒"
+
+    @staticmethod
+    def _save_extraction_report(result: dict, logs_root: str):
+        """将记忆提取的逐条明细保存为 Markdown 报告文件。
+
+        Args:
+            result: extract() 返回的统计字典
+            logs_root: 日志根目录路径
+        """
+        from datetime import datetime
+        from pathlib import Path
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        report_path = Path(logs_root) / f"memory_extraction_report_{timestamp}.md"
+
+        processed = result.get('processed', 0)
+        extracted = result.get('extracted', 0)
+        marked_processed = result.get('marked_processed', 0)
+        filtered = result.get('filtered', 0)
+        timed_out = result.get('timed_out', 0)
+        llm_processed = marked_processed - filtered
+        details = result.get('details', [])
+
+        lines = [
+            f"# 记忆提取报告",
+            f"",
+            f"**生成时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"",
+            f"## 统计摘要",
+            f"",
+            f"| 指标 | 数值 | 说明 |",
+            f"|------|------|------|",
+            f"| 处理条目 | {processed} | 原始 raw 记录总数 |",
+            f"| 提取记忆 | {extracted} | LLM 从中提炼出的结构化记忆，已写入 Layer 1 |",
+            f"| 标记已处理 | {marked_processed} | 原始 raw 记录被标记为 processed，不再参与后续提取 |",
+            f"| 其中前置过滤 | {filtered} | 对话过短/无技术关键词，未调用 LLM 直接标记 |",
+            f"| 其中LLM处理 | {llm_processed} | LLM 判定无价值返回 NONE，或成功提取后原始条目标记 |",
+            f"| 超时跳过 | {timed_out} | LLM 超时/失败，保留 raw 状态待下次提取 |",
+            f"",
+            f"## 逐条明细",
+            f"",
+        ]
+
+        if details:
+            for d in details:
+                qid = d.get('query_id', 0)
+                turn = d.get('turn', 0)
+                eid = d.get('id', '')
+                user_in = d.get('user_input', '')[:60]
+                preview = d.get('content_preview', '')[:80]
+                action = d.get('action', '')
+                reason = d.get('reason', '')
+                lines.append(f"### [Q{qid} T{turn}] `{eid}`")
+                lines.append(f"")
+                lines.append(f"- **用户输入**: {user_in}")
+                lines.append(f"- **内容预览**: {preview}")
+                lines.append(f"- **去向**: {action}")
+                lines.append(f"- **原因**: {reason}")
+                lines.append(f"")
+        else:
+            lines.append("（无明细数据）")
+
+        lines.append(f"---")
+        lines.append(f"")
+        lines.append(f"*本报告由 MyClaude 记忆系统自动生成*")
+
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text("\n".join(lines), encoding="utf-8")
+        return str(report_path)
+
     def handle_command(self, command: str) -> bool:
         """处理命令，返回是否应该继续对话"""
         cmd = command.lower().strip()
@@ -273,11 +369,33 @@ class MyClaudeCLI:
 
         elif cmd == '/r mem':
             # /r mem — 清除所有持久化记忆（Layer 0/1/2 + 元数据）
-            total = self.query_loop.clear_memory()
-            if total == 0:
+            stats = self.query_loop.clear_memory()
+            if not stats:
                 cli_print.print_info("当前没有记忆。")
+            elif "total" in stats and len(stats) == 1:
+                # 兼容旧后端仅返回总数的场景
+                cli_print.print_info(f"已清除所有记忆（共 {stats['total']} 条）。")
             else:
-                cli_print.print_info(f"已清除所有记忆（共 {total} 条）。")
+                layer0_total = stats.get("layer0_total", 0)
+                layer0_raw = stats.get("layer0_raw", 0)
+                layer0_unprocessed = stats.get("layer0_unprocessed", 0)
+                layer0_processed = stats.get("layer0_processed", 0)
+                layer1_entries = stats.get("layer1_entries", 0)
+                layer2_files = stats.get("layer2_topic_files", 0)
+
+                lines = [
+                    "已清除所有记忆，详细统计如下：",
+                    f"  原始记忆（Layer 0）: {layer0_total} 条",
+                ]
+                if layer0_raw > 0:
+                    lines.append(f"    其中未提取（raw）: {layer0_raw} 条")
+                if layer0_unprocessed > 0:
+                    lines.append(f"    其中已提取（unprocessed）: {layer0_unprocessed} 条")
+                if layer0_processed > 0:
+                    lines.append(f"    其中已处理（processed）: {layer0_processed} 条")
+                lines.append(f"  正式记忆（Layer 1）: {layer1_entries} 条")
+                lines.append(f"  主题文件（Layer 2）: {layer2_files} 个")
+                cli_print.print_info("\n".join(lines))
             return True
 
         elif cmd == '/new session':
@@ -343,58 +461,129 @@ class MyClaudeCLI:
 
             elif sub_cmd == "extract":
                 # 手动触发记忆提取（从 Layer 0 raw 条目中用 LLM 提取结构化记忆）
+                import sys
+                import time
+                import threading
+
                 memory = self.query_loop._memory
                 if not hasattr(memory, "extract"):
                     cli_print.print_error("当前记忆后端不支持手动提取。")
                     return True
 
-                cli_print.print_info("开始执行记忆提取（调用 LLM，可能需要数秒）...")
+                # 检查 raw 条目数量，预估时间
+                try:
+                    stats = memory.stats()
+                    raw_count = stats.get("layer0_raw", 0)
+                except Exception:
+                    raw_count = 0
+
+                if raw_count == 0:
+                    cli_print.print_info("没有需要提取的 raw 记忆。")
+                    return True
+
+                est_time = self._format_estimated_time(raw_count)
+                cli_print.print_info(
+                    f"开始执行记忆提取...\n"
+                    f"  待处理 raw 记忆: {raw_count} 条\n"
+                    f"  预计耗时: {est_time}"
+                )
+
+                # 设置进度回调
+                progress_holder = {"completed": 0, "total": 0, "done": False, "result": None, "error": None}
+
+                def _on_progress(completed: int, total: int, action: str):
+                    progress_holder["completed"] = completed
+                    progress_holder["total"] = total
+
+                if hasattr(memory, "set_extract_progress_callback"):
+                    memory.set_extract_progress_callback(_on_progress)
+
+                # Spinner 动画
+                is_tty = sys.stdout.isatty()
+                spinner_chars = ('⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏')
+                all_done = threading.Event()
+                output_lock = threading.Lock()
+                spin_start = time.time()
+
+                def _spin():
+                    i = 0
+                    last_heartbeat = time.time()
+                    while not all_done.is_set():
+                        char = spinner_chars[i % len(spinner_chars)]
+                        with output_lock:
+                            if all_done.is_set():
+                                break
+                            if is_tty:
+                                elapsed = int(time.time() - spin_start)
+                                completed = progress_holder["completed"]
+                                total = progress_holder["total"]
+                                if total > 0:
+                                    msg = f"  {char} 正在调用 LLM 提取记忆... {completed}/{total} 组 ({elapsed}s)"
+                                else:
+                                    msg = f"  {char} 正在调用 LLM 提取记忆... ({elapsed}s)"
+                                sys.stdout.write(f"\r{msg.ljust(70)}")
+                                sys.stdout.flush()
+                            else:
+                                now = time.time()
+                                if now - last_heartbeat >= 5.0:
+                                    elapsed = int(now - spin_start)
+                                    completed = progress_holder["completed"]
+                                    total = progress_holder["total"]
+                                    if total > 0:
+                                        print(f"  ... 仍在提取 {completed}/{total} 组 ({elapsed}s)")
+                                    else:
+                                        print(f"  ... 仍在提取 ({elapsed}s)")
+                                    last_heartbeat = now
+                        time.sleep(0.15)
+                        i += 1
+
+                spinner_thread = threading.Thread(target=_spin, daemon=True)
+                spinner_thread.start()
+
+                # 执行提取
                 try:
                     result = memory.extract()
-                    if result.get("skipped"):
-                        cli_print.print_info(f"记忆提取已跳过: {result.get('reason', '未知原因')}")
-                    else:
-                        processed = result.get('processed', 0)
-                        extracted = result.get('extracted', 0)
-                        archived = result.get('archived', 0)
-                        filtered = result.get('filtered', 0)
-                        timed_out = result.get('timed_out', 0)
-                        llm_archived = archived - filtered  # NONE归档 + 成功提取后的原始条目
-                        details = result.get('details', [])
-
-                        # 构建明细输出
-                        lines = [
-                            f"记忆提取完成:\n",
-                            f"  处理条目: {processed} 条（原始 raw 记录总数）",
-                            f"  提取记忆: {extracted} 条（LLM 从中提炼出的结构化记忆，已写入 Layer 1）",
-                            f"  归档条目: {archived} 条（原始 raw 记录被标记为 archived，不再参与后续提取）",
-                            f"    其中前置过滤: {filtered} 条（对话过短/无技术关键词，未调用 LLM 直接归档）",
-                            f"    其中LLM处理: {llm_archived} 条（LLM 判定无价值返回 NONE，或成功提取后原始条目归档）",
-                            f"  超时跳过: {timed_out} 条（LLM 超时/失败，保留 raw 状态待下次提取）",
-                            f"  等式验证: {filtered} + {llm_archived} + {timed_out} = {filtered + llm_archived + timed_out}\n",
-                        ]
-
-                        if details:
-                            lines.append("  ── 逐条明细 ──")
-                            for d in details:
-                                qid = d.get('query_id', 0)
-                                turn = d.get('turn', 0)
-                                eid = d.get('id', '')
-                                user_in = d.get('user_input', '')[:40]
-                                preview = d.get('content_preview', '')[:50]
-                                action = d.get('action', '')
-                                reason = d.get('reason', '')
-                                lines.append(
-                                    f"  [Q{qid} T{turn}] {eid}\n"
-                                    f"    用户输入: {user_in}\n"
-                                    f"    内容预览: {preview}\n"
-                                    f"    去向: {action}\n"
-                                    f"    原因: {reason}"
-                                )
-
-                        cli_print.print_info("\n".join(lines))
                 except Exception as e:
-                    cli_print.print_error(f"记忆提取执行失败: {e}")
+                    result = {"error": str(e)}
+                finally:
+                    all_done.set()
+                    spinner_thread.join(timeout=1.0)
+                    with output_lock:
+                        if is_tty:
+                            sys.stdout.write(f"\r{' ' * 70}\r")
+                            sys.stdout.flush()
+
+                # 处理结果
+                if "error" in result and result.get("error"):
+                    cli_print.print_error(f"记忆提取执行失败: {result['error']}")
+                    return True
+
+                if result.get("skipped"):
+                    cli_print.print_info(f"记忆提取已跳过: {result.get('reason', '未知原因')}")
+                    return True
+
+                processed = result.get('processed', 0)
+                extracted = result.get('extracted', 0)
+                archived = result.get('marked_processed', 0)
+                filtered = result.get('filtered', 0)
+                timed_out = result.get('timed_out', 0)
+                llm_archived = archived - filtered
+
+                # 保存逐条明细到报告文件
+                from src.utility.config_loader import global_cfg
+                logs_root = global_cfg.base_path.logs_root
+                report_path = self._save_extraction_report(result, logs_root)
+
+                cli_print.print_info(
+                    f"记忆提取完成:\n"
+                    f"  处理条目: {processed} 条（原始 raw 记录总数）\n"
+                    f"  提取记忆: {extracted} 条（LLM 从中提炼出的结构化记忆，已写入 Layer 1）\n"
+                    f"  标记已处理: {archived} 条（原始 raw 记录被标记为 processed，不再参与后续提取）\n"
+                    f"    其中前置过滤: {filtered} 条（对话过短/无技术关键词，未调用 LLM 直接标记）\n"
+                    f"    其中LLM处理: {llm_archived} 条（LLM 判定无价值返回 NONE，或成功提取后原始条目标记）\n"
+                    f"  超时跳过: {timed_out} 条（LLM 超时/失败，保留 raw 状态待下次提取）\n"
+                    f"  逐条明细报告已保存到: {report_path}"
+                )
                 return True
 
             else:

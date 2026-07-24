@@ -83,19 +83,22 @@ class QueryLoop:
             self._memory = NoopMemory()
 
 
-    def clear_memory(self) -> int:
+    def clear_memory(self) -> dict:
         """清除所有持久化记忆（Layer 0/1/2 + 元数据）。
 
         仅清除记忆系统的持久化数据，不影响当前会话上下文（api_messages）。
         下次新 Query 开始时，记忆检索将返回空结果，LLM 不再获得旧记忆。
 
         Returns:
-            清除的记忆条数；若记忆模块未启用，返回 0
+            清除统计字典，包含各层清除的条目数等信息；若记忆模块未启用，返回空 dict
         """
         if self._memory is None:
-            return 0
-        count = self._memory.clear_all()
-        return count
+            return {}
+        result = self._memory.clear_all()
+        if isinstance(result, dict):
+            return result
+        # 兼容旧后端仍返回 int 的情况
+        return {"total": result} if isinstance(result, int) else {}
 
     def reset_context(self):
         """重置上下文：保留 system prompt 及初始化消息，清空对话历史。

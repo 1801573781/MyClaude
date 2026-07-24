@@ -1,11 +1,8 @@
 """记忆整理模块。
 
-对应设计文档第三章。
-
-三段式处理流水线：
+两段式处理流水线：
 1. Merge（合并）：同主题合并、时间线演进、因果链压缩、重复去重
-2. Demote（降级）：低价值条目从 Layer 1 移到 Layer 2，保留指针
-3. Evict（淘汰）：删除无用条目
+2. Evict（淘汰）：删除无用条目
 
 规则化优先，LLM 辅助。原子写入。可追溯日志。
 """
@@ -144,7 +141,6 @@ class MemoryCompactor:
             "mode": mode,
             "layer1_before": layer1_before_lines,
             "merged": merged_count,
-            "demoted": 0,
             "evicted": 0,
         }
 
@@ -153,15 +149,12 @@ class MemoryCompactor:
             self._store.write_layer1(layer1_content)
             stats["layer1_after"] = layer1_content.count("\n") + 1 if layer1_content else 0
             stats["duration_ms"] = int((datetime.now() - start_time).total_seconds() * 1000)
+            stats["total_processed"] = merged_count
             self._store.add_compaction_log(stats)
             self._store.save_metadata()
             return stats
 
-        # Step 2: Demote
-        demoted_count, layer1_content = self._step_demote(layer1_content)
-        stats["demoted"] = demoted_count
-
-        # Step 3: Evict
+        # Step 2: Evict（原 Step 3，Demote 已移除）
         evicted_count, layer1_content = self._step_evict(layer1_content)
         stats["evicted"] = evicted_count
 
@@ -176,11 +169,11 @@ class MemoryCompactor:
         self._store.save_metadata()
 
         logger.info(
-            f"整理完成: 合并 {merged_count}, 降级 {demoted_count}, "
+            f"整理完成: 合并 {merged_count}, "
             f"淘汰 {evicted_count}, 耗时 {stats['duration_ms']}ms"
         )
 
-        stats["total_processed"] = merged_count + demoted_count + evicted_count
+        stats["total_processed"] = merged_count + evicted_count
         return stats
 
     def evict_by_id(self, memory_id: str) -> bool:
@@ -208,7 +201,7 @@ class MemoryCompactor:
 
         if found:
             self._store.write_layer1("\n".join(new_lines))
-            self._store.update_metadata_entry(memory_id, status="archived")
+            self._store.update_metadata_entry(memory_id, status="processed")
             self._store.save_metadata()
 
         return found
@@ -412,97 +405,7 @@ class MemoryCompactor:
         except (ValueError, AttributeError):
             return [], ""
 
-    # ===== Step 2: Demote =====
-
-    def _step_demote(self, layer1_content: str) -> Tuple[int, str]:
-        """执行降级步骤。
-
-        将低价值条目从 Layer 1 移到 Layer 2 主题文件，
-        Layer 1 中替换为精简指针。
-
-        Returns:
-            (降级计数, 新 Layer 1 内容)
-        """
-        stats = self._store.get_layer1_stats()
-        if stats["lines"] <= self._wm_warning and stats["tokens"] <= 1500:
-            return 0, layer1_content
-
-        entries = self._parse_layer1_entries(layer1_content)
-        if not entries:
-            return 0, layer1_content
-
-        # 计算每条重要性分数
-        scored_entries = []
-        for entry in entries:
-            meta = self._store.get_metadata_entry(entry["id"]) if entry["id"] else None
-            score = self._scorer.score(
-                {"tags": entry["tags"], "content": entry["content"]},
-                meta,
-            )
-            tier = self._scorer.get_score_tier(score)
-            scored_entries.append((entry, score, tier))
-
-        # 排序：分数最低的在前（优先降级）
-        scored_entries.sort(key=lambda x: x[1])
-
-        demoted_count = 0
-        kept_entries = []
-
-        for entry, score, tier in scored_entries:
-            stats = self._store.get_layer1_stats()
-            current_lines = stats["lines"]
-            current_tokens = stats["tokens"]
-
-            # 检查是否需要继续降级
-            if current_lines <= self._wm_target_after and current_tokens <= 1600:
-                kept_entries.append(entry)
-                continue
-
-            # 进化条目不降级
-            if entry.get("is_evolved"):
-                kept_entries.append(entry)
-                continue
-
-            # 分数 ≥ 0.6 不降级
-            if score >= 0.6:
-                kept_entries.append(entry)
-                continue
-
-            # 分数 < 0.3 的降级
-            if score < 0.3:
-                self._demote_entry(entry)
-                demoted_count += 1
-            else:
-                # 0.3~0.6 视情况降级
-                if current_lines > self._wm_trigger:
-                    self._demote_entry(entry)
-                    demoted_count += 1
-                else:
-                    kept_entries.append(entry)
-
-        new_content = self._rebuild_layer1(kept_entries)
-        return demoted_count, new_content
-
-    def _demote_entry(self, entry: Dict) -> None:
-        """将条目降级到 Layer 2 主题文件。"""
-        tags = entry.get("tags", [])
-        if not tags:
-            tags = ["misc"]
-
-        # 取第一个标签作为主题
-        topic_tag = tags[0]
-        filename = self._store.get_or_create_topic_filename(topic_tag)
-
-        # 写入主题文件
-        content = entry.get("content", "")
-        topic_content = f"- {''.join(f'[{t}]' for t in tags)} {content}"
-        if entry.get("id"):
-            topic_content += f" (id={entry['id']})"
-        self._store.append_topic_file(filename, topic_content)
-
-        logger.info(f"降级条目到 {filename}: {content[:50]}")
-
-    # ===== Step 3: Evict =====
+    # ===== Step 2: Evict =====
 
     def _step_evict(self, layer1_content: str) -> Tuple[int, str]:
         """执行淘汰步骤。
@@ -553,7 +456,7 @@ class MemoryCompactor:
             # 淘汰分数最低的
             if score < 0.1:
                 if entry.get("id"):
-                    self._store.update_metadata_entry(entry["id"], status="archived")
+                    self._store.update_metadata_entry(entry["id"], status="processed")
                     self._store.remove_metadata_entry(entry["id"])
                 evicted_count += 1
                 logger.info(f"淘汰条目: {entry.get('content', '')[:50]}")
@@ -572,7 +475,7 @@ class MemoryCompactor:
             line = self._format_entry_line(entry)
             if line:
                 lines.append(line)
-        return "\n".join(lines)
+        return "\n\n".join(lines)
 
     def _format_entry_line(self, entry: Dict) -> str:
         """格式化单条记忆为 Layer 1 行。"""

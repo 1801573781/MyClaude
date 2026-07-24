@@ -1,9 +1,7 @@
-"""三层物理存储管理器。
+"""物理存储管理器。
 
 管理 Layer 0（JSONL）、Layer 1（MEMORY.md）、元数据层（metadata.json）、
-Layer 2（主题文件）的读写操作，提供原子写入、slug 映射、倒排索引维护。
-
-对应设计文档第一章（存储架构）、第二章（slug 生成）、第三章（原子写入）。
+归档（archive）的读写操作，提供原子写入、倒排索引维护。
 """
 
 import copy
@@ -17,44 +15,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
-
-
-def _generate_slug(topic_tag: str) -> str:
-    """将主题标签转为文件名 slug。
-
-    中文标签转拼音，英文标签转小写，空格替换为下划线，取前 20 字符。
-    如果 pypinyin 未安装，降级为 hash 方案。
-
-    Args:
-        topic_tag: 主题标签，如 "路径规范" 或 "Database"
-
-    Returns:
-        slug 字符串，如 "lu_jing_gui_fan" 或 "database"
-    """
-    tag = topic_tag.strip()
-
-    # 尝试使用 pypinyin
-    try:
-        from pypinyin import lazy_pinyin
-
-        # 如果是纯英文/数字，直接小写
-        if re.match(r"^[a-zA-Z0-9\s_\-]+$", tag):
-            base = tag.lower().replace(" ", "_").replace("-", "_")
-        else:
-            # 中文转拼音
-            pinyin_parts = lazy_pinyin(tag)
-            base = "_".join(pinyin_parts)
-
-        base = re.sub(r"[^a-z0-9_]", "", base.lower())
-        base = base[:20]
-        if not base:
-            base = "topic"
-        return base
-    except ImportError:
-        # 降级：使用 hash
-        logger.warning("pypinyin 未安装，slug 生成降级为 hash 方案")
-        base = str(abs(hash(tag)) % 100000)
-        return f"topic_{base}"
 
 
 def _atomic_write(filepath: Path, content: str, encoding: str = "utf-8") -> bool:
@@ -127,13 +87,12 @@ def _count_lines(text: str) -> int:
 
 
 class MemoryStore:
-    """三层物理存储管理器。
+    """物理存储管理器。
 
     管理以下文件：
     - Layer 0: {base_dir}/memory.jsonl（追加式 JSONL）
     - Layer 1: {base_dir}/MEMORY.md（索引层 Markdown）
     - 元数据: {base_dir}/metadata.json
-    - Layer 2: {base_dir}/topics/*.md（主题文件）
     - 归档: {base_dir}/archive/（Layer 0 归档文件）
     """
 
@@ -141,7 +100,6 @@ class MemoryStore:
     _DEFAULT_METADATA = {
         "version": 1,
         "entries": {},
-        "topic_mapping": {},
         "inverted_index": {"tags": {}, "files": {}, "entities": {}},
         "entity_aliases": {},
         "compaction_logs": [],
@@ -158,9 +116,11 @@ class MemoryStore:
         storage = mem_config.storage
         self._base_dir = Path(storage.base_dir)
         self._layer0_path = self._base_dir / storage.layer0_file
+        self._layer0_md_path = self._base_dir / getattr(
+            storage, "layer0_md_file", "raw_memory.md"
+        )
         self._layer1_path = self._base_dir / storage.layer1_file
         self._metadata_path = self._base_dir / storage.metadata_file
-        self._topics_dir = self._base_dir / storage.topics_dir
         self._archive_dir = self._base_dir / storage.archive_dir
 
         # 水位配置
@@ -193,17 +153,28 @@ class MemoryStore:
     def _ensure_dirs(self):
         """创建所需目录。"""
         self._base_dir.mkdir(parents=True, exist_ok=True)
-        self._topics_dir.mkdir(parents=True, exist_ok=True)
         self._archive_dir.mkdir(parents=True, exist_ok=True)
 
     def _ensure_files(self):
-        """创建所需文件（如果不存在）。"""
+        """创建所需文件（如果不存在），并迁移旧文件名。"""
+        # 旧文件名迁移：memory.jsonl → raw_memory.jsonl
+        old_layer0 = self._base_dir / "memory.jsonl"
+        if old_layer0.exists() and not self._layer0_path.exists():
+            old_layer0.rename(self._layer0_path)
+            logger.info(f"已迁移 {old_layer0.name} → {self._layer0_path.name}")
+
         if not self._layer0_path.exists():
             self._layer0_path.write_text("", encoding="utf-8")
+        if not self._layer0_md_path.exists():
+            self._layer0_md_path.write_text("", encoding="utf-8")
         if not self._layer1_path.exists():
             self._layer1_path.write_text("", encoding="utf-8")
         if not self._metadata_path.exists():
             _atomic_write_json(self._metadata_path, copy.deepcopy(self._DEFAULT_METADATA))
+
+        # 如果 MD 文件为空但 JSONL 有内容，重建 MD
+        if self._layer0_md_path.stat().st_size == 0 and self._layer0_path.stat().st_size > 0:
+            self._rebuild_layer0_md()
 
     def _cleanup_tmp_files(self):
         """清理上次崩溃可能残留的 .tmp 文件。"""
@@ -240,6 +211,57 @@ class MemoryStore:
                 except ValueError:
                     pass
         return max_seq + 1
+
+    # ===== Layer 0 Markdown（人类可读副本）=====
+
+    @staticmethod
+    def _format_entry_for_md(entry: Dict) -> str:
+        """将 JSONL 条目格式化为人类可读的 Markdown 片段。
+
+        格式设计：
+        - 以 --- 分隔不同条目
+        - 显示 ID、时间戳、标签、来源、状态
+        - content 原样输出（保留内部换行）
+        """
+        lines = []
+        eid = entry.get("id", "")
+        timestamp = entry.get("timestamp", "")
+        tags = entry.get("tags", [])
+        source = entry.get("source", "")
+        status = entry.get("status", "")
+        content = entry.get("content", "")
+
+        lines.append("---")
+        lines.append(f"**ID:** {eid}")
+        lines.append(f"**时间:** {timestamp}")
+        if tags:
+            tags_str = ", ".join(f"`{t}`" for t in tags)
+            lines.append(f"**标签:** {tags_str}")
+        lines.append(f"**来源:** {source}  |  **状态:** {status}")
+        lines.append("")
+        lines.append(content)
+        lines.append("")  # 条目尾部空行，方便阅读
+        return "\n".join(lines)
+
+    def _append_layer0_md(self, entry: Dict) -> None:
+        """将单条记录追加到 raw_memory.md。"""
+        md_line = self._format_entry_for_md(entry)
+        try:
+            with open(self._layer0_md_path, "a", encoding="utf-8") as f:
+                f.write(md_line + "\n")
+        except Exception as e:
+            logger.error(f"写入 Layer 0 MD 失败: {e}")
+
+    def _rebuild_layer0_md(self) -> None:
+        """从 JSONL 重建 raw_memory.md（用于迁移或修复）。"""
+        entries = self.iter_layer0()
+        if not entries:
+            _atomic_write(self._layer0_md_path, "")
+            return
+
+        parts = [self._format_entry_for_md(e) for e in entries]
+        content = "\n".join(parts)
+        _atomic_write(self._layer0_md_path, content)
 
     # ===== Layer 0 操作 =====
 
@@ -290,6 +312,9 @@ class MemoryStore:
         except Exception as e:
             logger.error(f"写入 Layer 0 失败: {e}")
             return ""
+
+        # 同步追加到 raw_memory.md（人类可读副本）
+        self._append_layer0_md(entry)
 
         # 更新元数据缓存
         self._metadata_cache.setdefault("entries", {})[entry_id] = {
@@ -388,7 +413,10 @@ class MemoryStore:
         # 重写整个 Layer 0
         lines = [json.dumps(e, ensure_ascii=False) for e in entries]
         content = "\n".join(lines) + ("\n" if lines else "")
-        return _atomic_write(self._layer0_path, content)
+        success = _atomic_write(self._layer0_path, content)
+        if success:
+            self._rebuild_layer0_md()
+        return success
 
     def batch_update_layer0(self, updates_map: Dict[str, Dict]) -> bool:
         """批量更新 Layer 0 条目。
@@ -410,7 +438,10 @@ class MemoryStore:
 
         lines = [json.dumps(e, ensure_ascii=False) for e in entries]
         content = "\n".join(lines) + ("\n" if lines else "")
-        return _atomic_write(self._layer0_path, content)
+        success = _atomic_write(self._layer0_path, content)
+        if success:
+            self._rebuild_layer0_md()
+        return success
 
     # ===== Layer 0 归档 =====
 
@@ -437,26 +468,37 @@ class MemoryStore:
     def archive_layer0(self) -> str:
         """执行 Layer 0 归档。
 
-        将当前 memory.jsonl 重命名为 memory_archive_{date}.jsonl，
-        移入 archive/ 目录，创建新的空 memory.jsonl。
+        将当前 raw_memory.jsonl 重命名为 raw_memory_archive_{date}.jsonl，
+        移入 archive/ 目录，创建新的空 raw_memory.jsonl。
+        同时归档 raw_memory.md。
         保留最近 max_archive_files 个归档文件。
         """
         date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-        archive_name = f"memory_archive_{date_str}.jsonl"
-        archive_path = self._archive_dir / archive_name
 
-        # 移动文件
+        # 归档 JSONL
+        archive_name = f"raw_memory_archive_{date_str}.jsonl"
+        archive_path = self._archive_dir / archive_name
         try:
             self._layer0_path.rename(archive_path)
         except Exception as e:
             logger.error(f"归档 Layer 0 失败: {e}")
             return ""
 
+        # 归档 MD
+        if self._layer0_md_path.exists():
+            archive_md_name = f"raw_memory_archive_{date_str}.md"
+            archive_md_path = self._archive_dir / archive_md_name
+            try:
+                self._layer0_md_path.rename(archive_md_path)
+            except Exception as e:
+                logger.warning(f"归档 Layer 0 MD 失败: {e}")
+
         # 创建新的空文件
         self._layer0_path.write_text("", encoding="utf-8")
+        self._layer0_md_path.write_text("", encoding="utf-8")
 
-        # 清理过期归档
-        archives = sorted(self._archive_dir.glob("memory_archive_*.jsonl"))
+        # 清理过期归档（同时清理 jsonl 和 md）
+        archives = sorted(self._archive_dir.glob("raw_memory_archive_*.jsonl"))
         while len(archives) > self._archive_max_files:
             oldest = archives.pop(0)
             try:
@@ -464,6 +506,13 @@ class MemoryStore:
                 logger.info(f"删除过期归档: {oldest}")
             except Exception as e:
                 logger.warning(f"删除过期归档失败: {e}")
+            # 同步删除对应的 md 归档
+            md_to_del = oldest.with_suffix(".md")
+            if md_to_del.exists():
+                try:
+                    md_to_del.unlink()
+                except Exception:
+                    pass
 
         logger.info(f"Layer 0 已归档至 {archive_path}")
         return str(archive_path)
@@ -520,70 +569,6 @@ class MemoryStore:
         hard_limit = lines >= self._wm_hard_limit or tokens >= int(2000)
 
         return warning, trigger, hard_limit
-
-    # ===== Layer 2 操作 =====
-
-    def read_topic_file(self, filename: str) -> str:
-        """读取 Layer 2 主题文件。"""
-        path = self._topics_dir / filename
-        try:
-            return path.read_text(encoding="utf-8")
-        except FileNotFoundError:
-            return ""
-        except Exception as e:
-            logger.error(f"读取主题文件失败 {filename}: {e}")
-            return ""
-
-    def write_topic_file(self, filename: str, content: str) -> bool:
-        """写入 Layer 2 主题文件。"""
-        path = self._topics_dir / filename
-        return _atomic_write(path, content)
-
-    def append_topic_file(self, filename: str, content: str) -> bool:
-        """追加内容到 Layer 2 主题文件。"""
-        path = self._topics_dir / filename
-        existing = self.read_topic_file(filename)
-        if existing:
-            new_content = existing.rstrip() + "\n\n" + content
-        else:
-            new_content = content
-        return _atomic_write(path, new_content)
-
-    def get_or_create_topic_filename(self, topic_tag: str) -> str:
-        """获取主题标签对应的文件名，不存在则创建映射。
-
-        遵循设计文档 2.2 节的 slug 生成规则：
-        1. 使用 pypinyin 转拼音
-        2. 无哈希后缀
-        3. 冲突时追加 _2、_3
-        """
-        topic_mapping = self._metadata_cache.get("topic_mapping", {})
-
-        # 已有映射
-        if topic_tag in topic_mapping:
-            return topic_mapping[topic_tag]
-
-        # 生成 slug
-        base_name = _generate_slug(topic_tag)
-        filename = f"{base_name}.md"
-
-        # 冲突处理
-        existing_filenames = set(topic_mapping.values())
-        if filename in existing_filenames:
-            counter = 2
-            while f"{base_name}_{counter}.md" in existing_filenames:
-                counter += 1
-            filename = f"{base_name}_{counter}.md"
-
-        # 更新映射
-        topic_mapping[topic_tag] = filename
-        self._metadata_cache["topic_mapping"] = topic_mapping
-
-        return filename
-
-    def list_topic_files(self) -> List[str]:
-        """列出所有主题文件名。"""
-        return [p.name for p in self._topics_dir.glob("*.md")]
 
     # ===== 元数据操作 =====
 
@@ -760,10 +745,9 @@ class MemoryStore:
         all_entries = self.iter_layer0()
         raw_count = sum(1 for e in all_entries if e.get("status") == "raw")
         unprocessed_count = sum(1 for e in all_entries if e.get("status") == "unprocessed")
-        archived_count = sum(1 for e in all_entries if e.get("status") == "archived")
+        processed_count = sum(1 for e in all_entries if e.get("status") == "processed")
 
         layer1_stats = self.get_layer1_stats()
-        topic_files = self.list_topic_files()
 
         metadata_entries = self._metadata_cache.get("entries", {})
         unconsumed = sum(
@@ -780,10 +764,9 @@ class MemoryStore:
             "layer0_total": len(all_entries),
             "layer0_raw": raw_count,
             "layer0_unprocessed": unprocessed_count,
-            "layer0_archived": archived_count,
+            "layer0_processed": processed_count,
             "layer1_lines": layer1_stats["lines"],
             "layer1_tokens": layer1_stats["tokens"],
-            "layer2_topic_files": len(topic_files),
             "metadata_entries": len(metadata_entries),
             "unconsumed": unconsumed,
             "unevolved": unevolved,
@@ -822,7 +805,7 @@ class MemoryStore:
                     pass
 
         for entry_id in entries_to_remove:
-            self.update_metadata_entry(entry_id, status="archived")
+            self.update_metadata_entry(entry_id, status="processed")
             self.remove_metadata_entry(entry_id)
             count += 1
 
@@ -839,17 +822,27 @@ class MemoryStore:
 
         return count
 
-    def clear_all(self) -> int:
+    def clear_all(self) -> dict:
         """清空所有层。
 
         Returns:
-            清除的条目数
+            清除统计字典，包含各层清除的条目数等信息
         """
-        entries = self.iter_layer0()
-        count = len(entries)
+        # 在清除前收集所有统计信息（避免清除后数据丢失）
+        stats = self.get_stats()
+
+        # 在清除前统计 Layer 1 记忆条数（按 "- " 开头计数，匹配 extract 写入格式）
+        layer1_content = self.read_layer1()
+        layer1_entries = sum(
+            1 for line in layer1_content.split("\n")
+            if line.strip().startswith("- ")
+        )
 
         # 清空 Layer 0
         self._layer0_path.write_text("", encoding="utf-8")
+
+        # 清空 Layer 0 MD
+        self._layer0_md_path.write_text("", encoding="utf-8")
 
         # 清空 Layer 1
         self._layer1_path.write_text("", encoding="utf-8")
@@ -858,15 +851,15 @@ class MemoryStore:
         self._metadata_cache = copy.deepcopy(self._DEFAULT_METADATA)
         _atomic_write_json(self._metadata_path, self._metadata_cache)
 
-        # 清空主题文件
-        for p in self._topics_dir.glob("*.md"):
-            try:
-                p.unlink()
-            except Exception as e:
-                logger.warning(f"删除主题文件失败 {p}: {e}")
-
         self._seq_counter = 1
-        return count
+
+        return {
+            "layer0_total": stats.get("layer0_total", 0),
+            "layer0_raw": stats.get("layer0_raw", 0),
+            "layer0_unprocessed": stats.get("layer0_unprocessed", 0),
+            "layer0_processed": stats.get("layer0_processed", 0),
+            "layer1_entries": layer1_entries,
+        }
 
     def get_watermarks(self) -> Dict[str, int]:
         """获取水位配置。"""

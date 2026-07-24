@@ -52,8 +52,8 @@ class MemoryInterface(ABC):
         ...
 
     @abstractmethod
-    def clear_all(self) -> int:
-        """清空所有记忆，返回清除的条目数。"""
+    def clear_all(self) -> dict:
+        """清空所有记忆，返回清除统计信息。"""
         ...
 
     @abstractmethod
@@ -146,8 +146,8 @@ class NoopMemory(MemoryExInterface):
     def delete(self, memory_id: str) -> bool:
         return False
 
-    def clear_all(self) -> int:
-        return 0
+    def clear_all(self) -> dict:
+        return {}
 
     def compact(self) -> int:
         return 0

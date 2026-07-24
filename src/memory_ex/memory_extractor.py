@@ -6,7 +6,7 @@
 - Query 结束后批量处理 status=raw 的条目
 - 使用 LLM 从原始对话中提取 1~3 条结构化记忆
 - 前置过滤降低 LLM 调用成本
-- 更新条目状态为 unprocessed 或 archived
+- 更新条目状态为 unprocessed 或 processed
 - 维护倒排索引和实体规范化
 """
 
@@ -65,9 +65,20 @@ class MemoryExtractor:
         # 超时重试计数
         self._consecutive_timeout_count = 0
 
+        # 进度回调函数
+        self._progress_callback = None
+
     def set_llm_chat_fn(self, fn):
         """注入 LLM 调用函数。"""
         self._llm_chat_fn = fn
+
+    def set_progress_callback(self, callback):
+        """注入进度回调函数。
+
+        Args:
+            callback: 回调函数，签名 callback(completed: int, total: int, action: str)
+        """
+        self._progress_callback = callback
 
     def extract_raw_entries(self) -> dict:
         """提取入口：处理所有 status=raw 的条目。
@@ -86,7 +97,7 @@ class MemoryExtractor:
             query_groups.setdefault(qid, []).append(entry)
 
         total_extracted = 0
-        total_archived = 0
+        total_marked_processed = 0
         total_filtered = 0
         total_timed_out = 0
         details: List[Dict[str, Any]] = []
@@ -104,23 +115,31 @@ class MemoryExtractor:
                 "content_preview": content_preview,
             }
 
-        for qid, entries in query_groups.items():
+        total_groups = len(query_groups)
+        for group_idx, (qid, entries) in enumerate(query_groups.items(), 1):
+            # 通知进度回调
+            if self._progress_callback:
+                try:
+                    self._progress_callback(group_idx, total_groups, "正在处理")
+                except Exception:
+                    pass
+
             # 前置过滤
             if self._should_skip_extraction(entries):
                 logger.info(f"Query {qid} 被前置过滤跳过")
                 for entry in entries:
                     self._store.update_layer0_entry(
                         entry["id"],
-                        {"status": "archived"},
+                        {"status": "processed"},
                     )
-                    self._store.update_metadata_entry(entry["id"], status="archived")
+                    self._store.update_metadata_entry(entry["id"], status="processed")
                     details.append({
                         **_entry_brief(entry),
-                        "action": "前置过滤归档",
+                        "action": "前置过滤跳过",
                         "reason": "对话过短或无技术关键词，不值得提取",
                     })
                 total_filtered += len(entries)
-                total_archived += len(entries)
+                total_marked_processed += len(entries)
                 continue
 
             # 雪崩防护：连续 2 次超时则跳过
@@ -149,19 +168,19 @@ class MemoryExtractor:
                 continue
 
             if not extracted_memories:
-                # LLM 返回 NONE，标记为 archived
+                # LLM 返回 NONE，标记为 processed
                 for entry in entries:
                     self._store.update_layer0_entry(
                         entry["id"],
-                        {"status": "archived"},
+                        {"status": "processed"},
                     )
-                    self._store.update_metadata_entry(entry["id"], status="archived")
+                    self._store.update_metadata_entry(entry["id"], status="processed")
                     details.append({
                         **_entry_brief(entry),
-                        "action": "LLM判定无价值归档",
+                        "action": "LLM判定无价值，标记已处理",
                         "reason": "LLM 返回 NONE，认为无可提取的长期记忆",
                     })
-                total_archived += len(entries)
+                total_marked_processed += len(entries)
                 continue
 
             # 写入提取结果
@@ -172,19 +191,26 @@ class MemoryExtractor:
                 tags_str = "".join(f"[{t}]" for t in memory.get("tags", []))
                 extracted_summaries.append(f"{tags_str} {memory.get('content', '')[:60]}")
 
-            # 将原始条目标记为 archived（已提取）
+            # 将原始条目标记为 processed（已提取）
             for entry in entries:
                 self._store.update_layer0_entry(
                     entry["id"],
-                    {"status": "archived", "source": "query_extraction"},
+                    {"status": "processed", "source": "query_extraction"},
                 )
-                self._store.update_metadata_entry(entry["id"], status="archived")
+                self._store.update_metadata_entry(entry["id"], status="processed")
                 details.append({
                     **_entry_brief(entry),
-                    "action": "成功提取后归档",
+                    "action": "成功提取后，标记已处理",
                     "reason": f"提取出 {len(extracted_memories)} 条记忆: " + " | ".join(extracted_summaries),
                 })
-            total_archived += len(entries)
+            total_marked_processed += len(entries)
+
+        # 提取完成
+        if self._progress_callback:
+            try:
+                self._progress_callback(total_groups, total_groups, "完成")
+            except Exception:
+                pass
 
         # 持久化元数据
         self._store.save_metadata()
@@ -192,7 +218,7 @@ class MemoryExtractor:
         return {
             "processed": len(raw_entries),
             "extracted": total_extracted,
-            "archived": total_archived,
+            "marked_processed": total_marked_processed,
             "filtered": total_filtered,
             "timed_out": total_timed_out,
             "details": details,
@@ -477,6 +503,9 @@ class MemoryExtractor:
             logger.error(f"写入提取记忆失败: {e}")
             return ""
 
+        # 同步追加到 raw_memory.md（人类可读副本）
+        self._store._append_layer0_md(entry)
+
         # 更新元数据
         self._store.update_metadata_entry(
             entry_id,
@@ -506,7 +535,7 @@ class MemoryExtractor:
 
         existing_layer1 = self._store.read_layer1()
         if existing_layer1 and existing_layer1.strip():
-            new_layer1 = existing_layer1.rstrip() + "\n" + layer1_line
+            new_layer1 = existing_layer1.rstrip() + "\n\n" + layer1_line
         else:
             new_layer1 = layer1_line
         self._store.write_layer1(new_layer1)

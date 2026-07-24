@@ -563,9 +563,9 @@ TREND:
 
         if new_lines:
             if layer1_content and layer1_content.strip():
-                new_content = layer1_content.rstrip() + "\n" + "\n".join(new_lines)
+                new_content = layer1_content.rstrip() + "\n\n" + "\n\n".join(new_lines)
             else:
-                new_content = "\n".join(new_lines)
+                new_content = "\n\n".join(new_lines)
             self._store.write_layer1(new_content)
 
     # ===== 辅助 =====

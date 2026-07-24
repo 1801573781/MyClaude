@@ -9,6 +9,8 @@ MemoryEx 实现 MemoryExInterface 全部方法（兼容 MemoryInterface + 扩展
 """
 
 import logging
+import re
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
@@ -74,10 +76,10 @@ def _get_default_config() -> SimpleNamespace:
     return SimpleNamespace(
         storage=SimpleNamespace(
             base_dir="D:/AI/MyClaude/memory_storage/memory_ex/",
-            layer0_file="memory.jsonl",
+            layer0_file="raw_memory.jsonl",
+            layer0_md_file="raw_memory.md",
             layer1_file="MEMORY.md",
             metadata_file="metadata.json",
-            topics_dir="topics/",
             archive_dir="archive/",
         ),
         watermarks=SimpleNamespace(
@@ -178,10 +180,19 @@ class MemoryEx(MemoryExInterface):
         self._extractor.set_llm_chat_fn(fn)
         self._compactor.set_llm_chat_fn(fn)
         self._evolver.set_llm_chat_fn(fn)
+        self._retriever.set_llm_chat_fn(fn)
 
     def set_progress_callback(self, callback):
         """注入进化进度回调函数。"""
         self._evolver.set_progress_callback(callback)
+
+    def set_extract_progress_callback(self, callback):
+        """注入提取进度回调函数。
+
+        Args:
+            callback: 回调函数，签名 callback(completed: int, total: int, action: str)
+        """
+        self._extractor.set_progress_callback(callback)
 
     @property
     def raw_prompt_threshold(self) -> int:
@@ -223,6 +234,11 @@ class MemoryEx(MemoryExInterface):
     def get_context_for_query(self, query: str) -> str:
         """返回格式化的记忆上下文，供注入 api_messages。
 
+        流程：
+        1. 检测用户输入中的文件路径，读取内容拼入查询（召回增强）
+        2. 调用 retriever.retrieve_for_query() 做 LLM 预检索筛选
+        3. 调用 injector.format_for_injection() 格式化注入文本
+
         如果 Layer 1 为空（冷启动），返回空字符串。
 
         Args:
@@ -234,7 +250,92 @@ class MemoryEx(MemoryExInterface):
         layer1_content = self._store.read_layer1()
         if not layer1_content:
             return ""
-        return self._injector.format_for_injection(layer1_content, query)
+
+        # 召回增强：展开文件引用
+        enhanced_query = self._build_enhanced_query(query)
+
+        # LLM 预检索筛选
+        entries = self._retriever.retrieve_for_query(enhanced_query)
+        if not entries:
+            return ""
+
+        return self._injector.format_for_injection(entries, query)
+
+    def _build_enhanced_query(self, user_input: str) -> str:
+        """构建召回查询，自动展开文件引用。
+
+        检测用户输入中的文件路径，读取内容（截断前 2000 字符）拼入查询，
+        使得 LLM 预检索能基于文件内容而非无意义的指令词进行召回。
+
+        Args:
+            user_input: 用户原始输入
+
+        Returns:
+            增强后的查询字符串
+        """
+        query = user_input
+
+        # 检测文件路径
+        file_paths = self._extract_file_paths(user_input)
+
+        for path in file_paths:
+            content = self._safe_read_file(path)
+            if content:
+                query += "\n\n" + content[:2000]
+
+        return query
+
+    def _extract_file_paths(self, text: str) -> List[str]:
+        """从用户输入中提取文件路径。
+
+        支持两种格式：
+        - Windows 绝对路径：D:\\xxx\\xxx.md 或 D:/AI/MyClaude/xxx.md
+        - 相对文件名：spider_spec.md
+
+        Args:
+            text: 用户输入文本
+
+        Returns:
+            文件路径列表
+        """
+        paths = []
+        seen = set()
+
+        # 匹配 Windows 绝对路径
+        for m in re.finditer(r'[A-Za-z]:[\\/][^\s，。、]+\.md', text):
+            p = m.group()
+            if p not in seen:
+                paths.append(p)
+                seen.add(p)
+
+        # 匹配 spec/ 目录下的相对文件名
+        for m in re.finditer(r'[\w/\\]+\.md', text):
+            p = m.group()
+            if p not in seen:
+                paths.append(p)
+                seen.add(p)
+
+        return paths
+
+    def _safe_read_file(self, path: str) -> str:
+        """安全读取文件，失败返回空字符串。
+
+        仅读取 .md 和 .txt 文件。
+
+        Args:
+            path: 文件路径
+
+        Returns:
+            文件内容字符串，失败返回空字符串
+        """
+        try:
+            p = Path(path)
+            if p.exists() and p.suffix in ('.md', '.txt'):
+                return p.read_text(encoding='utf-8')
+        except Exception as e:
+            logger.debug(f"读取文件失败 {path}: {e}")
+
+        return ""
 
     def update(self, memory_id: str, **fields) -> bool:
         """更新元数据层中指定记忆的字段。"""
@@ -244,8 +345,8 @@ class MemoryEx(MemoryExInterface):
         """从 Layer 1 淘汰指定记忆（Layer 0 不删除）。"""
         return self._compactor.evict_by_id(memory_id)
 
-    def clear_all(self) -> int:
-        """清空所有层。"""
+    def clear_all(self) -> dict:
+        """清空所有层，返回详细统计信息。"""
         return self._store.clear_all()
 
     def compact(self) -> int:

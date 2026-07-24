@@ -41,28 +41,38 @@ class MemoryInjector:
         injection_config = mem_config.injection
         self._max_tokens = int(getattr(injection_config, "max_tokens", 2000))
 
-    def format_for_injection(self, layer1_content: str, query: str = "") -> str:
-        """格式化 Layer 1 内容为注入文本。
+    def format_for_injection(self, entries: list, query: str = "") -> str:
+        """格式化记忆条目列表为注入文本。
 
         Args:
-            layer1_content: Layer 1（MEMORY.md）的原始 Markdown 内容
-            query: 当前用户查询（用于排序优先级，当前版本未使用）
+            entries: 记忆条目列表，每个元素含 id, tags, content, raw_line
+            query: 当前用户查询（保留接口兼容，当前版本未使用）
 
         Returns:
-            格式化后的注入文本。如果 Layer 1 为空，返回空字符串。
+            格式化后的注入文本。如果列表为空，返回空字符串。
 
         格式：
             [MEMORY_INJECTION_v1]
             ## 记忆索引
-            <Layer 1 内容>
+            <条目内容>
 
             [召回数: N]
         """
-        if not layer1_content or not layer1_content.strip():
+        if not entries:
             return ""
 
-        # 统计召回条目数
-        recall_count = self._count_entries(layer1_content)
+        # 从条目列表构建 Layer 1 文本
+        layer1_lines = []
+        for entry in entries:
+            raw_line = entry.get("raw_line", "")
+            if raw_line:
+                layer1_lines.append(raw_line)
+
+        if not layer1_lines:
+            return ""
+
+        layer1_content = "\n".join(layer1_lines)
+        recall_count = len(layer1_lines)
 
         # 构建注入文本
         header = f"{INJECTION_MARKER}\n## 记忆索引\n"
