@@ -542,9 +542,11 @@ class MemoryStore:
         return _atomic_write(self._layer1_path, content)
 
     def get_layer1_stats(self) -> Dict[str, int]:
-        """获取 Layer 1 的行数和 token 估算。"""
+        """获取 Layer 1 的条数、行数和 token 估算。"""
         content = self.read_layer1()
+        entries = sum(1 for line in content.split("\n") if line.strip().startswith("- "))
         return {
+            "entries": entries,
             "lines": _count_lines(content),
             "tokens": _estimate_tokens(content),
         }
@@ -765,6 +767,7 @@ class MemoryStore:
             "layer0_raw": raw_count,
             "layer0_unprocessed": unprocessed_count,
             "layer0_processed": processed_count,
+            "layer1_entries": layer1_stats["entries"],
             "layer1_lines": layer1_stats["lines"],
             "layer1_tokens": layer1_stats["tokens"],
             "metadata_entries": len(metadata_entries),

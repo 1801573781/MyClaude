@@ -367,37 +367,6 @@ class MyClaudeCLI:
                 cli_print.print_error("Usage: /t number — 展开指定 Turn 的思考过程")
             return True
 
-        elif cmd == '/r mem':
-            # /r mem — 清除所有持久化记忆（Layer 0/1/2 + 元数据）
-            stats = self.query_loop.clear_memory()
-            if not stats:
-                cli_print.print_info("当前没有记忆。")
-            elif "total" in stats and len(stats) == 1:
-                # 兼容旧后端仅返回总数的场景
-                cli_print.print_info(f"已清除所有记忆（共 {stats['total']} 条）。")
-            else:
-                layer0_total = stats.get("layer0_total", 0)
-                layer0_raw = stats.get("layer0_raw", 0)
-                layer0_unprocessed = stats.get("layer0_unprocessed", 0)
-                layer0_processed = stats.get("layer0_processed", 0)
-                layer1_entries = stats.get("layer1_entries", 0)
-                layer2_files = stats.get("layer2_topic_files", 0)
-
-                lines = [
-                    "已清除所有记忆，详细统计如下：",
-                    f"  原始记忆（Layer 0）: {layer0_total} 条",
-                ]
-                if layer0_raw > 0:
-                    lines.append(f"    其中未提取（raw）: {layer0_raw} 条")
-                if layer0_unprocessed > 0:
-                    lines.append(f"    其中已提取（unprocessed）: {layer0_unprocessed} 条")
-                if layer0_processed > 0:
-                    lines.append(f"    其中已处理（processed）: {layer0_processed} 条")
-                lines.append(f"  正式记忆（Layer 1）: {layer1_entries} 条")
-                lines.append(f"  主题文件（Layer 2）: {layer2_files} 个")
-                cli_print.print_info("\n".join(lines))
-            return True
-
         elif cmd == '/new session':
             # /new session — 开启新 Session：重置上下文 + 新 SessionLog
             self.query_loop.new_session()
@@ -411,7 +380,7 @@ class MyClaudeCLI:
             parts = command.strip().split(maxsplit=1)
             sub_cmd = parts[1].lower().strip() if len(parts) > 1 else ""
 
-            if sub_cmd in ("compaction", "cpct"):
+            if sub_cmd in ("compaction", "com"):
                 # 手动触发记忆整理
                 memory = self.query_loop._memory
                 if not hasattr(memory, "compact_detailed"):
@@ -435,7 +404,7 @@ class MyClaudeCLI:
                     cli_print.print_error(f"记忆整理执行失败: {e}")
                 return True
 
-            elif sub_cmd in ("evolution", "evol"):
+            elif sub_cmd in ("evolution", "evo"):
                 # 手动触发记忆进化
                 memory = self.query_loop._memory
                 if not hasattr(memory, "evolve"):
@@ -459,7 +428,7 @@ class MyClaudeCLI:
                     cli_print.print_error(f"记忆进化执行失败: {e}")
                 return True
 
-            elif sub_cmd == "extract":
+            elif sub_cmd in ("extract", "ext"):
                 # 手动触发记忆提取（从 Layer 0 raw 条目中用 LLM 提取结构化记忆）
                 import sys
                 import time
@@ -586,8 +555,133 @@ class MyClaudeCLI:
                 )
                 return True
 
+            elif sub_cmd == "show":
+                # /mem show — 显示记忆系统概览信息
+                memory = self.query_loop._memory
+                try:
+                    stats = memory.stats()
+                except Exception as e:
+                    cli_print.print_error(f"获取记忆统计信息失败: {e}")
+                    return True
+
+                if not stats:
+                    cli_print.print_info("当前没有记忆数据。")
+                    return True
+
+                backend = stats.get("backend", "unknown")
+                layer0_total = stats.get("layer0_total", 0)
+                layer0_raw = stats.get("layer0_raw", 0)
+                layer0_unprocessed = stats.get("layer0_unprocessed", 0)
+                layer0_processed = stats.get("layer0_processed", 0)
+                layer1_lines = stats.get("layer1_lines", 0)
+                layer1_tokens = stats.get("layer1_tokens", 0)
+                metadata_entries = stats.get("metadata_entries", 0)
+                unconsumed = stats.get("unconsumed", 0)
+                unevolved = stats.get("unevolved", 0)
+                compaction_logs = stats.get("compaction_logs", 0)
+                evolution_logs = stats.get("evolution_logs", 0)
+
+                # 尝试获取水位信息
+                watermarks = {}
+                if hasattr(memory, "get_watermarks"):
+                    try:
+                        watermarks = memory.get_watermarks()
+                    except Exception:
+                        pass
+
+                # 尝试获取水位状态
+                water_status = ""
+                if hasattr(memory, "check_water_level"):
+                    try:
+                        warning, trigger, hard_limit = memory.check_water_level()
+                        if hard_limit:
+                            water_status = "⚠ 已超硬限制（需立即整理）"
+                        elif trigger:
+                            water_status = "⚠ 已达触发线（建议整理）"
+                        elif warning:
+                            water_status = "⚠ 已达预警线"
+                        else:
+                            water_status = "✓ 正常"
+                    except Exception:
+                        water_status = "未知"
+                else:
+                    water_status = "N/A"
+
+                wm_warning = watermarks.get("warning", "-")
+                wm_trigger = watermarks.get("trigger", "-")
+                wm_hard = watermarks.get("hard_limit", "-")
+                wm_target = watermarks.get("target_after", "-")
+
+                lines = [
+                    "=" * 50,
+                    "  记忆系统概览",
+                    "=" * 50,
+                    f"  后端类型: {backend}",
+                    "",
+                    f"  ── Layer 0（原始记忆） ──",
+                    f"    总条目: {layer0_total}",
+                    f"    未提取 (raw): {layer0_raw}",
+                    f"    已提取 (unprocessed): {layer0_unprocessed}",
+                    f"    已处理 (processed): {layer0_processed}",
+                    "",
+                    f"  ── Layer 1（正式记忆） ──",
+                    f"    行数: {layer1_lines}",
+                    f"    Token 估算: {layer1_tokens}",
+                    f"    水位状态: {water_status}",
+                    f"    预警线: {wm_warning} | 触发线: {wm_trigger} | 硬限制: {wm_hard} | 整理目标: {wm_target}",
+                    "",
+                    f"  ── 待整理与进化 ──",
+                    f"    待整理 (unconsumed): {unconsumed}",
+                    f"    待进化 (unevolved): {unevolved}",
+                    "",
+                    f"  ── 历史记录 ──",
+                    f"    整理日志: {compaction_logs} 条",
+                    f"    进化日志: {evolution_logs} 条",
+                    f"    元数据条目: {metadata_entries}",
+                    "=" * 50,
+                ]
+                cli_print.print_info("\n".join(lines))
+                return True
+
+            elif sub_cmd in ("remove", "r"):
+                # /mem remove | /mem r — 清除所有持久化记忆（Layer 0/1/2 + 元数据）
+                stats = self.query_loop.clear_memory()
+                if not stats:
+                    cli_print.print_info("当前没有记忆。")
+                elif "total" in stats and len(stats) == 1:
+                    cli_print.print_info(f"已清除所有记忆（共 {stats['total']} 条）。")
+                else:
+                    layer0_total = stats.get("layer0_total", 0)
+                    layer0_raw = stats.get("layer0_raw", 0)
+                    layer0_unprocessed = stats.get("layer0_unprocessed", 0)
+                    layer0_processed = stats.get("layer0_processed", 0)
+                    layer1_entries = stats.get("layer1_entries", 0)
+                    layer2_files = stats.get("layer2_topic_files", 0)
+
+                    lines = [
+                        "已清除所有记忆，详细统计如下：",
+                        f"  原始记忆（Layer 0）: {layer0_total} 条",
+                    ]
+                    if layer0_raw > 0:
+                        lines.append(f"    其中未提取（raw）: {layer0_raw} 条")
+                    if layer0_unprocessed > 0:
+                        lines.append(f"    其中已提取（unprocessed）: {layer0_unprocessed} 条")
+                    if layer0_processed > 0:
+                        lines.append(f"    其中已处理（processed）: {layer0_processed} 条")
+                    lines.append(f"  正式记忆（Layer 1）: {layer1_entries} 条")
+                    lines.append(f"  主题文件（Layer 2）: {layer2_files} 个")
+                    cli_print.print_info("\n".join(lines))
+                return True
+
             else:
-                cli_print.print_error("未知的 /mem 子命令。可用: /mem extract, /mem compaction (或 /mem cpct), /mem evolution (或 /mem evol)")
+                cli_print.print_error(
+                    "未知的 /mem 子命令。可用:\n"
+                    "  /mem show       — 查看记忆概览\n"
+                    "  /mem extract    — 提取 raw 记忆 (简写 /mem ext)\n"
+                    "  /mem compaction — 整理记忆 (简写 /mem com)\n"
+                    "  /mem evolution  — 进化记忆 (简写 /mem evo)\n"
+                    "  /mem remove     — 清除所有记忆 (简写 /mem r)"
+                )
                 return True
 
         elif cmd.startswith('/init'):

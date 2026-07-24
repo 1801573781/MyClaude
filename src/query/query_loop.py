@@ -224,8 +224,9 @@ class QueryLoop:
             """3. 开始处理工具"""
             quit_chat, tool_exec_info = self._handle_tools(tools)
 
-            # 每轮对话后，存储完整轮次记忆（用户问题 + LLM思考 + 应答 + 工具执行）
-            if self._memory_used and user_input:
+            # 只记录首个完整 Turn 的记忆（避免同一 Query 多 Turn 重复写入 raw 记忆）
+            # 后续 Turn 主要是工具执行跟进，核心信息已在首 Turn 中体现
+            if self._memory_used and user_input and turn == 1:
                 self._save_turn_memory(turn, user_input, reasoning_content,
                                        remaining_text, tool_exec_info)
 

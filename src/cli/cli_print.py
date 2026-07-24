@@ -130,10 +130,10 @@ def print_error(content: str):
 
 
 def print_info(content: str):
-    """打印通用消息（带 ✅ 前缀和前后空行，用于独立的关键提示）"""
+    """打印通用消息（带前后空行，用于独立的关键提示）"""
     safe_content = escape(content)
-    console.print(f"\n[{STYLES['info']}]✅ {safe_content}[/{STYLES['info']}]\n")
-    _append_html(f'<p style="color:#3b82f6;">✅ {html_escape(content)}</p>')
+    console.print(f"\n[{STYLES['info']}]{safe_content}[/{STYLES['info']}]\n")
+    _append_html(f'<p style="color:#3b82f6;">{html_escape(content)}</p>')
 
 
 def print_detail(content: str):
@@ -196,10 +196,11 @@ Welcome to MyClaude Code CLI! A beautiful terminal interface for AI Coding.
 - `/tokens` - Show the tokens statistics
 - `/t number` - 展开指定 Turn 的思考过程
 - `/new session` - 开启新 Session（清空上下文 + 清空记忆 + 新日志文件）
-- `/r mem` - 清除所有记忆（短期 + 长期 + 工作记忆）
-- `/mem extract` - 手动触发记忆提取（从原始对话中提取结构化记忆）
-- `/mem compaction` (或 `/mem cpct`) - 手动触发记忆整理（合并、降级、淘汰）
-- `/mem evolution` (或 `/mem evol`) - 手动触发记忆进化（模式识别、矛盾解决、归纳、趋势）
+- `/mem show` - 查看记忆系统概览信息
+- `/mem extract` (或 `/mem ext`) - 手动触发记忆提取（从原始对话中提取结构化记忆）
+- `/mem compaction` (或 `/mem com`) - 手动触发记忆整理（合并、降级、淘汰）
+- `/mem evolution` (或 `/mem evo`) - 手动触发记忆进化（模式识别、矛盾解决、归纳、趋势）
+- `/mem remove` (或 `/mem r`) - 清除所有记忆（短期 + 长期 + 工作记忆）
 - `/init` - 创建MyClaude的项目工程树
 - `/cs` - 统计项目代码行数
 - `/test` - 单元测试和系统测试，/test --help 显示test命令帮助信息
