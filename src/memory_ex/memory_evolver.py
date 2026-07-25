@@ -132,6 +132,7 @@ class MemoryEvolver:
 
         all_evolutions: List[Dict] = []
         types_executed = set()
+        all_diagnostics: List[Dict] = []
 
         for batch_idx, batch in enumerate(batches):
             elapsed = (datetime.now() - start_time).total_seconds()
@@ -143,7 +144,8 @@ class MemoryEvolver:
                 self._store.archive_layer0()
 
             # LLM 进化（合并 Prompt，单次调用输出四类结果）
-            evolutions = self._evolve_batch(batch)
+            evolutions, batch_diag = self._evolve_batch(batch)
+            all_diagnostics.append(batch_diag)
             if evolutions:
                 all_evolutions.extend(evolutions)
                 for evo in evolutions:
@@ -197,6 +199,16 @@ class MemoryEvolver:
                 for i, e in enumerate(all_evolutions)
             ],
             "duration_ms": int(elapsed * 1000),
+            "diagnostics": all_diagnostics,
+            "consumed_entries": [
+                {
+                    "id": e.get("id", ""),
+                    "tags": e.get("tags", []),
+                    "content_preview": e.get("content", "")[:200],
+                    "query_id": e.get("query_id", 0),
+                }
+                for e in unevolved
+            ],
         }
 
         self._store.add_evolution_log(stats)
@@ -264,18 +276,27 @@ class MemoryEvolver:
 
     # ===== LLM 进化 =====
 
-    def _evolve_batch(self, batch: List[Dict]) -> List[Dict]:
+    def _evolve_batch(self, batch: List[Dict]) -> Tuple[List[Dict], Dict]:
         """对一批记录执行四类进化（单次 LLM 调用）。
 
         Args:
             batch: 一批待进化记录
 
         Returns:
-            进化结果列表
+            (进化结果列表, 诊断信息)
         """
+        diag = {
+            "entry_count": len(batch),
+            "entry_ids": [e.get("id", "") for e in batch],
+            "llm_status": "pending",
+            "llm_response_preview": "",
+            "parsed_types": {},
+        }
+
         if not self._llm_chat_fn:
             logger.warning("LLM 调用函数未注入，跳过进化")
-            return []
+            diag["llm_status"] = "no_llm"
+            return [], diag
 
         # 构建合并 Prompt
         prompt = self._build_combined_prompt(batch)
@@ -283,15 +304,46 @@ class MemoryEvolver:
         try:
             response = self._call_llm(prompt, timeout=30)
             if not response:
-                return []
+                diag["llm_status"] = "timeout"
+                return [], diag
+
+            diag["llm_status"] = "success"
+            diag["llm_response_preview"] = response[:500]
 
             # 解析四类进化结果
             evolutions = self._parse_combined_response(response, batch)
-            return evolutions
+
+            # 记录每类解析状态
+            type_map = {
+                "PATTERN": "PATTERN",
+                "CONFLICT": "RESOLVED",
+                "GENERALIZATION": "GENERALIZED",
+                "TREND": "TREND",
+            }
+            for section, evo_type in type_map.items():
+                found = any(e.get("type") == evo_type for e in evolutions)
+                if found:
+                    diag["parsed_types"][section] = "found"
+                else:
+                    section_match = re.search(
+                        rf"{section}:\s*\n(.*?)(?=\n[A-Z]+:|$)",
+                        response,
+                        re.DOTALL,
+                    )
+                    if not section_match:
+                        diag["parsed_types"][section] = "section_not_found"
+                    elif "NONE" in section_match.group(1):
+                        diag["parsed_types"][section] = "NONE"
+                    else:
+                        diag["parsed_types"][section] = "parse_error"
+
+            return evolutions, diag
 
         except Exception as e:
             logger.error(f"LLM 进化失败: {e}")
-            return []
+            diag["llm_status"] = "error"
+            diag["llm_response_preview"] = str(e)
+            return [], diag
 
     def _build_combined_prompt(self, batch: List[Dict]) -> str:
         """构建合并 Prompt（单次调用输出四类结果）。

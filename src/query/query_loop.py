@@ -67,6 +67,10 @@ class QueryLoop:
         self._on_todo_update = None  # 回调：todo 列表更新时通知 CLI 渲染
         self._last_todo_sig = None  # 死循环熔断：上一轮 todo 状态签名
 
+        # 延迟记忆召回：当用户输入引用了文件时，推迟到文件读取后再召回
+        self._pending_memory_recall = False
+        self._current_user_input = ""
+
 
     def _init_memory(self):
         """通过工厂函数创建记忆实例，容错降级为 NoopMemory。"""
@@ -199,6 +203,8 @@ class QueryLoop:
         self._no_tool_retry = 0  # 每次新 Turn 重置追问计数器
         self.is_multi_turns = None  # 每次 Turn 开始时未确定
         self._todo_manager.reset()  # 每次新 Turn 重置 todo 列表
+        self._pending_memory_recall = False  # 重置延迟召回标志
+        self._current_user_input = ""  # 清空缓存的用户输入
 
         # 如果有斜杠命令上下文，用命令内容重置 api_messages
         self._command_context = command_context
@@ -310,6 +316,24 @@ class QueryLoop:
     3. 纠结了好几天，最终决定与自己和解，不再追求完全解耦了
     """
 
+    @staticmethod
+    def _references_file(text: str) -> bool:
+        """检测用户输入是否引用了文件路径。
+
+        匹配常见模式：
+        - 盘符路径：D:\\xxx 或 D:/xxx
+        - 相对路径引用：xxx.txt, xxx.md, .py 等
+        - 包含"文档"、"文件"、"spec"等关键词
+        """
+        import re
+        # 盘符路径
+        if re.search(r'[A-Za-z]:[/\\]', text):
+            return True
+        # 常见文档扩展名引用
+        if re.search(r'\.(txt|md|py|json|yaml|yml|xml|csv|html|js|ts)\b', text, re.IGNORECASE):
+            return True
+        return False
+
     # _on_llm_req，表示在发请求信息给LLM之前，做的（部分）事情，可能不是所有事情
     def _on_llm_req(self, turn, user_input):
         # 第一轮，需要初始化（init_session 内部有守护，只执行一次）
@@ -325,25 +349,48 @@ class QueryLoop:
                 query_text = user_input
 
             # 注入记忆上下文（通过 MemoryInterface 统一接口）
-            # 先用 user_input 触发检索，再注入检索结果 + 工作记忆
+            # 如果用户输入引用了文件，推迟记忆召回到 file_view 执行后
+            if self._references_file(query_text):
+                self._pending_memory_recall = True
+                self._current_user_input = query_text
+                self._memory_used = True
+                self._print_info("[记忆召回] 检测到文件引用，延迟到文件读取后召回")
+            else:
+                try:
+                    # 传入当前 session_id，确保不召回本 session 产生的记忆
+                    current_session_id = getattr(self.session, 'session_file_name', '')
+                    mem_context = self._memory.get_context_for_query(
+                        query_text, exclude_session_id=current_session_id
+                    )
+                    self._memory_used = True
+
+                    # 解析检索结果数量，打印 [记忆召回] 信息（即使0条也打印）
+                    recall_count = self._count_recalled(mem_context)
+                    self._print_info(f"[记忆召回] 已召回 {recall_count} 条相关记忆")
+
+                    if mem_context:
+                        self.api_messages.append_micro_info("user", mem_context)
+                        self.session.log_dict_info({"role": "user", "content": mem_context})
+                        logger.debug(f"记忆上下文已注入，长度: {len(mem_context)}")
+                except Exception as e:
+                    logger.warning(f"记忆上下文注入失败: {e}")
+
+        # 回退：如果延迟召回仍未触发（LLM 未调用 file_view），用原始用户输入执行召回
+        if turn > 1 and self._pending_memory_recall:
+            self._pending_memory_recall = False
             try:
-                # 传入当前 session_id，确保不召回本 session 产生的记忆
                 current_session_id = getattr(self.session, 'session_file_name', '')
                 mem_context = self._memory.get_context_for_query(
-                    query_text, exclude_session_id=current_session_id
+                    self._current_user_input, exclude_session_id=current_session_id
                 )
-                self._memory_used = True
-
-                # 解析检索结果数量，打印 [记忆召回] 信息（即使0条也打印）
                 recall_count = self._count_recalled(mem_context)
-                self._print_info(f"[记忆召回] 已召回 {recall_count} 条相关记忆")
-
+                self._print_info(f"[记忆召回] 已召回 {recall_count} 条相关记忆（回退到用户输入）")
                 if mem_context:
                     self.api_messages.append_micro_info("user", mem_context)
                     self.session.log_dict_info({"role": "user", "content": mem_context})
-                    logger.debug(f"记忆上下文已注入，长度: {len(mem_context)}")
+                    logger.debug(f"回退记忆上下文已注入，长度: {len(mem_context)}")
             except Exception as e:
-                logger.warning(f"记忆上下文注入失败: {e}")
+                logger.warning(f"回退记忆上下文注入失败: {e}")
 
         # 倒数最后一轮，命令式提醒
         if turn == self.max_turns and self.is_multi_turns:
@@ -612,6 +659,26 @@ class QueryLoop:
 
                 # 将 tool 的执行结果，append 到 api_messages
                 self.api_messages.append_tool_exec_result(result_msg)
+
+                # ===== 延迟记忆召回：file_view 执行后用文件内容触发召回 =====
+                if t["llm_tool"] == "file_view" and self._pending_memory_recall:
+                    self._pending_memory_recall = False
+                    try:
+                        file_content = result_msg.get("content", "")
+                        # 用文件内容 + 用户原始输入组合作为查询文本
+                        recall_query = f"{self._current_user_input}\n{file_content[:2000]}"
+                        current_session_id = getattr(self.session, 'session_file_name', '')
+                        mem_context = self._memory.get_context_for_query(
+                            recall_query, exclude_session_id=current_session_id
+                        )
+                        recall_count = self._count_recalled(mem_context)
+                        self._print_info(f"[记忆召回] 已召回 {recall_count} 条相关记忆（基于文件内容）")
+                        if mem_context:
+                            self.api_messages.append_micro_info("user", mem_context)
+                            self.session.log_dict_info({"role": "user", "content": mem_context})
+                            logger.debug(f"延迟记忆上下文已注入，长度: {len(mem_context)}")
+                    except Exception as e:
+                        logger.warning(f"延迟记忆召回失败: {e}")
 
                 # 收集工具执行信息（用于记忆存储）
                 tool_exec_info.append({

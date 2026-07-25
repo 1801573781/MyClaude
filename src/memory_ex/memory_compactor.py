@@ -130,24 +130,25 @@ class MemoryCompactor:
 
         # 读取当前 Layer 1
         layer1_content = self._store.read_layer1()
-        layer1_before_lines = layer1_content.count("\n") + 1 if layer1_content else 0
+        layer1_before_entries = len(self._parse_layer1_entries(layer1_content)) if layer1_content else 0
 
         # Step 1: Merge（仅对 Layer 1 已有内容合并）
-        merged_count, layer1_content = self._step_merge(layer1_content)
+        merged_count, layer1_content, merge_details = self._step_merge(layer1_content)
 
         stats = {
             "compaction_id": compaction_id,
             "trigger": "manual" if mode == "full" else "auto_light",
             "mode": mode,
-            "layer1_before": layer1_before_lines,
+            "layer1_before": layer1_before_entries,
             "merged": merged_count,
             "evicted": 0,
+            "merge_details": merge_details,
         }
 
         if mode == "light":
             # 轻量整理仅执行 Merge
             self._store.write_layer1(layer1_content)
-            stats["layer1_after"] = layer1_content.count("\n") + 1 if layer1_content else 0
+            stats["layer1_after"] = len(self._parse_layer1_entries(layer1_content)) if layer1_content else 0
             stats["duration_ms"] = int((datetime.now() - start_time).total_seconds() * 1000)
             stats["total_processed"] = merged_count
             self._store.add_compaction_log(stats)
@@ -161,7 +162,7 @@ class MemoryCompactor:
         # 写入 Layer 1
         self._store.write_layer1(layer1_content)
 
-        stats["layer1_after"] = layer1_content.count("\n") + 1 if layer1_content else 0
+        stats["layer1_after"] = len(self._parse_layer1_entries(layer1_content)) if layer1_content else 0
         stats["duration_ms"] = int((datetime.now() - start_time).total_seconds() * 1000)
 
         # 记录日志
@@ -208,31 +209,32 @@ class MemoryCompactor:
 
     # ===== Step 1: Merge =====
 
-    def _step_merge(self, layer1_content: str) -> Tuple[int, str]:
+    def _step_merge(self, layer1_content: str) -> Tuple[int, str, List[Dict]]:
         """执行合并步骤。
 
         对 Layer 1 已有内容执行规则化合并 + LLM 辅助合并。
         不再负责从 Layer 0 搬运条目（构建职责已归还给 extractor）。
 
         Returns:
-            (合并计数, 新 Layer 1 内容)
+            (合并计数, 新 Layer 1 内容, 合并详情列表)
         """
         # 解析 Layer 1 条目
         entries = self._parse_layer1_entries(layer1_content)
         if len(entries) < 2:
-            return 0, layer1_content
+            return 0, layer1_content, []
 
         # 规则化合并
-        merged_count, entries = self._rule_based_merge(entries)
+        merged_count, entries, merge_details = self._rule_based_merge(entries)
 
         # LLM 辅助合并（如果仍有冗余）
         if self._llm_chat_fn and len(entries) > 5:
-            llm_merged, entries = self._llm_assisted_merge(entries)
+            llm_merged, entries, llm_details = self._llm_assisted_merge(entries)
             merged_count += llm_merged
+            merge_details.extend(llm_details)
 
         # 重建 Layer 1
         new_content = self._rebuild_layer1(entries)
-        return merged_count, new_content
+        return merged_count, new_content, merge_details
 
     def _parse_layer1_entries(self, content: str) -> List[Dict]:
         """解析 Layer 1 的 Markdown 条目。
@@ -270,16 +272,20 @@ class MemoryCompactor:
 
         return entries
 
-    def _rule_based_merge(self, entries: List[Dict]) -> Tuple[int, List[Dict]]:
+    def _rule_based_merge(self, entries: List[Dict]) -> Tuple[int, List[Dict], List[Dict]]:
         """规则化合并（无需 LLM）。
 
         策略：
         1. 同标签 + 时间窗口内 → 拼接去重
         2. 重复去重（content_hash 或 Jaccard 相似度 > 0.8）
+
+        Returns:
+            (合并计数, 合并后的条目列表, 合并详情列表)
         """
         merged_count = 0
         result = []
         used = set()
+        merge_details = []
 
         for i, entry in enumerate(entries):
             if i in used:
@@ -304,10 +310,21 @@ class MemoryCompactor:
                     merge_candidates.append((j, other, "duplicate"))
 
             if merge_candidates:
+                # 记录合并前原始信息
+                merged_from = [
+                    {"content": entry["content"], "tags": list(entry["tags"]), "id": entry.get("id", "")}
+                ]
+                reasons = []
+
                 # 合并到当前条目
                 merged_content = entry["content"]
                 merged_tags = list(entry["tags"])
                 for j, candidate, reason in merge_candidates:
+                    merged_from.append(
+                        {"content": candidate["content"], "tags": list(candidate["tags"]), "id": candidate.get("id", "")}
+                    )
+                    if reason not in reasons:
+                        reasons.append(reason)
                     if reason == "same_tags":
                         # 追加非重复内容
                         if candidate["content"] not in merged_content:
@@ -327,18 +344,26 @@ class MemoryCompactor:
                 entry["tags"] = merged_tags
                 entry["raw_line"] = self._format_entry_line(entry)
 
+                # 记录合并详情
+                merge_details.append({
+                    "reason": reasons,
+                    "merged_from": merged_from,
+                    "merged_into": merged_content,
+                    "merged_tags": merged_tags,
+                })
+
             result.append(entry)
 
-        return merged_count, result
+        return merged_count, result, merge_details
 
-    def _llm_assisted_merge(self, entries: List[Dict]) -> Tuple[int, List[Dict]]:
+    def _llm_assisted_merge(self, entries: List[Dict]) -> Tuple[int, List[Dict], List[Dict]]:
         """LLM 辅助合并（语义相似但标签不同、因果链压缩）。
 
         Returns:
-            (合并计数, 合并后的条目列表)
+            (合并计数, 合并后的条目列表, 合并详情列表)
         """
         if not self._llm_chat_fn:
-            return 0, entries
+            return 0, entries, []
 
         # 构建 Prompt
         prompt_template = _load_prompt("merge_prompt.txt")
@@ -355,12 +380,12 @@ class MemoryCompactor:
         try:
             response = self._call_llm(prompt, timeout=10)
             if not response:
-                return 0, entries
+                return 0, entries, []
 
             # 解析 LLM 合并建议
             merged_indices, merged_content = self._parse_merge_response(response, len(entries))
             if not merged_indices:
-                return 0, entries
+                return 0, entries, []
 
             # 执行合并
             merged_entry = entries[merged_indices[0]].copy()
@@ -373,17 +398,28 @@ class MemoryCompactor:
             merged_entry["tags"] = all_tags
             merged_entry["raw_line"] = self._format_entry_line(merged_entry)
 
+            # 记录合并详情
+            merge_details = [{
+                "reason": ["llm_assisted"],
+                "merged_from": [
+                    {"content": entries[idx]["content"], "tags": list(entries[idx]["tags"]), "id": entries[idx].get("id", "")}
+                    for idx in merged_indices
+                ],
+                "merged_into": merged_content,
+                "merged_tags": all_tags,
+            }]
+
             # 构建新列表
             new_entries = [merged_entry]
             for i, e in enumerate(entries):
                 if i not in merged_indices:
                     new_entries.append(e)
 
-            return len(merged_indices) - 1, new_entries
+            return len(merged_indices) - 1, new_entries, merge_details
 
         except Exception as e:
             logger.error(f"LLM 辅助合并失败: {e}")
-            return 0, entries
+            return 0, entries, []
 
     def _parse_merge_response(
         self, response: str, total_entries: int

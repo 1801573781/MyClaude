@@ -27,6 +27,43 @@ class MyClaudeCLI:
 
 
     @staticmethod
+    def _format_duration(duration_ms: int) -> str:
+        """将毫秒耗时格式化为人类可读的时间字符串。
+
+        规则：
+        - < 60 秒：X秒Y毫秒
+        - < 60 分：X分Y秒
+        - < 60 时：X时Y分Z秒
+        - ≥ 60 时：X天Y时Z分
+
+        Args:
+            duration_ms: 耗时（毫秒）
+
+        Returns:
+            格式化后的时间字符串
+        """
+        total_seconds = duration_ms / 1000.0
+
+        if total_seconds < 60:
+            seconds = int(total_seconds)
+            ms = int(duration_ms % 1000)
+            return f"{seconds}秒{ms}毫秒"
+        elif total_seconds < 3600:
+            minutes = int(total_seconds // 60)
+            seconds = int(total_seconds % 60)
+            return f"{minutes}分{seconds}秒"
+        elif total_seconds < 86400:
+            hours = int(total_seconds // 3600)
+            minutes = int((total_seconds % 3600) // 60)
+            seconds = int(total_seconds % 60)
+            return f"{hours}时{minutes}分{seconds}秒"
+        else:
+            days = int(total_seconds // 86400)
+            hours = int((total_seconds % 86400) // 3600)
+            minutes = int((total_seconds % 3600) // 60)
+            return f"{days}天{hours}时{minutes}分"
+
+    @staticmethod
     def _format_estimated_time(raw_count: int) -> str:
         """根据 raw 记忆条目数量预估 LLM 处理时间。
 
@@ -152,6 +189,8 @@ class MyClaudeCLI:
         l1_after = result.get('layer1_after', 0)
         duration_ms = result.get('duration_ms', 0)
         total_processed = result.get('total_processed', 0)
+        merge_details = result.get('merge_details', [])
+        duration_str = MyClaudeCLI._format_duration(duration_ms)
 
         lines = [
             f"# 记忆整理报告",
@@ -168,20 +207,55 @@ class MyClaudeCLI:
             f"| 合并条目 | {merged} | 同主题合并、重复去重、因果链压缩的条目数 |",
             f"| 淘汰条目 | {evicted} | 分数过低被从 Layer 1 移除的条目数 |",
             f"| 总处理条目 | {total_processed} | 合并 + 淘汰的总数 |",
-            f"| Layer 1 整理前行数 | {l1_before} | 整理前的 Layer 1 行数 |",
-            f"| Layer 1 整理后行数 | {l1_after} | 整理后的 Layer 1 行数 |",
-            f"| 耗时 | {duration_ms} ms | 整理操作总耗时 |",
+            f"| Layer 1 整理前条数 | {l1_before} | 整理前的 Layer 1 条目数 |",
+            f"| Layer 1 整理后条数 | {l1_after} | 整理后的 Layer 1 条目数 |",
+            f"| 耗时 | {duration_str} | 整理操作总耗时 |",
             f"",
-            f"## 说明",
-            f"",
-            f"- **合并（Merge）**: 对 Layer 1 中的条目执行规则化合并（同标签合并、重复去重）和 LLM 辅助合并（语义相似合并、因果链压缩）。",
-            f"- **淘汰（Evict）**: 当 Layer 1 超过水位线时，按重要性评分从低到高淘汰，最多淘汰 20%，进化条目不淘汰。",
-            f"- 整理元数据已写入 memory 系统的 metadata，可通过 `/mem show` 查看「整理日志」计数。",
-            f"",
-            f"---",
-            f"",
-            f"*本报告由 MyClaude 记忆系统自动生成*",
         ]
+
+        # === 合并详情明细 ===
+        if merge_details:
+            reason_labels = {
+                "same_tags": "同标签合并",
+                "duplicate": "重复去重",
+                "llm_assisted": "LLM辅助合并",
+            }
+            lines.append(f"## 合并详情明细")
+            lines.append(f"")
+            lines.append(f"以下 {len(merge_details)} 组条目在本次整理中被合并：")
+            lines.append(f"")
+            for i, detail in enumerate(merge_details):
+                reasons = detail.get('reason', [])
+                reason_str = ', '.join(reason_labels.get(r, r) for r in reasons)
+                merged_from = detail.get('merged_from', [])
+                merged_into = detail.get('merged_into', '')
+                merged_tags = detail.get('merged_tags', [])
+
+                lines.append(f"### 合并组 {i+1}（{reason_str}）")
+                lines.append(f"")
+                lines.append(f"- **合并后内容**: {merged_into}")
+                if merged_tags:
+                    lines.append(f"- **合并后标签**: [{', '.join(merged_tags)}]")
+                if merged_from:
+                    lines.append(f"- **原始条目**:")
+                    for j, src in enumerate(merged_from):
+                        src_content = src.get('content', '')
+                        src_tags = src.get('tags', [])
+                        src_id = src.get('id', '')
+                        tag_str = f"[{', '.join(src_tags)}]" if src_tags else ""
+                        id_str = f" `{src_id}`" if src_id else ""
+                        lines.append(f"  {j+1}. {tag_str} {src_content}{id_str}")
+                lines.append(f"")
+
+        lines.append(f"## 说明")
+        lines.append(f"")
+        lines.append(f"- **合并（Merge）**: 对 Layer 1 中的条目执行规则化合并（同标签合并、重复去重）和 LLM 辅助合并（语义相似合并、因果链压缩）。")
+        lines.append(f"- **淘汰（Evict）**: 当 Layer 1 超过水位线时，按重要性评分从低到高淘汰，最多淘汰 20%，进化条目不淘汰。")
+        lines.append(f"- 整理元数据已写入 memory 系统的 metadata，可通过 `/mem show` 查看「整理日志」计数。")
+        lines.append(f"")
+        lines.append(f"---")
+        lines.append(f"")
+        lines.append(f"*本报告由 MyClaude 记忆系统自动生成*")
 
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_text("\n".join(lines), encoding="utf-8")
@@ -220,6 +294,7 @@ class MyClaudeCLI:
         trends = stats_inner.get('trends_found', 0)
 
         evolutions = result.get('evolutions', [])
+        duration_str = MyClaudeCLI._format_duration(duration_ms)
 
         type_labels = {
             'PATTERN': '模式识别',
@@ -247,11 +322,13 @@ class MyClaudeCLI:
             f"| 矛盾解决 | {conflicts} 个 | 发现并解决的矛盾信息数 |",
             f"| 归纳规则 | {generalizations} 条 | 归纳出的可复用通用解法数 |",
             f"| 趋势洞察 | {trends} 个 | 发现的项目演进趋势数 |",
-            f"| 耗时 | {duration_ms} ms | 进化操作总耗时 |",
-            f"",
-            f"## 逐条明细",
+            f"| 耗时 | {duration_str} | 进化操作总耗时 |",
             f"",
         ]
+
+        # === 进化结果明细 ===
+        lines.append(f"## 进化结果明细")
+        lines.append(f"")
 
         if evolutions:
             for evo in evolutions:
@@ -274,7 +351,74 @@ class MyClaudeCLI:
                     lines.append(f"- **来源条目**: {', '.join(sources)}")
                 lines.append(f"")
         else:
-            lines.append("（无进化结果）")
+            lines.append(f"（无进化结果）")
+            lines.append(f"")
+
+        # === 诊断信息 ===
+        diagnostics = result.get('diagnostics', [])
+        if diagnostics:
+            lines.append(f"## 诊断信息（为什么没有进化 / 进化失败原因）")
+            lines.append(f"")
+
+            status_labels = {
+                "success": "LLM 调用成功",
+                "timeout": "LLM 调用超时",
+                "error": "LLM 调用异常",
+                "no_llm": "LLM 函数未注入",
+                "pending": "未执行",
+            }
+            parse_labels = {
+                "found": "已发现",
+                "NONE": "LLM 返回 NONE（无发现）",
+                "section_not_found": "响应中缺少该维度",
+                "parse_error": "解析失败（LLM 输出格式不符）",
+            }
+
+            for i, diag in enumerate(diagnostics):
+                batch_count = i + 1
+                status = diag.get("llm_status", "unknown")
+                status_label = status_labels.get(status, status)
+                entry_count = diag.get("entry_count", 0)
+                response_preview = diag.get("llm_response_preview", "")
+
+                lines.append(f"### 批次 {batch_count}（{entry_count} 条记录）")
+                lines.append(f"")
+                lines.append(f"- **LLM 状态**: {status_label}")
+                lines.append(f"- **记录 ID**: {', '.join(diag.get('entry_ids', []))}")
+
+                parsed_types = diag.get("parsed_types", {})
+                if parsed_types:
+                    lines.append(f"- **各维度解析状态**:")
+                    for section, parse_status in parsed_types.items():
+                        parse_label = parse_labels.get(parse_status, parse_status)
+                        lines.append(f"  - {section}: {parse_label}")
+
+                if response_preview:
+                    lines.append(f"- **LLM 响应预览**（前 500 字符）:")
+                    lines.append(f"  ```")
+                    for preview_line in response_preview.split('\n')[:15]:
+                        lines.append(f"  {preview_line}")
+                    lines.append(f"  ```")
+                lines.append(f"")
+
+        # === 消费记录明细 ===
+        consumed_entries = result.get('consumed_entries', [])
+        if consumed_entries:
+            lines.append(f"## 消费记录明细（进化前的原始记录）")
+            lines.append(f"")
+            lines.append(f"以下 {len(consumed_entries)} 条记录被送入 LLM 进行进化分析：")
+            lines.append(f"")
+            for i, entry in enumerate(consumed_entries):
+                eid = entry.get('id', '')
+                tags = entry.get('tags', [])
+                preview = entry.get('content_preview', '')
+                qid = entry.get('query_id', 0)
+                tag_str = f"[{', '.join(tags)}]" if tags else "[无标签]"
+                lines.append(f"### {i+1}. `{eid}` {tag_str}")
+                lines.append(f"")
+                lines.append(f"- **Query ID**: {qid}")
+                lines.append(f"- **内容预览**: {preview}")
+                lines.append(f"")
 
         lines.append(f"---")
         lines.append(f"")
@@ -559,37 +703,89 @@ class MyClaudeCLI:
                     return True
 
                 cli_print.print_info("开始执行记忆整理...")
+                import sys
+                import time
+                import threading
+
+                # Spinner 动画
+                is_tty = sys.stdout.isatty()
+                spinner_chars = ('⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏')
+                all_done = threading.Event()
+                output_lock = threading.Lock()
+                spin_start = time.time()
+
+                def _spin():
+                    i = 0
+                    last_heartbeat = time.time()
+                    while not all_done.is_set():
+                        char = spinner_chars[i % len(spinner_chars)]
+                        with output_lock:
+                            if all_done.is_set():
+                                break
+                            if is_tty:
+                                elapsed = int(time.time() - spin_start)
+                                msg = f"  {char} 正在调用 LLM 整理记忆... ({elapsed}s)"
+                                sys.stdout.write(f"\r{msg.ljust(70)}")
+                                sys.stdout.flush()
+                            else:
+                                now = time.time()
+                                if now - last_heartbeat >= 5.0:
+                                    elapsed = int(now - spin_start)
+                                    print(f"  ... 仍在整理记忆 ({elapsed}s)")
+                                    last_heartbeat = now
+                        time.sleep(0.15)
+                        i += 1
+
+                spinner_thread = threading.Thread(target=_spin, daemon=True)
+                spinner_thread.start()
+
+                # 执行整理
                 try:
                     result = memory.compact_detailed()
-                    if result.get("skipped"):
-                        reason = result.get('reason', '未知原因')
-                        cli_print.print_info(f"记忆整理已跳过: {reason}")
-                        self.query_loop.append_cli_result(f"记忆整理已跳过: {reason}")
-                    else:
-                        merged = result.get('merged', 0)
-                        evicted = result.get('evicted', 0)
-                        l1_before = result.get('layer1_before', 0)
-                        l1_after = result.get('layer1_after', 0)
-
-                        # 保存详细报告到 log 目录
-                        from src.utility.config_loader import global_cfg
-                        logs_root = global_cfg.base_path.logs_root
-                        report_path = self._save_compaction_report(result, logs_root)
-
-                        cli_print.print_info(
-                            f"记忆整理完成:\n"
-                            f"  合并: {merged} 条\n"
-                            f"  淘汰: {evicted} 条\n"
-                            f"  Layer 1 行数: {l1_before} → {l1_after}\n"
-                            f"  详细报告已保存到: {report_path}"
-                        )
-                        self.query_loop.append_cli_result(
-                            f"记忆整理完成: 合并 {merged} 条, 淘汰 {evicted} 条, "
-                            f"Layer 1 行数: {l1_before} → {l1_after}. 报告: {report_path}"
-                        )
                 except Exception as e:
-                    cli_print.print_error(f"记忆整理执行失败: {e}")
-                    self.query_loop.append_cli_result(f"记忆整理执行失败: {e}")
+                    result = {"error": str(e)}
+                finally:
+                    all_done.set()
+                    spinner_thread.join(timeout=1.0)
+                    with output_lock:
+                        if is_tty:
+                            sys.stdout.write(f"\r{' ' * 70}\r")
+                            sys.stdout.flush()
+
+                if "error" in result and result.get("error"):
+                    cli_print.print_error(f"记忆整理执行失败: {result['error']}")
+                    self.query_loop.append_cli_result(f"记忆整理执行失败: {result['error']}")
+                    return True
+
+                if result.get("skipped"):
+                    reason = result.get('reason', '未知原因')
+                    cli_print.print_info(f"记忆整理已跳过: {reason}")
+                    self.query_loop.append_cli_result(f"记忆整理已跳过: {reason}")
+                else:
+                    merged = result.get('merged', 0)
+                    evicted = result.get('evicted', 0)
+                    l1_before = result.get('layer1_before', 0)
+                    l1_after = result.get('layer1_after', 0)
+                    duration_ms = result.get('duration_ms', 0)
+                    duration_str = MyClaudeCLI._format_duration(duration_ms)
+
+                    # 保存详细报告到 log 目录
+                    from src.utility.config_loader import global_cfg
+                    logs_root = global_cfg.base_path.logs_root
+                    report_path = self._save_compaction_report(result, logs_root)
+
+                    cli_print.print_info(
+                        f"记忆整理完成:\n"
+                        f"  合并: {merged} 条\n"
+                        f"  淘汰: {evicted} 条\n"
+                        f"  Layer 1 条数: {l1_before} → {l1_after}\n"
+                        f"  耗时: {duration_str}\n"
+                        f"  详细报告已保存到: {report_path}"
+                    )
+                    self.query_loop.append_cli_result(
+                        f"记忆整理完成: 合并 {merged} 条, 淘汰 {evicted} 条, "
+                        f"Layer 1 条数: {l1_before} → {l1_after}, 耗时: {duration_str}. 报告: {report_path}"
+                    )
                 return True
 
             elif sub_cmd in ("evolution", "evo"):
@@ -601,45 +797,97 @@ class MyClaudeCLI:
                     return True
 
                 cli_print.print_info("开始执行记忆进化...")
+                import sys
+                import time
+                import threading
+
+                # Spinner 动画
+                is_tty = sys.stdout.isatty()
+                spinner_chars = ('⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏')
+                all_done = threading.Event()
+                output_lock = threading.Lock()
+                spin_start = time.time()
+
+                def _spin():
+                    i = 0
+                    last_heartbeat = time.time()
+                    while not all_done.is_set():
+                        char = spinner_chars[i % len(spinner_chars)]
+                        with output_lock:
+                            if all_done.is_set():
+                                break
+                            if is_tty:
+                                elapsed = int(time.time() - spin_start)
+                                msg = f"  {char} 正在调用 LLM 进化记忆... ({elapsed}s)"
+                                sys.stdout.write(f"\r{msg.ljust(70)}")
+                                sys.stdout.flush()
+                            else:
+                                now = time.time()
+                                if now - last_heartbeat >= 5.0:
+                                    elapsed = int(now - spin_start)
+                                    print(f"  ... 仍在进化记忆 ({elapsed}s)")
+                                    last_heartbeat = now
+                        time.sleep(0.15)
+                        i += 1
+
+                spinner_thread = threading.Thread(target=_spin, daemon=True)
+                spinner_thread.start()
+
+                # 执行进化
                 try:
                     result = memory.evolve()
-                    if result.get("skipped"):
-                        reason = result.get('reason', '未知原因')
-                        cli_print.print_info(f"记忆进化已跳过: {reason}")
-                        self.query_loop.append_cli_result(f"记忆进化已跳过: {reason}")
-                    else:
-                        # 统计信息在 stats 子字典中
-                        stats_inner = result.get('stats', {})
-                        consumed = stats_inner.get('layer0_consumed', 0)
-                        evo_gen = stats_inner.get('evolutions_generated', 0)
-                        patterns = stats_inner.get('patterns_found', 0)
-                        gen_rules = stats_inner.get('generalizations_found', 0)
-                        conflicts = stats_inner.get('conflicts_resolved', 0)
-                        trends = stats_inner.get('trends_found', 0)
-
-                        # 保存详细报告到 log 目录
-                        from src.utility.config_loader import global_cfg
-                        logs_root = global_cfg.base_path.logs_root
-                        report_path = self._save_evolution_report(result, logs_root)
-
-                        cli_print.print_info(
-                            f"记忆进化完成:\n"
-                            f"  消费记录: {consumed} 条\n"
-                            f"  生成认知: {evo_gen} 条\n"
-                            f"  模式识别: {patterns} 个\n"
-                            f"  矛盾解决: {conflicts} 个\n"
-                            f"  归纳规则: {gen_rules} 条\n"
-                            f"  趋势洞察: {trends} 个\n"
-                            f"  详细报告已保存到: {report_path}"
-                        )
-                        self.query_loop.append_cli_result(
-                            f"记忆进化完成: 消费记录 {consumed} 条, 生成认知 {evo_gen} 条, "
-                            f"模式识别 {patterns} 个, 矛盾解决 {conflicts} 个, "
-                            f"归纳规则 {gen_rules} 条, 趋势洞察 {trends} 个. 报告: {report_path}"
-                        )
                 except Exception as e:
-                    cli_print.print_error(f"记忆进化执行失败: {e}")
-                    self.query_loop.append_cli_result(f"记忆进化执行失败: {e}")
+                    result = {"error": str(e)}
+                finally:
+                    all_done.set()
+                    spinner_thread.join(timeout=1.0)
+                    with output_lock:
+                        if is_tty:
+                            sys.stdout.write(f"\r{' ' * 70}\r")
+                            sys.stdout.flush()
+
+                if "error" in result and result.get("error"):
+                    cli_print.print_error(f"记忆进化执行失败: {result['error']}")
+                    self.query_loop.append_cli_result(f"记忆进化执行失败: {result['error']}")
+                    return True
+
+                if result.get("skipped"):
+                    reason = result.get('reason', '未知原因')
+                    cli_print.print_info(f"记忆进化已跳过: {reason}")
+                    self.query_loop.append_cli_result(f"记忆进化已跳过: {reason}")
+                else:
+                    # 统计信息在 stats 子字典中
+                    stats_inner = result.get('stats', {})
+                    consumed = stats_inner.get('layer0_consumed', 0)
+                    evo_gen = stats_inner.get('evolutions_generated', 0)
+                    patterns = stats_inner.get('patterns_found', 0)
+                    gen_rules = stats_inner.get('generalizations_found', 0)
+                    conflicts = stats_inner.get('conflicts_resolved', 0)
+                    trends = stats_inner.get('trends_found', 0)
+                    duration_ms = result.get('duration_ms', 0)
+                    duration_str = MyClaudeCLI._format_duration(duration_ms)
+
+                    # 保存详细报告到 log 目录
+                    from src.utility.config_loader import global_cfg
+                    logs_root = global_cfg.base_path.logs_root
+                    report_path = self._save_evolution_report(result, logs_root)
+
+                    cli_print.print_info(
+                        f"记忆进化完成:\n"
+                        f"  消费记录: {consumed} 条\n"
+                        f"  生成认知: {evo_gen} 条\n"
+                        f"  模式识别: {patterns} 个\n"
+                        f"  矛盾解决: {conflicts} 个\n"
+                        f"  归纳规则: {gen_rules} 条\n"
+                        f"  趋势洞察: {trends} 个\n"
+                        f"  耗时: {duration_str}\n"
+                        f"  详细报告已保存到: {report_path}"
+                    )
+                    self.query_loop.append_cli_result(
+                        f"记忆进化完成: 消费记录 {consumed} 条, 生成认知 {evo_gen} 条, "
+                        f"模式识别 {patterns} 个, 矛盾解决 {conflicts} 个, "
+                        f"归纳规则 {gen_rules} 条, 趋势洞察 {trends} 个, 耗时: {duration_str}. 报告: {report_path}"
+                    )
                 return True
 
             elif sub_cmd in ("extract", "ext"):
