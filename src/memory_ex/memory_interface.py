@@ -37,8 +37,14 @@ class MemoryInterface(ABC):
         ...
 
     @abstractmethod
-    def get_context_for_query(self, query: str) -> str:
-        """获取当前 Query 的记忆上下文，供注入 api_messages。"""
+    def get_context_for_query(self, query: str, exclude_session_id: str = "") -> str:
+        """获取当前 Query 的记忆上下文，供注入 api_messages。
+
+        Args:
+            query: 当前用户查询文本
+            exclude_session_id: 需要排除的 session_id（当前会话），
+                                确保不召回本 session 产生的记忆
+        """
         ...
 
     @abstractmethod
@@ -137,7 +143,7 @@ class NoopMemory(MemoryExInterface):
     def get_working_memory(self) -> str:
         return ""
 
-    def get_context_for_query(self, query: str) -> str:
+    def get_context_for_query(self, query: str, exclude_session_id: str = "") -> str:
         return ""
 
     def update(self, memory_id: str, **fields) -> bool:

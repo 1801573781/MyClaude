@@ -133,6 +133,24 @@ class QueryLoop:
         logger.info("新 Session 已开启（上下文已重置，记忆保留）")
 
 
+    def record_cli_command(self, command: str):
+        """记录 CLI 命令到 session log 和 api_messages。
+
+        Args:
+            command: 用户输入的 CLI 命令（如 /test --st-e）
+        """
+        self.api_messages.append_micro_info("user", f"[CLI_COMMAND] {command}")
+        self.session.log_cli_command(command)
+
+    def append_cli_result(self, result_summary: str):
+        """记录 CLI 命令执行结果摘要到 session log 和 api_messages。
+
+        Args:
+            result_summary: 命令执行结果的精炼摘要或完整输出
+        """
+        self.api_messages.append_micro_info("user", f"[CLI_RESULT] {result_summary}")
+        self.session.log_cli_result(result_summary)
+
     def get_tokens(self):
         """返回详细的 token 统计字典。
         keys: prompt_cache_hit, prompt_cache_miss, completion_tokens, total
@@ -309,7 +327,11 @@ class QueryLoop:
             # 注入记忆上下文（通过 MemoryInterface 统一接口）
             # 先用 user_input 触发检索，再注入检索结果 + 工作记忆
             try:
-                mem_context = self._memory.get_context_for_query(query_text)
+                # 传入当前 session_id，确保不召回本 session 产生的记忆
+                current_session_id = getattr(self.session, 'session_file_name', '')
+                mem_context = self._memory.get_context_for_query(
+                    query_text, exclude_session_id=current_session_id
+                )
                 self._memory_used = True
 
                 # 解析检索结果数量，打印 [记忆召回] 信息（即使0条也打印）

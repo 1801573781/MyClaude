@@ -231,7 +231,7 @@ class MemoryEx(MemoryExInterface):
         """
         return ""
 
-    def get_context_for_query(self, query: str) -> str:
+    def get_context_for_query(self, query: str, exclude_session_id: str = "") -> str:
         """返回格式化的记忆上下文，供注入 api_messages。
 
         流程：
@@ -243,6 +243,8 @@ class MemoryEx(MemoryExInterface):
 
         Args:
             query: 当前用户查询文本
+            exclude_session_id: 需要排除的 session_id（当前会话），
+                                确保不召回本 session 产生的记忆
 
         Returns:
             格式化的记忆上下文文本，空字符串表示无内容可注入
@@ -254,8 +256,10 @@ class MemoryEx(MemoryExInterface):
         # 召回增强：展开文件引用
         enhanced_query = self._build_enhanced_query(query)
 
-        # LLM 预检索筛选
-        entries = self._retriever.retrieve_for_query(enhanced_query)
+        # LLM 预检索筛选（排除当前 session 的记忆）
+        entries = self._retriever.retrieve_for_query(
+            enhanced_query, exclude_session_id=exclude_session_id
+        )
         if not entries:
             return ""
 

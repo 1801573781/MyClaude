@@ -43,8 +43,9 @@ class SessionLog:
             {"file name": self.session_file_name}
         ]
 
-        self._save_session_log(save_session)
+        # 先标记已初始化，再调用 _save_session_log，避免递归调用 init_session
         self._session_inited = True
+        self._save_session_log(save_session)
 
 
     def get_tokens(self):
@@ -85,6 +86,10 @@ class SessionLog:
         Query 作为顶层折叠节点，每个 Turn 作为内部子节点。"""
         buffer = self._query_buffer
         if not buffer:
+            return
+
+        # 防御性检查：确保 session_file_name 已初始化
+        if not self.session_file_name:
             return
 
         # 提取 Query 头信息
@@ -309,6 +314,22 @@ class SessionLog:
         self.log_dict_info(dict_info)
 
 
+    def log_cli_command(self, command: str):
+        """直接将 CLI 命令写入日志文件，不依赖 Query/Turn 缓冲结构。"""
+        now = datetime.now().strftime("%Y-%m-%d %H : %M : %S")
+        self._save_session_log([
+            {"time": now},
+            {"role": "user", "content": f"[CLI_COMMAND] {command}"},
+        ])
+
+    def log_cli_result(self, result_summary: str):
+        """直接将 CLI 命令结果写入日志文件，不依赖 Query/Turn 缓冲结构。"""
+        now = datetime.now().strftime("%Y-%m-%d %H : %M : %S")
+        self._save_session_log([
+            {"time": now},
+            {"role": "user", "content": f"[CLI_RESULT] {result_summary}"},
+        ])
+
     def log_dict_info(self, dict_info):
         timestamp = datetime.now().strftime("%Y-%m-%d %H : %M : %S")
         self._turn_buffer.append({"time": timestamp})
@@ -363,6 +384,14 @@ class SessionLog:
         if not save_session:
             return
 
+        # 确保会话已初始化（防止 CLI 命令在首次 Query 前触发写入）
+        if not self._session_inited:
+            self.init_session()
+
+        # 防御性检查：如果 session_file_name 仍为空，跳过写入避免 PermissionError
+        if not self.session_file_name:
+            return
+
         if self.format == "html":
             self._save_html(save_session)
         else:
@@ -373,6 +402,10 @@ class SessionLog:
         """将当前 Turn 缓冲一次性写入 HTML 文件，Turn 内按内容类型进行多级折叠。"""
         buffer = self._turn_buffer
         if not buffer:
+            return
+
+        # 防御性检查：确保 session_file_name 已初始化
+        if not self.session_file_name:
             return
 
         # 跳过 turn 标记条目

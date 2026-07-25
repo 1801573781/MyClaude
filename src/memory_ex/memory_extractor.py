@@ -100,13 +100,14 @@ class MemoryExtractor:
         total_marked_processed = 0
         total_filtered = 0
         total_timed_out = 0
+        total_llm_none = 0
         details: List[Dict[str, Any]] = []
 
         def _entry_brief(entry: Dict) -> Dict:
             """提取条目的摘要信息（用于明细展示）。"""
             meta = entry.get("metadata", {})
             user_input = meta.get("user_input", "")
-            content_preview = entry.get("content", "")[:80].replace("\n", " ")
+            content_preview = entry.get("content", "")[:300].replace("\n", " ")
             return {
                 "id": entry.get("id", ""),
                 "query_id": entry.get("query_id", 0),
@@ -181,27 +182,33 @@ class MemoryExtractor:
                         "reason": "LLM 返回 NONE，认为无可提取的长期记忆",
                     })
                 total_marked_processed += len(entries)
+                total_llm_none += len(entries)
                 continue
 
             # 写入提取结果
             extracted_summaries = []
-            for memory in extracted_memories:
+            for idx, memory in enumerate(extracted_memories, 1):
                 self._write_extracted_memory(entries[0], memory)
                 total_extracted += 1
                 tags_str = "".join(f"[{t}]" for t in memory.get("tags", []))
-                extracted_summaries.append(f"{tags_str} {memory.get('content', '')[:60]}")
+                extracted_summaries.append(f"({idx}) {tags_str} {memory.get('content', '')[:300]}")
 
             # 将原始条目标记为 processed（已提取）
-            for entry in entries:
+            # 同一 Query 的多个原始条目只在首条显示完整提取详情，避免重复
+            for entry_idx, entry in enumerate(entries):
                 self._store.update_layer0_entry(
                     entry["id"],
                     {"status": "processed", "source": "query_extraction"},
                 )
                 self._store.update_metadata_entry(entry["id"], status="processed")
+                if entry_idx == 0:
+                    reason = f"提取出 {len(extracted_memories)} 条记忆: " + " | ".join(extracted_summaries)
+                else:
+                    reason = f"同 Query {entry.get('query_id', 0)} 的原始条目，提取结果同上"
                 details.append({
                     **_entry_brief(entry),
                     "action": "成功提取后，标记已处理",
-                    "reason": f"提取出 {len(extracted_memories)} 条记忆: " + " | ".join(extracted_summaries),
+                    "reason": reason,
                 })
             total_marked_processed += len(entries)
 
@@ -221,6 +228,7 @@ class MemoryExtractor:
             "marked_processed": total_marked_processed,
             "filtered": total_filtered,
             "timed_out": total_timed_out,
+            "llm_none": total_llm_none,
             "details": details,
         }
 
@@ -528,10 +536,14 @@ class MemoryExtractor:
 
         # 追加写入 Layer 1（MEMORY.md）—— 构建职责
         # extract() 负责将提取的记忆写入 Layer 1，不再依赖 compact() 来搬运
+        # 写入 session_id 以支持召回时的显式过滤（禁止召回当前 session 的记忆）
+        session_id = template_entry.get("session_id", "")
         tags_str = "".join(f"[{t}]" for t in memory.get("tags", []))
         layer1_line = f"- {tags_str} {memory.get('content', '')}"
         if entry_id:
             layer1_line += f" (id={entry_id})"
+        if session_id:
+            layer1_line += f" (session={session_id})"
 
         existing_layer1 = self._store.read_layer1()
         if existing_layer1 and existing_layer1.strip():

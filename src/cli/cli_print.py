@@ -303,33 +303,45 @@ def typewriter_print(text, delay=0.005):
 def typewriter_then_markdown(text: str, delay: float = 0.005):
     """
     先逐字打字机显示纯文本，全部完成后原地替换为 Markdown 渲染效果。
+    当文本较长（超过终端可见高度的 2/3）时，跳过打字机效果直接渲染，
+    避免 Rich Live 组件因内容超出终端高度而覆盖之前输出的问题。
     """
-    buffer = ""
+    _CODE_KEYWORDS = ("def ", "import ", "class ", "include", "function ", "const ")
+    stripped = text.strip()
 
-    with Live(console=console, refresh_per_second=60) as live:
-        # 阶段1：逐字累积，Live 原地刷新纯文本
-        # 用 Text 对象包裹 buffer，避免 Rich 将原始文本中的 [/] 等字符误解析为 markup 标签
-        for char in text:
-            buffer += char
-            live.update(Text(buffer))
-            if delay:
-                time.sleep(delay)
+    # 估算渲染后的行数，超过终端高度 2/3 时跳过打字机效果
+    # Live 组件在固定位置刷新，内容超出终端高度时会覆盖之前的内容，
+    # 导致长文本只显示末尾几行，前面的内容丢失
+    estimated_lines = text.count('\n') + 1
+    max_typewriter_lines = max(10, console.height * 2 // 3)
+    use_typewriter = estimated_lines <= max_typewriter_lines
 
-        # 阶段2：判断内容类型，选择最终渲染器（循环结束后执行一次）
-        _CODE_KEYWORDS = ("def ", "import ", "class ", "include", "function ", "const ")
-        stripped = text.strip()
-
+    def _render_final():
+        """选择最终渲染器，返回 Rich 渲染对象。"""
         if stripped.startswith("```") or stripped.startswith("#") or "- " in stripped[:100]:
-            # 带 Markdown 标记：用 Markdown 渲染
-            live.update(Markdown(text))
+            return Markdown(text)
         elif any(kw in text for kw in _CODE_KEYWORDS):
-            # 纯代码（无 Markdown 包裹）：用 Syntax 代码高亮
-            live.update(Syntax(text, "python", theme="monokai", line_numbers=False))
+            return Syntax(text, "python", theme="monokai", line_numbers=False)
         else:
-            # 普通文本/聊天回复：用 Markdown
-            live.update(Markdown(text))
+            return Markdown(text)
 
-    # Live 退出后，Markdown 效果保留在终端上
+    if use_typewriter:
+        buffer = ""
+        with Live(console=console, refresh_per_second=60) as live:
+            # 阶段1：逐字累积，Live 原地刷新纯文本
+            # 用 Text 对象包裹 buffer，避免 Rich 将原始文本中的 [/] 等字符误解析为 markup 标签
+            for char in text:
+                buffer += char
+                live.update(Text(buffer))
+                if delay:
+                    time.sleep(delay)
+
+            # 阶段2：最终渲染（循环结束后执行一次）
+            live.update(_render_final())
+    else:
+        # 长文本：直接用 console.print 输出，避免 Live 组件覆盖问题
+        console.print(_render_final())
+
     # 追加到 HTML 缓冲区（Markdown 文本 + 时间戳）
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     _append_html(f'<div style="margin:12px 0;">'
@@ -848,10 +860,20 @@ def get_input() -> str:
     使用 Python 内置 input() 代替 Rich Prompt.ask()，
     以确保长输入时终端能正确自动滚动，避免文字重叠。
     Rich Prompt.ask 内部的 ANSI 光标控制逻辑会与终端原生换行滚动冲突。
+
+    注意：提示符也改用 sys.stdout.write 输出，而非 console.print。
+    因为 Rich console.print 在 legacy_windows=False 模式下会输出 ANSI 转义序列
+    并维护内部光标状态，与紧随其后的 input() 的终端原生回显机制冲突。
+    当用户输入长文本触发终端滚动时，Rich 的光标状态与终端实际状态不一致，
+    导致已输入内容被覆盖或错位。改用原生 stdout 彻底避免此问题。
     """
+    import sys
+
     try:
-        # 先用 console.print 输出带颜色的提示符（不换行）
-        console.print(f"\n[{STYLES['user']}]➤ You :[/] ", end="")
+        # 用原生 stdout 输出带颜色的提示符（不换行），避免 Rich 终端状态干扰 input()
+        # ANSI: \033[1;36m = bold cyan, \033[0m = reset
+        sys.stdout.write("\n\033[1;36m➤ You :\033[0m ")
+        sys.stdout.flush()
         # 使用内置 input() 读取，利用终端原生的换行滚动能力
         user_input = input()
         return user_input.strip()

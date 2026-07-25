@@ -30,28 +30,29 @@ class MyClaudeCLI:
     def _format_estimated_time(raw_count: int) -> str:
         """根据 raw 记忆条目数量预估 LLM 处理时间。
 
-        每组 raw 条目平均约 5 秒（含网络延迟和 LLM 推理），
-        实际按 query_id 分组后每组约 5 秒，粗略按每条 1.5 秒估算。
+        每条 raw 记忆按 query_id 分组后，每组需要一次 LLM 调用，
+        每次 LLM 调用平均约 8 秒（含网络延迟和 LLM 推理）。
+        由于无法预知分组数量，按每条 8 秒估算（上界）。
 
         Args:
             raw_count: raw 记忆条目总数
 
         Returns:
-            格式化后的时间字符串，如 "15秒"、"2分30秒"、"1小时5分30秒"
+            格式化后的时间字符串，如 "约15秒"、"约2分30秒"、"约1小时5分30秒"
         """
-        # 粗略估算：每条 raw 记忆约 1.5 秒
-        total_seconds = int(raw_count * 1.5)
+        # 估算：每条 raw 记忆约 8 秒（含 LLM 调用，按上界估算）
+        total_seconds = int(raw_count * 8)
         if total_seconds < 60:
-            return f"{total_seconds}秒"
+            return f"约{total_seconds}秒"
         elif total_seconds < 3600:
             minutes = total_seconds // 60
             seconds = total_seconds % 60
-            return f"{minutes}分{seconds}秒"
+            return f"约{minutes}分{seconds}秒"
         else:
             hours = total_seconds // 3600
             minutes = (total_seconds % 3600) // 60
             seconds = total_seconds % 60
-            return f"{hours}小时{minutes}分{seconds}秒"
+            return f"约{hours}小时{minutes}分{seconds}秒"
 
     @staticmethod
     def _save_extraction_report(result: dict, logs_root: str):
@@ -72,7 +73,9 @@ class MyClaudeCLI:
         marked_processed = result.get('marked_processed', 0)
         filtered = result.get('filtered', 0)
         timed_out = result.get('timed_out', 0)
+        llm_none = result.get('llm_none', 0)
         llm_processed = marked_processed - filtered
+        llm_extracted = llm_processed - llm_none
         details = result.get('details', [])
 
         lines = [
@@ -88,7 +91,8 @@ class MyClaudeCLI:
             f"| 提取记忆 | {extracted} | LLM 从中提炼出的结构化记忆，已写入 Layer 1 |",
             f"| 标记已处理 | {marked_processed} | 原始 raw 记录被标记为 processed，不再参与后续提取 |",
             f"| 其中前置过滤 | {filtered} | 对话过短/无技术关键词，未调用 LLM 直接标记 |",
-            f"| 其中LLM处理 | {llm_processed} | LLM 判定无价值返回 NONE，或成功提取后原始条目标记 |",
+            f"| 其中LLM判定无价值 | {llm_none} | LLM 返回 NONE，认为无可提取的长期记忆 |",
+            f"| 其中LLM成功提取 | {llm_extracted} | LLM 成功提取出结构化记忆后，原始条目标记已处理 |",
             f"| 超时跳过 | {timed_out} | LLM 超时/失败，保留 raw 状态待下次提取 |",
             f"",
             f"## 逐条明细",
@@ -100,8 +104,8 @@ class MyClaudeCLI:
                 qid = d.get('query_id', 0)
                 turn = d.get('turn', 0)
                 eid = d.get('id', '')
-                user_in = d.get('user_input', '')[:60]
-                preview = d.get('content_preview', '')[:80]
+                user_in = d.get('user_input', '')[:200]
+                preview = d.get('content_preview', '')[:300]
                 action = d.get('action', '')
                 reason = d.get('reason', '')
                 lines.append(f"### [Q{qid} T{turn}] `{eid}`")
@@ -113,6 +117,164 @@ class MyClaudeCLI:
                 lines.append(f"")
         else:
             lines.append("（无明细数据）")
+
+        lines.append(f"---")
+        lines.append(f"")
+        lines.append(f"*本报告由 MyClaude 记忆系统自动生成*")
+
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text("\n".join(lines), encoding="utf-8")
+        return str(report_path)
+
+    @staticmethod
+    def _save_compaction_report(result: dict, logs_root: str):
+        """将记忆整理的详细报告保存为 Markdown 文件。
+
+        Args:
+            result: compact_detailed() 返回的统计字典
+            logs_root: 日志根目录路径
+
+        Returns:
+            报告文件路径字符串
+        """
+        from datetime import datetime
+        from pathlib import Path
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        report_path = Path(logs_root) / f"memory_compaction_report_{timestamp}.md"
+
+        compaction_id = result.get('compaction_id', '')
+        trigger = result.get('trigger', 'manual')
+        mode = result.get('mode', 'full')
+        merged = result.get('merged', 0)
+        evicted = result.get('evicted', 0)
+        l1_before = result.get('layer1_before', 0)
+        l1_after = result.get('layer1_after', 0)
+        duration_ms = result.get('duration_ms', 0)
+        total_processed = result.get('total_processed', 0)
+
+        lines = [
+            f"# 记忆整理报告",
+            f"",
+            f"**生成时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"",
+            f"## 统计摘要",
+            f"",
+            f"| 指标 | 数值 | 说明 |",
+            f"|------|------|------|",
+            f"| 整理ID | {compaction_id} | 本次整理的唯一标识 |",
+            f"| 触发方式 | {trigger} | manual=手动, auto_light=自动轻量 |",
+            f"| 整理模式 | {mode} | full=完整(合并+淘汰), light=仅合并 |",
+            f"| 合并条目 | {merged} | 同主题合并、重复去重、因果链压缩的条目数 |",
+            f"| 淘汰条目 | {evicted} | 分数过低被从 Layer 1 移除的条目数 |",
+            f"| 总处理条目 | {total_processed} | 合并 + 淘汰的总数 |",
+            f"| Layer 1 整理前行数 | {l1_before} | 整理前的 Layer 1 行数 |",
+            f"| Layer 1 整理后行数 | {l1_after} | 整理后的 Layer 1 行数 |",
+            f"| 耗时 | {duration_ms} ms | 整理操作总耗时 |",
+            f"",
+            f"## 说明",
+            f"",
+            f"- **合并（Merge）**: 对 Layer 1 中的条目执行规则化合并（同标签合并、重复去重）和 LLM 辅助合并（语义相似合并、因果链压缩）。",
+            f"- **淘汰（Evict）**: 当 Layer 1 超过水位线时，按重要性评分从低到高淘汰，最多淘汰 20%，进化条目不淘汰。",
+            f"- 整理元数据已写入 memory 系统的 metadata，可通过 `/mem show` 查看「整理日志」计数。",
+            f"",
+            f"---",
+            f"",
+            f"*本报告由 MyClaude 记忆系统自动生成*",
+        ]
+
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text("\n".join(lines), encoding="utf-8")
+        return str(report_path)
+
+    @staticmethod
+    def _save_evolution_report(result: dict, logs_root: str):
+        """将记忆进化的详细报告保存为 Markdown 文件。
+
+        Args:
+            result: evolve() 返回的统计字典
+            logs_root: 日志根目录路径
+
+        Returns:
+            报告文件路径字符串
+        """
+        from datetime import datetime
+        from pathlib import Path
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        report_path = Path(logs_root) / f"memory_evolution_report_{timestamp}.md"
+
+        evolution_id = result.get('evolution_id', '')
+        evo_timestamp = result.get('timestamp', '')
+        trigger = result.get('trigger', 'manual')
+        types_executed = result.get('types_executed', [])
+        duration_ms = result.get('duration_ms', 0)
+
+        # 统计信息在 stats 子字典中
+        stats_inner = result.get('stats', {})
+        consumed = stats_inner.get('layer0_consumed', 0)
+        evo_gen = stats_inner.get('evolutions_generated', 0)
+        patterns = stats_inner.get('patterns_found', 0)
+        generalizations = stats_inner.get('generalizations_found', 0)
+        conflicts = stats_inner.get('conflicts_resolved', 0)
+        trends = stats_inner.get('trends_found', 0)
+
+        evolutions = result.get('evolutions', [])
+
+        type_labels = {
+            'PATTERN': '模式识别',
+            'RESOLVED': '矛盾解决',
+            'GENERALIZED': '归纳规则',
+            'TREND': '趋势洞察',
+        }
+
+        lines = [
+            f"# 记忆进化报告",
+            f"",
+            f"**生成时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"",
+            f"## 统计摘要",
+            f"",
+            f"| 指标 | 数值 | 说明 |",
+            f"|------|------|------|",
+            f"| 进化ID | {evolution_id} | 本次进化的唯一标识 |",
+            f"| 进化时间 | {evo_timestamp} | 进化操作的时间戳 |",
+            f"| 触发方式 | {trigger} | manual=手动, auto=自动 |",
+            f"| 执行的进化类型 | {', '.join(types_executed) if types_executed else '无'} | 本次实际产出结果的进化类型 |",
+            f"| 消费记录 | {consumed} 条 | 从 Layer 0 中消费的未进化记录数 |",
+            f"| 生成认知 | {evo_gen} 条 | 产出的高层认知条目数 |",
+            f"| 模式识别 | {patterns} 个 | 发现的隐含模式/偏好/规则数 |",
+            f"| 矛盾解决 | {conflicts} 个 | 发现并解决的矛盾信息数 |",
+            f"| 归纳规则 | {generalizations} 条 | 归纳出的可复用通用解法数 |",
+            f"| 趋势洞察 | {trends} 个 | 发现的项目演进趋势数 |",
+            f"| 耗时 | {duration_ms} ms | 进化操作总耗时 |",
+            f"",
+            f"## 逐条明细",
+            f"",
+        ]
+
+        if evolutions:
+            for evo in evolutions:
+                evo_id = evo.get('id', '')
+                evo_type = evo.get('type', '')
+                conclusion = evo.get('conclusion', '')
+                confidence = evo.get('confidence', 0.0)
+                sources = evo.get('sources', [])
+                reasoning = evo.get('reasoning', '')
+                type_label = type_labels.get(evo_type, evo_type)
+
+                hypothesis_tag = " [假设]" if confidence < 0.6 else ""
+                lines.append(f"### {evo_id} [{type_label}]{hypothesis_tag}")
+                lines.append(f"")
+                lines.append(f"- **结论**: {conclusion}")
+                lines.append(f"- **置信度**: {confidence:.2f}")
+                if reasoning:
+                    lines.append(f"- **推理过程**: {reasoning}")
+                if sources:
+                    lines.append(f"- **来源条目**: {', '.join(sources)}")
+                lines.append(f"")
+        else:
+            lines.append("（无进化结果）")
 
         lines.append(f"---")
         lines.append(f"")
@@ -143,6 +305,8 @@ class MyClaudeCLI:
         elif cmd == '/tokens':
             token_stats = self.query_loop.get_tokens()
             cli_print.show_token_count(token_stats)
+            summary = f"Token统计: 输入(缓存命中)={token_stats['prompt_cache_hit']:,}, 输入(未命中)={token_stats['prompt_cache_miss']:,}, 输出={token_stats['completion_tokens']:,}, 总计={token_stats['total']:,}"
+            self.query_loop.append_cli_result(summary)
             return True
 
         elif cmd.startswith('/test'):
@@ -233,10 +397,13 @@ class MyClaudeCLI:
                     process.wait()
                     if process.returncode == 0:
                         cli_print.print_info("单元测试用例生成完成。")
+                        self.query_loop.append_cli_result(f"单元测试用例生成完成。执行命令: {' '.join(cmd_list)}")
                     else:
                         cli_print.print_error(f"脚本执行失败，退出码: {process.returncode}")
+                        self.query_loop.append_cli_result(f"单元测试用例生成失败，退出码: {process.returncode}")
                 except Exception as e:
                     cli_print.print_error(f"执行失败: {e}")
+                    self.query_loop.append_cli_result(f"单元测试用例生成异常: {e}")
 
                 return True
 
@@ -307,10 +474,13 @@ class MyClaudeCLI:
                     process.wait()
                     if process.returncode == 0:
                         cli_print.print_info("系统测试用例生成完成。")
+                        self.query_loop.append_cli_result(f"系统测试用例生成完成。执行命令: {' '.join(cmd_list)}")
                     else:
                         cli_print.print_error(f"脚本执行失败，退出码: {process.returncode}")
+                        self.query_loop.append_cli_result(f"系统测试用例生成失败，退出码: {process.returncode}")
                 except Exception as e:
                     cli_print.print_error(f"执行失败: {e}")
+                    self.query_loop.append_cli_result(f"系统测试用例生成异常: {e}")
 
                 return True
 
@@ -385,23 +555,41 @@ class MyClaudeCLI:
                 memory = self.query_loop._memory
                 if not hasattr(memory, "compact_detailed"):
                     cli_print.print_error("当前记忆后端不支持手动整理。")
+                    self.query_loop.append_cli_result("记忆整理失败：当前后端不支持。")
                     return True
 
                 cli_print.print_info("开始执行记忆整理...")
                 try:
                     result = memory.compact_detailed()
                     if result.get("skipped"):
-                        cli_print.print_info(f"记忆整理已跳过: {result.get('reason', '未知原因')}")
+                        reason = result.get('reason', '未知原因')
+                        cli_print.print_info(f"记忆整理已跳过: {reason}")
+                        self.query_loop.append_cli_result(f"记忆整理已跳过: {reason}")
                     else:
+                        merged = result.get('merged', 0)
+                        evicted = result.get('evicted', 0)
+                        l1_before = result.get('layer1_before', 0)
+                        l1_after = result.get('layer1_after', 0)
+
+                        # 保存详细报告到 log 目录
+                        from src.utility.config_loader import global_cfg
+                        logs_root = global_cfg.base_path.logs_root
+                        report_path = self._save_compaction_report(result, logs_root)
+
                         cli_print.print_info(
                             f"记忆整理完成:\n"
-                            f"  合并: {result.get('merged', 0)} 条\n"
-                            f"  降级: {result.get('demoted', 0)} 条\n"
-                            f"  淘汰: {result.get('evicted', 0)} 条\n"
-                            f"  Layer 1 行数: {result.get('layer1_before', 0)} → {result.get('layer1_after', 0)}"
+                            f"  合并: {merged} 条\n"
+                            f"  淘汰: {evicted} 条\n"
+                            f"  Layer 1 行数: {l1_before} → {l1_after}\n"
+                            f"  详细报告已保存到: {report_path}"
+                        )
+                        self.query_loop.append_cli_result(
+                            f"记忆整理完成: 合并 {merged} 条, 淘汰 {evicted} 条, "
+                            f"Layer 1 行数: {l1_before} → {l1_after}. 报告: {report_path}"
                         )
                 except Exception as e:
                     cli_print.print_error(f"记忆整理执行失败: {e}")
+                    self.query_loop.append_cli_result(f"记忆整理执行失败: {e}")
                 return True
 
             elif sub_cmd in ("evolution", "evo"):
@@ -409,23 +597,49 @@ class MyClaudeCLI:
                 memory = self.query_loop._memory
                 if not hasattr(memory, "evolve"):
                     cli_print.print_error("当前记忆后端不支持手动进化。")
+                    self.query_loop.append_cli_result("记忆进化失败：当前后端不支持。")
                     return True
 
                 cli_print.print_info("开始执行记忆进化...")
                 try:
                     result = memory.evolve()
                     if result.get("skipped"):
-                        cli_print.print_info(f"记忆进化已跳过: {result.get('reason', '未知原因')}")
+                        reason = result.get('reason', '未知原因')
+                        cli_print.print_info(f"记忆进化已跳过: {reason}")
+                        self.query_loop.append_cli_result(f"记忆进化已跳过: {reason}")
                     else:
+                        # 统计信息在 stats 子字典中
+                        stats_inner = result.get('stats', {})
+                        consumed = stats_inner.get('layer0_consumed', 0)
+                        evo_gen = stats_inner.get('evolutions_generated', 0)
+                        patterns = stats_inner.get('patterns_found', 0)
+                        gen_rules = stats_inner.get('generalizations_found', 0)
+                        conflicts = stats_inner.get('conflicts_resolved', 0)
+                        trends = stats_inner.get('trends_found', 0)
+
+                        # 保存详细报告到 log 目录
+                        from src.utility.config_loader import global_cfg
+                        logs_root = global_cfg.base_path.logs_root
+                        report_path = self._save_evolution_report(result, logs_root)
+
                         cli_print.print_info(
                             f"记忆进化完成:\n"
-                            f"  消费记录: {result.get('layer0_consumed', 0)} 条\n"
-                            f"  生成认知: {result.get('evolutions_generated', 0)} 条\n"
-                            f"  模式识别: {result.get('patterns_found', 0)} 个\n"
-                            f"  归纳规则: {result.get('generalizations_found', 0)} 条"
+                            f"  消费记录: {consumed} 条\n"
+                            f"  生成认知: {evo_gen} 条\n"
+                            f"  模式识别: {patterns} 个\n"
+                            f"  矛盾解决: {conflicts} 个\n"
+                            f"  归纳规则: {gen_rules} 条\n"
+                            f"  趋势洞察: {trends} 个\n"
+                            f"  详细报告已保存到: {report_path}"
+                        )
+                        self.query_loop.append_cli_result(
+                            f"记忆进化完成: 消费记录 {consumed} 条, 生成认知 {evo_gen} 条, "
+                            f"模式识别 {patterns} 个, 矛盾解决 {conflicts} 个, "
+                            f"归纳规则 {gen_rules} 条, 趋势洞察 {trends} 个. 报告: {report_path}"
                         )
                 except Exception as e:
                     cli_print.print_error(f"记忆进化执行失败: {e}")
+                    self.query_loop.append_cli_result(f"记忆进化执行失败: {e}")
                 return True
 
             elif sub_cmd in ("extract", "ext"):
@@ -454,6 +668,7 @@ class MyClaudeCLI:
                 cli_print.print_info(
                     f"开始执行记忆提取...\n"
                     f"  待处理 raw 记忆: {raw_count} 条\n"
+                    f"  （按 query_id 分组，每组调用一次 LLM）\n"
                     f"  预计耗时: {est_time}"
                 )
 
@@ -525,10 +740,13 @@ class MyClaudeCLI:
                 # 处理结果
                 if "error" in result and result.get("error"):
                     cli_print.print_error(f"记忆提取执行失败: {result['error']}")
+                    self.query_loop.append_cli_result(f"记忆提取执行失败: {result['error']}")
                     return True
 
                 if result.get("skipped"):
-                    cli_print.print_info(f"记忆提取已跳过: {result.get('reason', '未知原因')}")
+                    reason = result.get('reason', '未知原因')
+                    cli_print.print_info(f"记忆提取已跳过: {reason}")
+                    self.query_loop.append_cli_result(f"记忆提取已跳过: {reason}")
                     return True
 
                 processed = result.get('processed', 0)
@@ -536,7 +754,9 @@ class MyClaudeCLI:
                 archived = result.get('marked_processed', 0)
                 filtered = result.get('filtered', 0)
                 timed_out = result.get('timed_out', 0)
+                llm_none = result.get('llm_none', 0)
                 llm_archived = archived - filtered
+                llm_extracted = llm_archived - llm_none
 
                 # 保存逐条明细到报告文件
                 from src.utility.config_loader import global_cfg
@@ -549,9 +769,15 @@ class MyClaudeCLI:
                     f"  提取记忆: {extracted} 条（LLM 从中提炼出的结构化记忆，已写入 Layer 1）\n"
                     f"  标记已处理: {archived} 条（原始 raw 记录被标记为 processed，不再参与后续提取）\n"
                     f"    其中前置过滤: {filtered} 条（对话过短/无技术关键词，未调用 LLM 直接标记）\n"
-                    f"    其中LLM处理: {llm_archived} 条（LLM 判定无价值返回 NONE，或成功提取后原始条目标记）\n"
+                    f"    其中LLM判定无价值: {llm_none} 条（LLM 返回 NONE，认为无可提取的长期记忆）\n"
+                    f"    其中LLM成功提取: {llm_extracted} 条（LLM 成功提取后，原始条目标记已处理）\n"
                     f"  超时跳过: {timed_out} 条（LLM 超时/失败，保留 raw 状态待下次提取）\n"
                     f"  逐条明细报告已保存到: {report_path}"
+                )
+                self.query_loop.append_cli_result(
+                    f"记忆提取完成: 处理 {processed} 条, 提取 {extracted} 条, "
+                    f"标记已处理 {archived} 条(前置过滤 {filtered}, LLM无价值 {llm_none}, LLM成功提取 {llm_extracted}), "
+                    f"超时跳过 {timed_out} 条。报告: {report_path}"
                 )
                 return True
 
@@ -573,44 +799,13 @@ class MyClaudeCLI:
                 layer0_raw = stats.get("layer0_raw", 0)
                 layer0_unprocessed = stats.get("layer0_unprocessed", 0)
                 layer0_processed = stats.get("layer0_processed", 0)
+                layer1_entries = stats.get("layer1_entries", 0)
                 layer1_lines = stats.get("layer1_lines", 0)
                 layer1_tokens = stats.get("layer1_tokens", 0)
-                metadata_entries = stats.get("metadata_entries", 0)
                 unconsumed = stats.get("unconsumed", 0)
                 unevolved = stats.get("unevolved", 0)
                 compaction_logs = stats.get("compaction_logs", 0)
                 evolution_logs = stats.get("evolution_logs", 0)
-
-                # 尝试获取水位信息
-                watermarks = {}
-                if hasattr(memory, "get_watermarks"):
-                    try:
-                        watermarks = memory.get_watermarks()
-                    except Exception:
-                        pass
-
-                # 尝试获取水位状态
-                water_status = ""
-                if hasattr(memory, "check_water_level"):
-                    try:
-                        warning, trigger, hard_limit = memory.check_water_level()
-                        if hard_limit:
-                            water_status = "⚠ 已超硬限制（需立即整理）"
-                        elif trigger:
-                            water_status = "⚠ 已达触发线（建议整理）"
-                        elif warning:
-                            water_status = "⚠ 已达预警线"
-                        else:
-                            water_status = "✓ 正常"
-                    except Exception:
-                        water_status = "未知"
-                else:
-                    water_status = "N/A"
-
-                wm_warning = watermarks.get("warning", "-")
-                wm_trigger = watermarks.get("trigger", "-")
-                wm_hard = watermarks.get("hard_limit", "-")
-                wm_target = watermarks.get("target_after", "-")
 
                 lines = [
                     "=" * 50,
@@ -625,10 +820,7 @@ class MyClaudeCLI:
                     f"    已处理 (processed): {layer0_processed}",
                     "",
                     f"  ── Layer 1（正式记忆） ──",
-                    f"    行数: {layer1_lines}",
-                    f"    Token 估算: {layer1_tokens}",
-                    f"    水位状态: {water_status}",
-                    f"    预警线: {wm_warning} | 触发线: {wm_trigger} | 硬限制: {wm_hard} | 整理目标: {wm_target}",
+                    f"    条数: {layer1_entries}",
                     "",
                     f"  ── 待整理与进化 ──",
                     f"    待整理 (unconsumed): {unconsumed}",
@@ -637,10 +829,10 @@ class MyClaudeCLI:
                     f"  ── 历史记录 ──",
                     f"    整理日志: {compaction_logs} 条",
                     f"    进化日志: {evolution_logs} 条",
-                    f"    元数据条目: {metadata_entries}",
                     "=" * 50,
                 ]
                 cli_print.print_info("\n".join(lines))
+                self.query_loop.append_cli_result("\n".join(lines))
                 return True
 
             elif sub_cmd in ("remove", "r"):
@@ -648,15 +840,16 @@ class MyClaudeCLI:
                 stats = self.query_loop.clear_memory()
                 if not stats:
                     cli_print.print_info("当前没有记忆。")
+                    self.query_loop.append_cli_result("清除记忆：当前没有记忆。")
                 elif "total" in stats and len(stats) == 1:
                     cli_print.print_info(f"已清除所有记忆（共 {stats['total']} 条）。")
+                    self.query_loop.append_cli_result(f"已清除所有记忆（共 {stats['total']} 条）。")
                 else:
                     layer0_total = stats.get("layer0_total", 0)
                     layer0_raw = stats.get("layer0_raw", 0)
                     layer0_unprocessed = stats.get("layer0_unprocessed", 0)
                     layer0_processed = stats.get("layer0_processed", 0)
                     layer1_entries = stats.get("layer1_entries", 0)
-                    layer2_files = stats.get("layer2_topic_files", 0)
 
                     lines = [
                         "已清除所有记忆，详细统计如下：",
@@ -669,8 +862,8 @@ class MyClaudeCLI:
                     if layer0_processed > 0:
                         lines.append(f"    其中已处理（processed）: {layer0_processed} 条")
                     lines.append(f"  正式记忆（Layer 1）: {layer1_entries} 条")
-                    lines.append(f"  主题文件（Layer 2）: {layer2_files} 个")
                     cli_print.print_info("\n".join(lines))
+                    self.query_loop.append_cli_result("\n".join(lines))
                 return True
 
             else:
@@ -690,8 +883,10 @@ class MyClaudeCLI:
             success = create_project_tree()
             if success:
                 cli_print.print_info("项目工程树创建完成。")
+                self.query_loop.append_cli_result("项目工程树创建完成。")
             else:
                 cli_print.print_error("项目工程树创建失败，请检查目录是否存在。")
+                self.query_loop.append_cli_result("项目工程树创建失败。")
             return True
 
         elif cmd.startswith('/h2m'):
@@ -715,15 +910,30 @@ class MyClaudeCLI:
             from src.cli.h2m import convert_html_to_markdown
             result = convert_html_to_markdown(p1, p2, p3, p4)
             if result.startswith("[ERROR]"):
-                cli_print.print_error(result[7:].strip())  # 去掉 "[ERROR] " 前缀
+                cli_print.print_error(result[7:].strip())
+                self.query_loop.append_cli_result(f"h2m 失败: {result[7:].strip()}")
             else:
-                cli_print.print_info(result[1:].strip())  # 去掉 "✅ " 前缀
+                cli_print.print_info(result[1:].strip())
+                self.query_loop.append_cli_result(f"h2m 完成: {result[1:].strip()}")
             return True
 
         elif cmd == '/cs':
             # /cs — 统计项目代码行数
             from src.cli.code_statistics import code_statistics
-            code_statistics()
+            from io import StringIO
+            import sys as _sys
+
+            # 捕获 code_statistics 的输出用于记录到上下文
+            old_stdout = _sys.stdout
+            _sys.stdout = captured = StringIO()
+            try:
+                code_statistics()
+            finally:
+                _sys.stdout = old_stdout
+            output = captured.getvalue().strip()
+            if output:
+                # 截断过长输出，只保留摘要信息
+                self.query_loop.append_cli_result(output[:2000])
             return True
 
         elif cmd.startswith('/save'):
@@ -742,8 +952,10 @@ class MyClaudeCLI:
                 saved_path = save_buffer_to_file(str(filepath), all=save_all)
                 if save_all:
                     cli_print.print_info(f"已保存全部对话到: {saved_path}")
+                    self.query_loop.append_cli_result(f"已保存全部对话到: {saved_path}")
                 else:
                     cli_print.print_info(f"已保存最后一次交互到: {saved_path}")
+                    self.query_loop.append_cli_result(f"已保存最后一次交互到: {saved_path}")
             else:
                 cli_print.print_error("Usage: /save <filename> [all]")
             return True
@@ -791,6 +1003,22 @@ class MyClaudeCLI:
         return True
 
 
+    # 不需要记录到 session 上下文的命令（纯 UI 操作或重置操作）
+    _NO_LOG_COMMANDS = {'/quit', '/exit', '/q', '/cls', '/help', '/new session', '/opsx'}
+
+    def _should_log_cli_command(self, command: str) -> bool:
+        """判断该 CLI 命令是否需要记录到 session 上下文。
+
+        注册的斜杠命令（如 /opsx:propose）走 QueryLoop，已有完整记录，不需在此处理。
+        纯 UI 操作（/cls, /help, /t 等）和重置操作（/new session）不记录。
+        """
+        cmd = command.lower().strip()
+        if cmd in self._NO_LOG_COMMANDS:
+            return False
+        if cmd.startswith('/t '):
+            return False
+        return True
+
     def run(self):
         """运行 CLI 主循环：聊天流式 + 编码工具双模式（全同步）"""
         # cli_print.clear_screen()
@@ -802,6 +1030,11 @@ class MyClaudeCLI:
                 continue
 
             if user_input.startswith('/'):
+                # 判断是否为注册的斜杠命令（走 QueryLoop 的，已有记录）
+                command_info = self.dispatcher.parse_and_lookup(user_input)
+                if not command_info and self._should_log_cli_command(user_input):
+                    self.query_loop.record_cli_command(user_input)
+
                 if not self.handle_command(user_input):
                     break
                 continue
@@ -1140,9 +1373,14 @@ class MyClaudeCLI:
                 f"  如需获取详细信息，请直接查阅上述文件。\n"
                 + "=" * 60
             )
+            self.query_loop.append_cli_result(
+                f"单元测试完成: 共 {total} 个用例, 成功 {passed}, 失败 {failed + error_count}, "
+                f"不确定 {inconclusive}, 通过率 {pass_rate:.1f}%. 报告: {report_path}"
+            )
 
         except Exception as e:
             cli_print.print_error(f"单元测试执行异常: {e}")
+            self.query_loop.append_cli_result(f"单元测试执行异常: {e}")
         finally:
             # 恢复标准输出
             sys.stdout = original_stdout
@@ -1380,6 +1618,7 @@ class MyClaudeCLI:
                 f"A2A 协议调用失败，所有 {total_cases} 个用例均执行异常:\n"
                 + "\n".join(all_errors)
             )
+            self.query_loop.append_cli_result(f"A2A 单元测试失败: 所有 {total_cases} 个用例均执行异常。")
             return
 
         end_time = datetime.now()
@@ -1425,6 +1664,14 @@ class MyClaudeCLI:
             f"  测试报告文件: {report_display}\n"
             f"  如需获取详细信息，请直接查阅上述文件。\n"
             + "=" * 60
+        )
+        self.query_loop.append_cli_result(
+            f"A2A 系统测试完成: 任务ID {task_id}, 共 {total} 个用例, 成功 {passed}, "
+            f"失败 {total - passed}, 通过率 {pass_rate * 100:.1f}%, 状态: {status}. 报告: {report_display}"
+        )
+        self.query_loop.append_cli_result(
+            f"A2A 单元测试完成: 任务ID {task_id}, 共 {total} 个用例, 成功 {passed}, "
+            f"失败 {total - passed}, 通过率 {pass_rate * 100:.1f}%, 状态: {status}. 报告: {report_display}"
         )
 
 
@@ -1589,9 +1836,14 @@ class MyClaudeCLI:
                 f"  如需获取详细信息，请直接查阅上述文件。\n"
                 + "=" * 60
             )
+            self.query_loop.append_cli_result(
+                f"系统测试完成: 共 {total} 个用例, 成功 {passed}, 失败 {failed + error_count}, "
+                f"不确定 {inconclusive}, 通过率 {pass_rate:.1f}%. 报告: {report_path}"
+            )
 
         except Exception as e:
             cli_print.print_error(f"系统测试执行异常: {e}")
+            self.query_loop.append_cli_result(f"系统测试执行异常: {e}")
         finally:
             sys.stdout = original_stdout
             sys.stderr = original_stderr
@@ -1707,6 +1959,7 @@ class MyClaudeCLI:
                 f"A2A 协议调用失败，所有 {total_cases} 个用例均执行异常:\n"
                 + "\n".join(case_errors.values())
             )
+            self.query_loop.append_cli_result(f"A2A 系统测试失败: 所有 {total_cases} 个用例均执行异常。")
             return
 
         end_time = datetime.now()

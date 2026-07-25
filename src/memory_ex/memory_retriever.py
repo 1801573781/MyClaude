@@ -68,7 +68,7 @@ class MemoryRetriever:
         """注入 LLM 调用函数。"""
         self._llm_chat_fn = fn
 
-    def retrieve_for_query(self, query: str) -> List[Dict[str, Any]]:
+    def retrieve_for_query(self, query: str, exclude_session_id: str = "") -> List[Dict[str, Any]]:
         """根据查询相关性筛选 Layer 1 记忆（LLM 预检索）。
 
         将 Layer 1 条目和用户查询发给 LLM，由 LLM 判断相关性并返回编号列表。
@@ -76,16 +76,32 @@ class MemoryRetriever:
 
         Args:
             query: 增强后的用户查询（可能含文件内容）
+            exclude_session_id: 需要排除的 session_id（当前会话），
 
         Returns:
-            筛选后的记忆条目列表，每个元素含 id, tags, content, raw_line。
+            筛选后的记忆条目列表，每个元素含 id, session_id, tags, content, raw_line。
             空列表表示无相关记忆或召回失败。
         """
         layer1_content = self._store.read_layer1()
         if not layer1_content or not layer1_content.strip():
             return []
 
-        entries = self._parse_layer1_entries(layer1_content)
+        all_entries = self._parse_layer1_entries(layer1_content)
+        if not all_entries:
+            return []
+
+        # 显式过滤：排除当前 session 的记忆，确保不会召回本 session 产生的记忆
+        if exclude_session_id:
+            entries = [
+                e for e in all_entries
+                if e.get("session_id", "") != exclude_session_id
+            ]
+            excluded_count = len(all_entries) - len(entries)
+            if excluded_count > 0:
+                logger.info(f"已过滤当前 session 记忆 {excluded_count} 条")
+        else:
+            entries = all_entries
+
         if not entries:
             return []
 
@@ -136,25 +152,31 @@ class MemoryRetriever:
             if not line.startswith("- "):
                 continue
 
-            # 解析格式: - [tag1][tag2] content (id=xxx)
+            # 解析格式: - [tag1][tag2] content (id=xxx) (session=yyy)
             raw_line = line
 
             # 提取 ID
             id_match = re.search(r"\(id=([^)]+)\)", line)
             entry_id = id_match.group(1) if id_match else ""
 
+            # 提取 session_id
+            session_match = re.search(r"\(session=([^)]+)\)", line)
+            session_id = session_match.group(1) if session_match else ""
+
             # 提取标签
             tags = re.findall(r"\[([^\]]+)\]", line)
             # 过滤掉 id 标签
             tags = [t for t in tags if not t.startswith("id=")]
 
-            # 提取内容（去掉前导 "- " 和所有 [tag] 和 (id=...)）
+            # 提取内容（去掉前导 "- " 和所有 [tag] 和 (id=...) 和 (session=...)）
             content = re.sub(r"^\-\s+", "", line)
             content = re.sub(r"\[[^\]]+\]", "", content).strip()
             content = re.sub(r"\(id=[^)]+\)", "", content).strip()
+            content = re.sub(r"\(session=[^)]+\)", "", content).strip()
 
             entries.append({
                 "id": entry_id,
+                "session_id": session_id,
                 "tags": tags,
                 "content": content,
                 "raw_line": raw_line,
