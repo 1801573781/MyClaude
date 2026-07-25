@@ -29,6 +29,9 @@ class SessionLog:
         self._query_counter = 0
         self._current_query = None
         self._query_buffer = []
+        # CLI 命令日志缓冲（命令 + 结果合并为一个条目）
+        self._cli_command = None
+        self._cli_result = None
 
 
     def init_session(self):
@@ -315,20 +318,107 @@ class SessionLog:
 
 
     def log_cli_command(self, command: str):
-        """直接将 CLI 命令写入日志文件，不依赖 Query/Turn 缓冲结构。"""
-        now = datetime.now().strftime("%Y-%m-%d %H : %M : %S")
-        self._save_session_log([
-            {"time": now},
-            {"role": "user", "content": f"[CLI_COMMAND] {command}"},
-        ])
+        """缓存 CLI 命令，等待结果到达后一起写入日志。"""
+        # 如果上一次 CLI 命令没有结果就来了新命令，先 flush 旧的
+        if self._cli_command is not None and self._cli_result is None:
+            self._flush_cli_entry()
+        self._cli_command = command
 
     def log_cli_result(self, result_summary: str):
-        """直接将 CLI 命令结果写入日志文件，不依赖 Query/Turn 缓冲结构。"""
+        """缓存 CLI 结果，与命令配对后一起写入日志。"""
+        self._cli_result = result_summary
+        self._flush_cli_entry()
+
+    def _flush_cli_entry(self):
+        """将 CLI 命令和结果合并为一个日志条目写入文件。
+        HTML 格式下生成带 title 的折叠节点，内部含 CLI_COMMAND 和 CLI_RESULT 两个子节。
+        MD 格式下作为连续段落写入。"""
+        if self._cli_command is None and self._cli_result is None:
+            return
+
         now = datetime.now().strftime("%Y-%m-%d %H : %M : %S")
-        self._save_session_log([
-            {"time": now},
-            {"role": "user", "content": f"[CLI_RESULT] {result_summary}"},
-        ])
+        command = self._cli_command or ""
+        result = self._cli_result or ""
+
+        # 重置缓冲
+        self._cli_command = None
+        self._cli_result = None
+
+        if self.format == "html":
+            self._flush_cli_html(now, command, result)
+        else:
+            md_items = [{"time": now}]
+            if command:
+                md_items.append({"role": "user", "content": f"[CLI_COMMAND] {command}"})
+            if result:
+                md_items.append({"role": "user", "content": f"[CLI_RESULT] {result}"})
+            self._save_session_log(md_items)
+
+    def _flush_cli_html(self, now: str, command: str, result: str):
+        """将 CLI 命令+结果以 HTML 折叠节点形式写入文件。
+        title 包含命令文本，内部拆分为 CLI_COMMAND 和 CLI_RESULT 两个子节。"""
+
+        # 防御性检查
+        if not self.session_file_name:
+            return
+
+        # 标题：命令文本截断到 60 字符
+        title_cmd = command[:60] + ("…" if len(command) > 60 else "")
+        entry_label = f"⌨️ CLI: {title_cmd}" if command else "⌨️ CLI"
+        entry_id = f"cli-{datetime.now().strftime('%H%M%S%f')}"
+
+        def _escape(s: str) -> str:
+            return s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
+        # 子节 HTML
+        section_html_parts = []
+        if command:
+            cmd_escaped = _escape(command)
+            section_html_parts.append(
+                f'<details class="section-fold">\n'
+                f'<summary class="section-summary">⌨️ CLI_COMMAND</summary>\n'
+                f'<pre>{cmd_escaped}</pre>\n'
+                f'</details>'
+            )
+        if result:
+            result_escaped = _escape(result)
+            section_html_parts.append(
+                f'<details class="section-fold">\n'
+                f'<summary class="section-summary">📋 CLI_RESULT</summary>\n'
+                f'<pre>{result_escaped}</pre>\n'
+                f'</details>'
+            )
+
+        all_sections_html = "\n".join(section_html_parts)
+
+        cli_html = (
+            f'<div class="entry">\n'
+            f'<div class="entry-header" onclick="toggleEntry(\'{entry_id}\')">\n'
+            f'<span class="toggle-icon" id="icon-{entry_id}">&#9662;</span>\n'
+            f'<span><strong>{entry_label}</strong>&nbsp;&nbsp;&nbsp;'
+            f'<span style="font-weight:normal; color:#999; font-size:0.9em;">🕐 {now}</span></span>\n'
+            f'</div>\n'
+            f'<div class="entry-content" id="content-{entry_id}">\n'
+            + all_sections_html +
+            f'\n</div>\n'
+            f'</div>'
+        )
+
+        full_path = Path(self.log_root) / self.session_file_name
+
+        if full_path.exists():
+            old_html = full_path.read_text(encoding="utf-8")
+            body_end = old_html.rfind("</body>")
+            if body_end != -1:
+                old_html = old_html[:body_end]
+            else:
+                old_html = old_html.rstrip() + "\n\n"
+            separator = '<hr/>\n'
+            new_html = old_html + separator + cli_html + "\n</body>\n</html>"
+        else:
+            new_html = self._html_template(cli_html)
+
+        full_path.write_text(new_html, encoding="utf-8")
 
     def log_dict_info(self, dict_info):
         timestamp = datetime.now().strftime("%Y-%m-%d %H : %M : %S")

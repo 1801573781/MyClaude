@@ -905,8 +905,10 @@ class MyClaudeCLI:
                 try:
                     stats = memory.stats()
                     raw_count = stats.get("layer0_raw", 0)
+                    raw_groups = stats.get("layer0_raw_groups", 0)
                 except Exception:
                     raw_count = 0
+                    raw_groups = 0
 
                 if raw_count == 0:
                     cli_print.print_info("没有需要提取的 raw 记忆。")
@@ -915,8 +917,7 @@ class MyClaudeCLI:
                 est_time = self._format_estimated_time(raw_count)
                 cli_print.print_info(
                     f"开始执行记忆提取...\n"
-                    f"  待处理 raw 记忆: {raw_count} 条\n"
-                    f"  （按 query_id 分组，每组调用一次 LLM）\n"
+                    f"  待处理 raw 记忆: {raw_count} 条，{raw_groups} 组（按 query_id 分组，每组调用一次 LLM）\n"
                     f"  预计耗时: {est_time}"
                 )
 

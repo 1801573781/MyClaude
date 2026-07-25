@@ -370,7 +370,15 @@ class MemoryEx(MemoryExInterface):
 
     def stats(self) -> Dict:
         """返回记忆统计信息。"""
-        return self._store.get_stats()
+        result = self._store.get_stats()
+        # 添加 raw 条目的 query_id 分组数
+        raw_entries = self._store.get_raw_entries()
+        query_groups = set()
+        for entry in raw_entries:
+            qid = entry.get("query_id", 0)
+            query_groups.add(qid)
+        result["layer0_raw_groups"] = len(query_groups)
+        return result
 
     def maintain(self) -> int:
         """执行轻量维护：检查水位、衰减评分。不做整理。"""
