@@ -92,12 +92,15 @@ class MyClaudeCLI:
             return f"约{hours}小时{minutes}分{seconds}秒"
 
     @staticmethod
-    def _save_extraction_report(result: dict, logs_root: str):
+    def _save_extraction_report(result: dict, logs_root: str, start_time: str = "", end_time: str = "", duration_str: str = ""):
         """将记忆提取的逐条明细保存为 Markdown 报告文件。
 
         Args:
             result: extract() 返回的统计字典
             logs_root: 日志根目录路径
+            start_time: 操作开始时间字符串
+            end_time: 操作结束时间字符串
+            duration_str: 操作耗时字符串
         """
         from datetime import datetime
         from pathlib import Path
@@ -124,6 +127,9 @@ class MyClaudeCLI:
             f"",
             f"| 指标 | 数值 | 说明 |",
             f"|------|------|------|",
+            f"| 开始时间 | {start_time} | 记忆提取操作开始时间 |",
+            f"| 结束时间 | {end_time} | 记忆提取操作结束时间 |",
+            f"| 耗时 | {duration_str} | 记忆提取操作总耗时 |",
             f"| 处理条目 | {processed} | 原始 raw 记录总数 |",
             f"| 提取记忆 | {extracted} | LLM 从中提炼出的结构化记忆，已写入 Layer 1 |",
             f"| 标记已处理 | {marked_processed} | 原始 raw 记录被标记为 processed，不再参与后续提取 |",
@@ -164,12 +170,14 @@ class MyClaudeCLI:
         return str(report_path)
 
     @staticmethod
-    def _save_compaction_report(result: dict, logs_root: str):
+    def _save_compaction_report(result: dict, logs_root: str, start_time: str = "", end_time: str = ""):
         """将记忆整理的详细报告保存为 Markdown 文件。
 
         Args:
             result: compact_detailed() 返回的统计字典
             logs_root: 日志根目录路径
+            start_time: 操作开始时间字符串
+            end_time: 操作结束时间字符串
 
         Returns:
             报告文件路径字符串
@@ -201,6 +209,9 @@ class MyClaudeCLI:
             f"",
             f"| 指标 | 数值 | 说明 |",
             f"|------|------|------|",
+            f"| 开始时间 | {start_time} | 记忆整理操作开始时间 |",
+            f"| 结束时间 | {end_time} | 记忆整理操作结束时间 |",
+            f"| 耗时 | {duration_str} | 整理操作总耗时 |",
             f"| 整理ID | {compaction_id} | 本次整理的唯一标识 |",
             f"| 触发方式 | {trigger} | manual=手动, auto_light=自动轻量 |",
             f"| 整理模式 | {mode} | full=完整(合并+淘汰), light=仅合并 |",
@@ -209,7 +220,6 @@ class MyClaudeCLI:
             f"| 总处理条目 | {total_processed} | 合并 + 淘汰的总数 |",
             f"| Layer 1 整理前条数 | {l1_before} | 整理前的 Layer 1 条目数 |",
             f"| Layer 1 整理后条数 | {l1_after} | 整理后的 Layer 1 条目数 |",
-            f"| 耗时 | {duration_str} | 整理操作总耗时 |",
             f"",
         ]
 
@@ -262,12 +272,14 @@ class MyClaudeCLI:
         return str(report_path)
 
     @staticmethod
-    def _save_evolution_report(result: dict, logs_root: str):
+    def _save_evolution_report(result: dict, logs_root: str, start_time: str = "", end_time: str = ""):
         """将记忆进化的详细报告保存为 Markdown 文件。
 
         Args:
             result: evolve() 返回的统计字典
             logs_root: 日志根目录路径
+            start_time: 操作开始时间字符串
+            end_time: 操作结束时间字符串
 
         Returns:
             报告文件路径字符串
@@ -312,6 +324,9 @@ class MyClaudeCLI:
             f"",
             f"| 指标 | 数值 | 说明 |",
             f"|------|------|------|",
+            f"| 开始时间 | {start_time} | 记忆进化操作开始时间 |",
+            f"| 结束时间 | {end_time} | 记忆进化操作结束时间 |",
+            f"| 耗时 | {duration_str} | 进化操作总耗时 |",
             f"| 进化ID | {evolution_id} | 本次进化的唯一标识 |",
             f"| 进化时间 | {evo_timestamp} | 进化操作的时间戳 |",
             f"| 触发方式 | {trigger} | manual=手动, auto=自动 |",
@@ -322,7 +337,6 @@ class MyClaudeCLI:
             f"| 矛盾解决 | {conflicts} 个 | 发现并解决的矛盾信息数 |",
             f"| 归纳规则 | {generalizations} 条 | 归纳出的可复用通用解法数 |",
             f"| 趋势洞察 | {trends} 个 | 发现的项目演进趋势数 |",
-            f"| 耗时 | {duration_str} | 进化操作总耗时 |",
             f"",
         ]
 
@@ -702,10 +716,24 @@ class MyClaudeCLI:
                     self.query_loop.append_cli_result("记忆整理失败：当前后端不支持。")
                     return True
 
-                cli_print.print_info("开始执行记忆整理...")
+                # 检查 Layer 1 条目数，显示概述
+                try:
+                    _stats = memory.stats()
+                    l1_current = _stats.get("layer1_entries", 0)
+                except Exception:
+                    l1_current = 0
+
+                cli_print.print_info(
+                    f"开始执行记忆整理...\n"
+                    f"  Layer 1 当前条数: {l1_current} 条"
+                )
                 import sys
                 import time
                 import threading
+                from datetime import datetime as _dt
+
+                op_start = _dt.now()
+                op_start_str = op_start.strftime("%Y-%m-%d %H:%M:%S")
 
                 # Spinner 动画
                 is_tty = sys.stdout.isatty()
@@ -752,6 +780,9 @@ class MyClaudeCLI:
                             sys.stdout.write(f"\r{' ' * 70}\r")
                             sys.stdout.flush()
 
+                op_end = _dt.now()
+                op_end_str = op_end.strftime("%Y-%m-%d %H:%M:%S")
+
                 if "error" in result and result.get("error"):
                     cli_print.print_error(f"记忆整理执行失败: {result['error']}")
                     self.query_loop.append_cli_result(f"记忆整理执行失败: {result['error']}")
@@ -772,19 +803,21 @@ class MyClaudeCLI:
                     # 保存详细报告到 log 目录
                     from src.utility.config_loader import global_cfg
                     logs_root = global_cfg.base_path.logs_root
-                    report_path = self._save_compaction_report(result, logs_root)
+                    report_path = self._save_compaction_report(result, logs_root, start_time=op_start_str, end_time=op_end_str)
 
                     cli_print.print_info(
                         f"记忆整理完成:\n"
+                        f"  开始时间: {op_start_str}\n"
+                        f"  结束时间: {op_end_str}\n"
+                        f"  耗时: {duration_str}\n"
                         f"  合并: {merged} 条\n"
                         f"  淘汰: {evicted} 条\n"
                         f"  Layer 1 条数: {l1_before} → {l1_after}\n"
-                        f"  耗时: {duration_str}\n"
                         f"  详细报告已保存到: {report_path}"
                     )
                     self.query_loop.append_cli_result(
-                        f"记忆整理完成: 合并 {merged} 条, 淘汰 {evicted} 条, "
-                        f"Layer 1 条数: {l1_before} → {l1_after}, 耗时: {duration_str}. 报告: {report_path}"
+                        f"记忆整理完成: 开始时间 {op_start_str}, 结束时间 {op_end_str}, 耗时: {duration_str}, "
+                        f"合并 {merged} 条, 淘汰 {evicted} 条, Layer 1 条数: {l1_before} → {l1_after}. 报告: {report_path}"
                     )
                 return True
 
@@ -796,10 +829,24 @@ class MyClaudeCLI:
                     self.query_loop.append_cli_result("记忆进化失败：当前后端不支持。")
                     return True
 
-                cli_print.print_info("开始执行记忆进化...")
+                # 检查待进化记录数，显示概述
+                try:
+                    _stats = memory.stats()
+                    unconsumed = _stats.get("unevolved", 0)
+                except Exception:
+                    unconsumed = 0
+
+                cli_print.print_info(
+                    f"开始执行记忆进化...\n"
+                    f"  待进化记录: {unconsumed} 条"
+                )
                 import sys
                 import time
                 import threading
+                from datetime import datetime as _dt
+
+                op_start = _dt.now()
+                op_start_str = op_start.strftime("%Y-%m-%d %H:%M:%S")
 
                 # Spinner 动画
                 is_tty = sys.stdout.isatty()
@@ -846,6 +893,9 @@ class MyClaudeCLI:
                             sys.stdout.write(f"\r{' ' * 70}\r")
                             sys.stdout.flush()
 
+                op_end = _dt.now()
+                op_end_str = op_end.strftime("%Y-%m-%d %H:%M:%S")
+
                 if "error" in result and result.get("error"):
                     cli_print.print_error(f"记忆进化执行失败: {result['error']}")
                     self.query_loop.append_cli_result(f"记忆进化执行失败: {result['error']}")
@@ -870,23 +920,26 @@ class MyClaudeCLI:
                     # 保存详细报告到 log 目录
                     from src.utility.config_loader import global_cfg
                     logs_root = global_cfg.base_path.logs_root
-                    report_path = self._save_evolution_report(result, logs_root)
+                    report_path = self._save_evolution_report(result, logs_root, start_time=op_start_str, end_time=op_end_str)
 
                     cli_print.print_info(
                         f"记忆进化完成:\n"
+                        f"  开始时间: {op_start_str}\n"
+                        f"  结束时间: {op_end_str}\n"
+                        f"  耗时: {duration_str}\n"
                         f"  消费记录: {consumed} 条\n"
                         f"  生成认知: {evo_gen} 条\n"
                         f"  模式识别: {patterns} 个\n"
                         f"  矛盾解决: {conflicts} 个\n"
                         f"  归纳规则: {gen_rules} 条\n"
                         f"  趋势洞察: {trends} 个\n"
-                        f"  耗时: {duration_str}\n"
                         f"  详细报告已保存到: {report_path}"
                     )
                     self.query_loop.append_cli_result(
-                        f"记忆进化完成: 消费记录 {consumed} 条, 生成认知 {evo_gen} 条, "
+                        f"记忆进化完成: 开始时间 {op_start_str}, 结束时间 {op_end_str}, 耗时: {duration_str}, "
+                        f"消费记录 {consumed} 条, 生成认知 {evo_gen} 条, "
                         f"模式识别 {patterns} 个, 矛盾解决 {conflicts} 个, "
-                        f"归纳规则 {gen_rules} 条, 趋势洞察 {trends} 个, 耗时: {duration_str}. 报告: {report_path}"
+                        f"归纳规则 {gen_rules} 条, 趋势洞察 {trends} 个. 报告: {report_path}"
                     )
                 return True
 
@@ -930,6 +983,11 @@ class MyClaudeCLI:
 
                 if hasattr(memory, "set_extract_progress_callback"):
                     memory.set_extract_progress_callback(_on_progress)
+
+                from datetime import datetime as _dt
+
+                op_start = _dt.now()
+                op_start_str = op_start.strftime("%Y-%m-%d %H:%M:%S")
 
                 # Spinner 动画
                 is_tty = sys.stdout.isatty()
@@ -986,6 +1044,11 @@ class MyClaudeCLI:
                             sys.stdout.write(f"\r{' ' * 70}\r")
                             sys.stdout.flush()
 
+                op_end = _dt.now()
+                op_end_str = op_end.strftime("%Y-%m-%d %H:%M:%S")
+                op_duration_ms = int((op_end - op_start).total_seconds() * 1000)
+                op_duration_str = MyClaudeCLI._format_duration(op_duration_ms)
+
                 # 处理结果
                 if "error" in result and result.get("error"):
                     cli_print.print_error(f"记忆提取执行失败: {result['error']}")
@@ -1010,10 +1073,13 @@ class MyClaudeCLI:
                 # 保存逐条明细到报告文件
                 from src.utility.config_loader import global_cfg
                 logs_root = global_cfg.base_path.logs_root
-                report_path = self._save_extraction_report(result, logs_root)
+                report_path = self._save_extraction_report(result, logs_root, start_time=op_start_str, end_time=op_end_str, duration_str=op_duration_str)
 
                 cli_print.print_info(
                     f"记忆提取完成:\n"
+                    f"  开始时间: {op_start_str}\n"
+                    f"  结束时间: {op_end_str}\n"
+                    f"  耗时: {op_duration_str}\n"
                     f"  处理条目: {processed} 条（原始 raw 记录总数）\n"
                     f"  提取记忆: {extracted} 条（LLM 从中提炼出的结构化记忆，已写入 Layer 1）\n"
                     f"  标记已处理: {archived} 条（原始 raw 记录被标记为 processed，不再参与后续提取）\n"
@@ -1024,7 +1090,8 @@ class MyClaudeCLI:
                     f"  逐条明细报告已保存到: {report_path}"
                 )
                 self.query_loop.append_cli_result(
-                    f"记忆提取完成: 处理 {processed} 条, 提取 {extracted} 条, "
+                    f"记忆提取完成: 开始时间 {op_start_str}, 结束时间 {op_end_str}, 耗时: {op_duration_str}, "
+                    f"处理 {processed} 条, 提取 {extracted} 条, "
                     f"标记已处理 {archived} 条(前置过滤 {filtered}, LLM无价值 {llm_none}, LLM成功提取 {llm_extracted}), "
                     f"超时跳过 {timed_out} 条。报告: {report_path}"
                 )
