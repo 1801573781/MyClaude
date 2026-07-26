@@ -882,6 +882,16 @@ class MyClaudeCLI:
                 except Exception:
                     unconsumed = 0
 
+                # 预检查积累量阈值，不满足则直接跳过，避免显示矛盾的"开始执行"提示
+                if hasattr(memory, "check_evolution_needed") and not memory.check_evolution_needed():
+                    cli_print.print_info(
+                        f"记忆进化已跳过: 待进化记录不足\n"
+                        f"  待进化记录: {unconsumed} 条，未达到积累量阈值，无需进化"
+                    )
+                    self.query_loop.append_cli_result(f"记忆进化已跳过: insufficient_accumulation")
+                    chat_llm.set_context()
+                    return True
+
                 # 预估批次数和耗时
                 _evo_batch_size = 50
                 _est_batches = max(1, (unconsumed + _evo_batch_size - 1) // _evo_batch_size) if unconsumed > 0 else 0
