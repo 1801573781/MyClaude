@@ -194,6 +194,15 @@ class MemoryEx(MemoryExInterface):
         """
         self._extractor.set_progress_callback(callback)
 
+    def set_compaction_progress_callback(self, callback):
+        """注入整理进度回调函数。
+
+        Args:
+            callback: 回调函数，签名 callback(step: str)，step 取值：
+                      "rule_merge" / "llm_merge" / "evict"
+        """
+        self._compactor.set_progress_callback(callback)
+
     @property
     def raw_prompt_threshold(self) -> int:
         """raw 条目累积提示阈值，供 query_loop 读取。"""

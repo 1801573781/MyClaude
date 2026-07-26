@@ -25,6 +25,7 @@ log/*
 spec/*
 memory_storage/*
 tests/*
+token_statistics/*
 
 # 但是保留这些目录本身（通过.gitkeep）
 !code_output/.gitkeep
@@ -36,5 +37,5 @@ tests/*
 !spec/unit_test_spec_origin.txt
 !memory_storage/.gitkeep
 !tests/.gitkeep
-
+!token_statistics/.gitkeep
 

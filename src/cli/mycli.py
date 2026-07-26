@@ -3,6 +3,7 @@ from pathlib import Path
 from src.cli import cli_print
 from src.query.query_loop import QueryLoop
 from src.cli.cli_print import save_buffer_to_file, reset_reasoning
+from src.query import chat_llm
 
 
 class MyClaudeCLI:
@@ -463,6 +464,12 @@ class MyClaudeCLI:
         elif cmd == '/tokens':
             token_stats = self.query_loop.get_tokens()
             cli_print.show_token_count(token_stats)
+
+            # 提示用户具体信息请查阅 token_statistics 目录
+            from src.utility.token_statistics import get_stats_dir_path
+            stats_dir = get_stats_dir_path()
+            cli_print.print_info(f"具体信息，请查阅 {stats_dir} 目录下的文件")
+
             summary = f"Token统计: 输入(缓存命中)={token_stats['prompt_cache_hit']:,}, 输入(未命中)={token_stats['prompt_cache_miss']:,}, 输出={token_stats['completion_tokens']:,}, 总计={token_stats['total']:,}"
             self.query_loop.append_cli_result(summary)
             return True
@@ -716,6 +723,10 @@ class MyClaudeCLI:
                     self.query_loop.append_cli_result("记忆整理失败：当前后端不支持。")
                     return True
 
+                # 设置 token 统计上下文
+                #  from src.query import chat_llm
+                chat_llm.set_context(query=command.strip(), turn="CLI_COMMAND")
+
                 # 检查 Layer 1 条目数，显示概述
                 try:
                     _stats = memory.stats()
@@ -723,14 +734,39 @@ class MyClaudeCLI:
                 except Exception:
                     l1_current = 0
 
+                # 预估整理步骤和耗时
+                will_llm_merge = l1_current > 5
+                est_seconds = 10 if will_llm_merge else 1
+                if est_seconds < 60:
+                    est_time_str = f"约{est_seconds}秒"
+                else:
+                    est_time_str = f"约{est_seconds // 60}分{est_seconds % 60}秒"
+                step_desc = "规则化合并 + LLM辅助合并 + 淘汰检查" if will_llm_merge else "规则化合并 + 淘汰检查"
+
                 cli_print.print_info(
                     f"开始执行记忆整理...\n"
-                    f"  Layer 1 当前条数: {l1_current} 条"
+                    f"  Layer 1 当前条数: {l1_current} 条\n"
+                    f"  整理步骤: {step_desc}\n"
+                    f"  预计耗时: {est_time_str}"
                 )
                 import sys
                 import time
                 import threading
                 from datetime import datetime as _dt
+
+                # 设置进度回调
+                progress_holder = {"step": ""}
+                _compaction_step_labels = {
+                    "rule_merge": "规则化合并",
+                    "llm_merge": "LLM辅助合并",
+                    "evict": "淘汰检查",
+                }
+
+                def _on_compaction_progress(step: str):
+                    progress_holder["step"] = step
+
+                if hasattr(memory, "set_compaction_progress_callback"):
+                    memory.set_compaction_progress_callback(_on_compaction_progress)
 
                 op_start = _dt.now()
                 op_start_str = op_start.strftime("%Y-%m-%d %H:%M:%S")
@@ -752,14 +788,18 @@ class MyClaudeCLI:
                                 break
                             if is_tty:
                                 elapsed = int(time.time() - spin_start)
-                                msg = f"  {char} 正在调用 LLM 整理记忆... ({elapsed}s)"
+                                step = progress_holder.get("step", "")
+                                step_label = _compaction_step_labels.get(step, step) if step else "准备中"
+                                msg = f"  {char} 正在执行: {step_label}... ({elapsed}s)"
                                 sys.stdout.write(f"\r{msg.ljust(70)}")
                                 sys.stdout.flush()
                             else:
                                 now = time.time()
                                 if now - last_heartbeat >= 5.0:
                                     elapsed = int(now - spin_start)
-                                    print(f"  ... 仍在整理记忆 ({elapsed}s)")
+                                    step = progress_holder.get("step", "")
+                                    step_label = _compaction_step_labels.get(step, step) if step else "处理中"
+                                    print(f"  ... 仍在整理记忆 [{step_label}] ({elapsed}s)")
                                     last_heartbeat = now
                         time.sleep(0.15)
                         i += 1
@@ -786,6 +826,7 @@ class MyClaudeCLI:
                 if "error" in result and result.get("error"):
                     cli_print.print_error(f"记忆整理执行失败: {result['error']}")
                     self.query_loop.append_cli_result(f"记忆整理执行失败: {result['error']}")
+                    chat_llm.set_context()
                     return True
 
                 if result.get("skipped"):
@@ -819,6 +860,8 @@ class MyClaudeCLI:
                         f"记忆整理完成: 开始时间 {op_start_str}, 结束时间 {op_end_str}, 耗时: {duration_str}, "
                         f"合并 {merged} 条, 淘汰 {evicted} 条, Layer 1 条数: {l1_before} → {l1_after}. 报告: {report_path}"
                     )
+                # 清除 token 统计上下文
+                chat_llm.set_context()
                 return True
 
             elif sub_cmd in ("evolution", "evo"):
@@ -829,6 +872,9 @@ class MyClaudeCLI:
                     self.query_loop.append_cli_result("记忆进化失败：当前后端不支持。")
                     return True
 
+                # 设置 token 统计上下文
+                chat_llm.set_context(query=command.strip(), turn="CLI_COMMAND")
+
                 # 检查待进化记录数，显示概述
                 try:
                     _stats = memory.stats()
@@ -836,14 +882,43 @@ class MyClaudeCLI:
                 except Exception:
                     unconsumed = 0
 
-                cli_print.print_info(
-                    f"开始执行记忆进化...\n"
-                    f"  待进化记录: {unconsumed} 条"
-                )
+                # 预估批次数和耗时
+                _evo_batch_size = 50
+                _est_batches = max(1, (unconsumed + _evo_batch_size - 1) // _evo_batch_size) if unconsumed > 0 else 0
+                _est_seconds = _est_batches * 15
+                if _est_seconds < 60:
+                    _est_time_str = f"约{_est_seconds}秒"
+                elif _est_seconds < 3600:
+                    _est_time_str = f"约{_est_seconds // 60}分{_est_seconds % 60}秒"
+                else:
+                    _est_time_str = f"约{_est_seconds // 3600}小时{(_est_seconds % 3600) // 60}分"
+
+                if _est_batches > 0:
+                    cli_print.print_info(
+                        f"开始执行记忆进化...\n"
+                        f"  待进化记录: {unconsumed} 条，{_est_batches} 批\n"
+                        f"  预计耗时: {_est_time_str}"
+                    )
+                else:
+                    cli_print.print_info(
+                        f"开始执行记忆进化...\n"
+                        f"  待进化记录: {unconsumed} 条"
+                    )
                 import sys
                 import time
                 import threading
                 from datetime import datetime as _dt
+
+                # 设置进度回调
+                progress_holder = {"batch": 0, "total_batches": 0, "stage": ""}
+
+                def _on_evolution_progress(batch: int, total_batches: int, stage: str, elapsed: float):
+                    progress_holder["batch"] = batch
+                    progress_holder["total_batches"] = total_batches
+                    progress_holder["stage"] = stage
+
+                if hasattr(memory, "set_progress_callback"):
+                    memory.set_progress_callback(_on_evolution_progress)
 
                 op_start = _dt.now()
                 op_start_str = op_start.strftime("%Y-%m-%d %H:%M:%S")
@@ -865,14 +940,24 @@ class MyClaudeCLI:
                                 break
                             if is_tty:
                                 elapsed = int(time.time() - spin_start)
-                                msg = f"  {char} 正在调用 LLM 进化记忆... ({elapsed}s)"
+                                batch = progress_holder.get("batch", 0)
+                                total_batches = progress_holder.get("total_batches", 0)
+                                if total_batches > 0:
+                                    msg = f"  {char} 正在调用 LLM 进化记忆... {batch}/{total_batches} 批 ({elapsed}s)"
+                                else:
+                                    msg = f"  {char} 正在调用 LLM 进化记忆... ({elapsed}s)"
                                 sys.stdout.write(f"\r{msg.ljust(70)}")
                                 sys.stdout.flush()
                             else:
                                 now = time.time()
                                 if now - last_heartbeat >= 5.0:
                                     elapsed = int(now - spin_start)
-                                    print(f"  ... 仍在进化记忆 ({elapsed}s)")
+                                    batch = progress_holder.get("batch", 0)
+                                    total_batches = progress_holder.get("total_batches", 0)
+                                    if total_batches > 0:
+                                        print(f"  ... 仍在进化记忆 {batch}/{total_batches} 批 ({elapsed}s)")
+                                    else:
+                                        print(f"  ... 仍在进化记忆 ({elapsed}s)")
                                     last_heartbeat = now
                         time.sleep(0.15)
                         i += 1
@@ -899,6 +984,7 @@ class MyClaudeCLI:
                 if "error" in result and result.get("error"):
                     cli_print.print_error(f"记忆进化执行失败: {result['error']}")
                     self.query_loop.append_cli_result(f"记忆进化执行失败: {result['error']}")
+                    chat_llm.set_context()
                     return True
 
                 if result.get("skipped"):
@@ -941,6 +1027,8 @@ class MyClaudeCLI:
                         f"模式识别 {patterns} 个, 矛盾解决 {conflicts} 个, "
                         f"归纳规则 {gen_rules} 条, 趋势洞察 {trends} 个. 报告: {report_path}"
                     )
+                # 清除 token 统计上下文
+                chat_llm.set_context()
                 return True
 
             elif sub_cmd in ("extract", "ext"):
@@ -953,6 +1041,9 @@ class MyClaudeCLI:
                 if not hasattr(memory, "extract"):
                     cli_print.print_error("当前记忆后端不支持手动提取。")
                     return True
+
+                # 设置 token 统计上下文
+                chat_llm.set_context(query=command.strip(), turn="CLI_COMMAND")
 
                 # 检查 raw 条目数量，预估时间
                 try:
@@ -1053,12 +1144,14 @@ class MyClaudeCLI:
                 if "error" in result and result.get("error"):
                     cli_print.print_error(f"记忆提取执行失败: {result['error']}")
                     self.query_loop.append_cli_result(f"记忆提取执行失败: {result['error']}")
+                    chat_llm.set_context()
                     return True
 
                 if result.get("skipped"):
                     reason = result.get('reason', '未知原因')
                     cli_print.print_info(f"记忆提取已跳过: {reason}")
                     self.query_loop.append_cli_result(f"记忆提取已跳过: {reason}")
+                    chat_llm.set_context()
                     return True
 
                 processed = result.get('processed', 0)
@@ -1095,6 +1188,8 @@ class MyClaudeCLI:
                     f"标记已处理 {archived} 条(前置过滤 {filtered}, LLM无价值 {llm_none}, LLM成功提取 {llm_extracted}), "
                     f"超时跳过 {timed_out} 条。报告: {report_path}"
                 )
+                # 清除 token 统计上下文
+                chat_llm.set_context()
                 return True
 
             elif sub_cmd == "show":

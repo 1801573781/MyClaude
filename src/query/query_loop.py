@@ -11,6 +11,11 @@ from src.query.session_log import SessionLog
 from src.query.todo_manager import TodoManager
 from src.memory_ex.factory import create_memory
 import logging
+from src.utility.token_statistics import record_token_usage
+import re
+from src.memory_ex.memory_interface import NoopMemory
+from src.utility.token_statistics import get_token_summary
+import copy
 
 logger = logging.getLogger(__name__)
 
@@ -79,11 +84,11 @@ class QueryLoop:
             logger.info(f"记忆模块初始化成功: {type(self._memory).__name__}")
             # 注入 LLM 调用函数，供记忆系统的提取器/整理器/进化器使用
             if hasattr(self._memory, 'set_llm_chat_fn'):
-                from src.query import chat_llm
+                #  from src.query import chat_llm
                 self._memory.set_llm_chat_fn(chat_llm.simple_chat)
         except Exception as e:
             logger.warning(f"记忆模块初始化失败，降级为 NoopMemory: {e}")
-            from src.memory_ex.memory_interface import NoopMemory
+            #  from src.memory_ex.memory_interface import NoopMemory
             self._memory = NoopMemory()
 
 
@@ -156,16 +161,11 @@ class QueryLoop:
         self.session.log_cli_result(result_summary)
 
     def get_tokens(self):
-        """返回详细的 token 统计字典。
+        """返回详细的 token 统计字典（从持久化统计文件读取）。
         keys: prompt_cache_hit, prompt_cache_miss, completion_tokens, total
         """
-        total = self.prompt_cache_hit + self.prompt_cache_miss + self.completion_tokens
-        return {
-            "prompt_cache_hit": self.prompt_cache_hit,
-            "prompt_cache_miss": self.prompt_cache_miss,
-            "completion_tokens": self.completion_tokens,
-            "total": total,
-        }
+        #  from src.utility.token_statistics import get_token_summary
+        return get_token_summary()
 
 
     def run(
@@ -199,6 +199,7 @@ class QueryLoop:
 
         self._query_counter += 1
         self.session.start_query(self._query_counter, user_input)
+        self._current_query_text = user_input  # 供追问 token 记录使用
         self.max_turns = global_cfg.cli.max_turns
         self._no_tool_retry = 0  # 每次新 Turn 重置追问计数器
         self.is_multi_turns = None  # 每次 Turn 开始时未确定
@@ -233,13 +234,23 @@ class QueryLoop:
                 # 发送请求给LLM
                 ai_response, is_truncated, reasoning_content, usage = chat_llm.chat_with_retry(self.api_messages.get_msg())  # noqa E501
 
-                # 累积精确 token 统计
+                # 累积精确 token 统计（内存计数器，用于实时显示）
                 if usage:
                     cached = usage.get("cached_tokens", 0)
                     prompt_total = usage.get("prompt_tokens", 0)
                     self.prompt_cache_hit += cached
                     self.prompt_cache_miss += (prompt_total - cached)
                     self.completion_tokens += usage.get("completion_tokens", 0)
+
+                    # 持久化 token 统计到 CSV 文件
+                    record_token_usage(
+                        model_name=chat_llm.model_name,
+                        prompt_tokens=prompt_total,
+                        cached_tokens=cached,
+                        completion_tokens=usage.get("completion_tokens", 0),
+                        query=user_input,
+                        turn=f"turn{turn}",
+                    )
 
             """2. 解构 LLM response"""
             tools, remaining_text = self._on_llm_rsp(turn, thinking_begin,
@@ -274,14 +285,20 @@ class QueryLoop:
 
                 # 2. 自动整理（如果配置开启）
                 try:
+                    chat_llm.set_context(query="auto_compaction", turn="CLI_COMMAND")
                     self._memory.auto_compact()
+                    chat_llm.set_context()
                 except Exception as e:
+                    chat_llm.set_context()
                     logger.warning(f"自动整理失败: {e}")
 
                 # 3. 自动进化（如果配置开启）
                 try:
+                    chat_llm.set_context(query="auto_evolution", turn="CLI_COMMAND")
                     self._memory.auto_evolve()
+                    chat_llm.set_context()
                 except Exception as e:
+                    chat_llm.set_context()
                     logger.warning(f"自动进化失败: {e}")
 
                 # 4. 提示机制
@@ -325,7 +342,7 @@ class QueryLoop:
         - 相对路径引用：xxx.txt, xxx.md, .py 等
         - 包含"文档"、"文件"、"spec"等关键词
         """
-        import re
+        #  import re
         # 盘符路径
         if re.search(r'[A-Za-z]:[/\\]', text):
             return True
@@ -359,9 +376,12 @@ class QueryLoop:
                 try:
                     # 传入当前 session_id，确保不召回本 session 产生的记忆
                     current_session_id = getattr(self.session, 'session_file_name', '')
+                    # 设置 token 统计上下文，标记为记忆召回
+                    chat_llm.set_context(query=query_text, turn=f"turn{turn}-recall")
                     mem_context = self._memory.get_context_for_query(
                         query_text, exclude_session_id=current_session_id
                     )
+                    chat_llm.set_context()  # 清除上下文
                     self._memory_used = True
 
                     # 解析检索结果数量，打印 [记忆召回] 信息（即使0条也打印）
@@ -373,6 +393,7 @@ class QueryLoop:
                         self.session.log_dict_info({"role": "user", "content": mem_context})
                         logger.debug(f"记忆上下文已注入，长度: {len(mem_context)}")
                 except Exception as e:
+                    chat_llm.set_context()  # 确保异常时也清除上下文
                     logger.warning(f"记忆上下文注入失败: {e}")
 
         # 回退：如果延迟召回仍未触发（LLM 未调用 file_view），用原始用户输入执行召回
@@ -380,9 +401,11 @@ class QueryLoop:
             self._pending_memory_recall = False
             try:
                 current_session_id = getattr(self.session, 'session_file_name', '')
+                chat_llm.set_context(query=self._current_user_input, turn=f"turn{turn}-recall-fallback")
                 mem_context = self._memory.get_context_for_query(
                     self._current_user_input, exclude_session_id=current_session_id
                 )
+                chat_llm.set_context()
                 recall_count = self._count_recalled(mem_context)
                 self._print_info(f"[记忆召回] 已召回 {recall_count} 条相关记忆（回退到用户输入）")
                 if mem_context:
@@ -390,6 +413,7 @@ class QueryLoop:
                     self.session.log_dict_info({"role": "user", "content": mem_context})
                     logger.debug(f"回退记忆上下文已注入，长度: {len(mem_context)}")
             except Exception as e:
+                chat_llm.set_context()
                 logger.warning(f"回退记忆上下文注入失败: {e}")
 
         # 倒数最后一轮，命令式提醒
@@ -497,7 +521,7 @@ class QueryLoop:
         Returns:
             解析到的工具列表；若 3 次追问仍无工具，返回空列表。
         """
-        import copy
+        #  import copy
 
         if self._no_tool_retry >= 3:
             return []
@@ -515,6 +539,24 @@ class QueryLoop:
             temp_msgs.append({"role": "user", "content": prompt})
 
             ai_response, is_truncated, reasoning_content, usage = chat_llm.chat_with_retry(temp_msgs)
+
+            # 累加追问的 token 统计到内存计数器并持久化
+            if usage:
+                cached = usage.get("cached_tokens", 0)
+                prompt_total = usage.get("prompt_tokens", 0)
+                self.prompt_cache_hit += cached
+                self.prompt_cache_miss += (prompt_total - cached)
+                self.completion_tokens += usage.get("completion_tokens", 0)
+
+                query_text = getattr(self, '_current_query_text', '')
+                record_token_usage(
+                    model_name=chat_llm.model_name,
+                    prompt_tokens=prompt_total,
+                    cached_tokens=cached,
+                    completion_tokens=usage.get("completion_tokens", 0),
+                    query=query_text,
+                    turn=f"turn-followup{self._no_tool_retry}",
+                )
 
             # 记录追问对话到 session（用于日志审计）
             reason = f"[系统追问] Turn 中未检测到工具调用，发起第 {self._no_tool_retry}/3 次追问，尝试获取工具或 done 信号"
@@ -668,9 +710,11 @@ class QueryLoop:
                         # 用文件内容 + 用户原始输入组合作为查询文本
                         recall_query = f"{self._current_user_input}\n{file_content[:2000]}"
                         current_session_id = getattr(self.session, 'session_file_name', '')
+                        chat_llm.set_context(query=self._current_user_input, turn=f"turn-recall-fileview")
                         mem_context = self._memory.get_context_for_query(
                             recall_query, exclude_session_id=current_session_id
                         )
+                        chat_llm.set_context()
                         recall_count = self._count_recalled(mem_context)
                         self._print_info(f"[记忆召回] 已召回 {recall_count} 条相关记忆（基于文件内容）")
                         if mem_context:
@@ -678,6 +722,7 @@ class QueryLoop:
                             self.session.log_dict_info({"role": "user", "content": mem_context})
                             logger.debug(f"延迟记忆上下文已注入，长度: {len(mem_context)}")
                     except Exception as e:
+                        chat_llm.set_context()
                         logger.warning(f"延迟记忆召回失败: {e}")
 
                 # 收集工具执行信息（用于记忆存储）
@@ -788,7 +833,7 @@ class QueryLoop:
         - <str_replace>...</str_replace> -> <str_replace path="..." summary="..."/>
         其他标签原样保留（已足够短）。
         """
-        import re
+        #  import re
 
         # 压缩 <create> 标签
         def replace_create(match):

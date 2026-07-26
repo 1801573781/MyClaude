@@ -28,6 +28,21 @@ client = OpenAI(
     http_client=httpx.Client(verify=False),
 )
 
+# 模块级上下文变量：供记忆系统等间接调用 simple_chat 时标注 query/turn
+_context_query = ""
+_context_turn = ""
+
+
+def set_context(query: str = "", turn: str = ""):
+    """设置当前 LLM 调用上下文，供记忆系统等间接调用时标记 token 统计。
+
+    在记忆操作（提取/整理/进化/召回）开始前调用 set_context() 设置上下文，
+    操作结束后调用 set_context() 清除（传空字符串）。
+    """
+    global _context_query, _context_turn
+    _context_query = query
+    _context_turn = turn
+
 
 def chat_with_retry(api_messages):
     """调用 stream_chat，若因 max_tokens 不足被截断则自动翻倍重试
@@ -123,6 +138,9 @@ def stream_chat(msg, max_tokens=global_cfg.model_chat.initial_max_tokens):
                 full_content += delta.content
 
             # ③ 再处理结束原因
+            # 注意：不能 break！OpenAI 流式协议中 usage chunk 在 finish_reason
+            # 之后才发送，break 会导致 usage 永远无法被捕获，token 统计丢失。
+            # 流会在发送完 usage chunk 后自然结束。
             if choice.finish_reason is not None:
                 if choice.finish_reason == "length":
                     # 长度截断，添加明确标记
@@ -131,8 +149,6 @@ def stream_chat(msg, max_tokens=global_cfg.model_chat.initial_max_tokens):
                 elif choice.finish_reason != "stop":
                     # 非正常结束，给出原因提示（stop 是最健康的信号，不添加额外文字）
                     full_content += f"\n\n[流结束原因: {choice.finish_reason}]"
-                # 无论哪种结束原因，都要跳出循环
-                break
 
     except APIError as e:
         # 内容安全拦截、账号异常等
@@ -147,7 +163,8 @@ def stream_chat(msg, max_tokens=global_cfg.model_chat.initial_max_tokens):
     return full_content, is_truncated, reasoning_content, usage
 
 
-def simple_chat(prompt: str, temperature: float = 0.3, max_tokens: int = 1024) -> str:
+def simple_chat(prompt: str, temperature: float = 0.3, max_tokens: int = 1024,
+                  query: str = "", turn: str = "") -> str:
     """非流式单轮调用，供记忆系统（提取器/整理器/进化器）使用。
 
     接收纯文本 prompt，构建单条 user 消息发送给 LLM，返回纯文本响应。
@@ -160,6 +177,10 @@ def simple_chat(prompt: str, temperature: float = 0.3, max_tokens: int = 1024) -
         prompt: 完整的提示词文本
         temperature: 采样温度
         max_tokens: 最大输出 token 数
+        query: 触发此次调用的 CLI 命令或上下文（用于 token 统计）。
+               若未传入，则使用模块级上下文 _context_query。
+        turn: 轮次标识（如 CLI_COMMAND、CLI_RESULT，用于 token 统计）。
+              若未传入，则使用模块级上下文 _context_turn。
 
     Returns:
         LLM 响应的纯文本内容；异常时返回空字符串
@@ -177,6 +198,23 @@ def simple_chat(prompt: str, temperature: float = 0.3, max_tokens: int = 1024) -
         response = client.chat.completions.create(**api_kwargs)
         choice = response.choices[0]
         content = choice.message.content or ""
+
+        # 记录 token 统计：优先使用参数传入的 query/turn，否则使用模块级上下文
+        if response.usage:
+            from src.utility.token_statistics import record_token_usage
+            effective_query = query if query else _context_query
+            effective_turn = turn if turn else _context_turn
+            record_token_usage(
+                model_name=model_name,
+                prompt_tokens=response.usage.prompt_tokens or 0,
+                cached_tokens=getattr(
+                    getattr(response.usage, 'prompt_tokens_details', None),
+                    'cached_tokens', 0
+                ) or 0,
+                completion_tokens=response.usage.completion_tokens or 0,
+                query=effective_query,
+                turn=effective_turn,
+            )
 
         # 检查是否因 max_tokens 不足被截断
         if choice.finish_reason == "length":

@@ -65,10 +65,28 @@ class MemoryCompactor:
         self._light_query_interval = int(getattr(auto_config, "light_query_interval", 10))
 
         self._llm_chat_fn = None
+        self._progress_callback = None
 
     def set_llm_chat_fn(self, fn):
         """注入 LLM 调用函数。"""
         self._llm_chat_fn = fn
+
+    def set_progress_callback(self, callback):
+        """注入进度回调函数。
+
+        Args:
+            callback: 签名为 callback(step: str)，step 取值：
+                      "rule_merge" / "llm_merge" / "evict"
+        """
+        self._progress_callback = callback
+
+    def _report_progress(self, step: str) -> None:
+        """报告当前整理步骤进度。"""
+        if self._progress_callback:
+            try:
+                self._progress_callback(step)
+            except Exception:
+                pass
 
     # ===== 公开接口 =====
 
@@ -224,10 +242,12 @@ class MemoryCompactor:
             return 0, layer1_content, []
 
         # 规则化合并
+        self._report_progress("rule_merge")
         merged_count, entries, merge_details = self._rule_based_merge(entries)
 
         # LLM 辅助合并（如果仍有冗余）
         if self._llm_chat_fn and len(entries) > 5:
+            self._report_progress("llm_merge")
             llm_merged, entries, llm_details = self._llm_assisted_merge(entries)
             merged_count += llm_merged
             merge_details.extend(llm_details)
@@ -449,6 +469,7 @@ class MemoryCompactor:
         Returns:
             (淘汰计数, 新 Layer 1 内容)
         """
+        self._report_progress("evict")
         stats = self._store.get_layer1_stats()
         if stats["lines"] <= self._wm_hard_limit and stats["tokens"] <= 2000:
             return 0, layer1_content
