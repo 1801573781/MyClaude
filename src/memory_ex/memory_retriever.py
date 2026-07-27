@@ -265,7 +265,7 @@ class MemoryRetriever:
                 response = self._llm_chat_fn(
                     prompt,
                     temperature=0.1,
-                    max_tokens=128,
+                    max_tokens=10240,
                 )
                 result["response"] = response
             except Exception as e:
