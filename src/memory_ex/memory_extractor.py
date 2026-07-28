@@ -68,6 +68,9 @@ class MemoryExtractor:
         # 进度回调函数
         self._progress_callback = None
 
+        # 错题集实例（延迟注入，用于 caution 类型的双向关联）
+        self._problem_base = None
+
     def set_llm_chat_fn(self, fn):
         """注入 LLM 调用函数。"""
         self._llm_chat_fn = fn
@@ -79,6 +82,48 @@ class MemoryExtractor:
             callback: 回调函数，签名 callback(completed: int, total: int, action: str)
         """
         self._progress_callback = callback
+
+    def set_problem_base(self, problem_base):
+        """注入错题集实例，用于 caution 类型的双向关联。
+
+        Args:
+            problem_base: ProblemBase 实例
+        """
+        self._problem_base = problem_base
+
+    def _find_related_problem(self, memory: Dict) -> Optional[str]:
+        """尝试为 caution 类型记忆匹配错题集中的记录。
+
+        匹配策略（按优先级）：
+        1. 通过 affected_files 路径匹配
+        2. 通过内容关键词匹配（如相同的函数名、相同的文件路径片段）
+
+        Args:
+            memory: 提取出的记忆（含 type, tags, content）
+
+        Returns:
+            匹配的错题 ID，未匹配返回 None
+        """
+        if not self._problem_base:
+            return None
+
+        content = memory.get("content", "")
+
+        # 从内容中提取文件路径片段
+        file_paths = re.findall(r"src/[\w/]+\.\w+", content)
+        for fp in file_paths:
+            records = self._problem_base.get_by_file(fp)
+            if records:
+                return records[0].id
+
+        # 从内容中提取函数名/类名关键词匹配
+        open_records = self._problem_base.get_all_open()
+        for record in open_records:
+            for func_name in record.affected_functions:
+                if func_name in content:
+                    return record.id
+
+        return None
 
     def extract_raw_entries(self) -> dict:
         """提取入口：处理所有 status=raw 的条目。
@@ -188,8 +233,22 @@ class MemoryExtractor:
             # 写入提取结果
             extracted_summaries = []
             for idx, memory in enumerate(extracted_memories, 1):
-                self._write_extracted_memory(entries[0], memory)
+                # caution 类型尝试关联错题集
+                if memory.get("type") == "caution" and self._problem_base:
+                    pb_id = self._find_related_problem(memory)
+                    if pb_id:
+                        memory["source_problem_id"] = pb_id
+
+                new_id = self._write_extracted_memory(entries[0], memory)
                 total_extracted += 1
+
+                # 双向关联：标记错题集记录的 memory_linked 字段
+                if memory.get("type") == "caution" and memory.get("source_problem_id") and new_id:
+                    if self._problem_base:
+                        self._problem_base.mark_memory_linked(
+                            memory["source_problem_id"], new_id
+                        )
+
                 tags_str = "".join(f"[{t}]" for t in memory.get("tags", []))
                 extracted_summaries.append(f"({idx}) {tags_str} {memory.get('content', '')[:300]}")
 
@@ -235,35 +294,18 @@ class MemoryExtractor:
     def _should_skip_extraction(self, entries: List[Dict]) -> bool:
         """前置过滤：判断是否跳过 LLM 提取。
 
-        对应设计文档 1.4.0 节。
+        已彻底禁用所有内容过滤条件。
+        用户要求：不得以"对话过短"或"无技术关键词"为由跳过提取，
+        因为无法预判对话中是否包含有价值的信息。
+        所有条目一律送 LLM 提取，由 LLM 判断是否有值得记忆的内容。
 
         Args:
             entries: 同一 Query 的所有 raw 条目
 
         Returns:
-            True 表示跳过（不值得提取）
+            True 表示跳过（仅在 entries 为空时跳过）
         """
         if not entries:
-            return True
-
-        # 条件 1: Turn 数 < 2 且无工具调用
-        has_tools = any(
-            e.get("metadata", {}).get("has_tools", False) for e in entries
-        )
-        if len(entries) < 2 and not has_tools:
-            return True
-
-        # 条件 2: 用户输入 < 10 字符且无技术关键词
-        user_inputs = [
-            e.get("metadata", {}).get("user_input", "") for e in entries
-        ]
-        all_user_text = " ".join(user_inputs)
-        if len(all_user_text) < 10 and not self._has_tech_keywords(all_user_text):
-            return True
-
-        # 条件 3: 整轮对话总字符数 < 50
-        total_chars = sum(len(e.get("content", "")) for e in entries)
-        if total_chars < 50:
             return True
 
         return False
@@ -316,7 +358,7 @@ class MemoryExtractor:
         prompt = self._add_entity_context(prompt)
 
         try:
-            response = self._call_llm_with_timeout(prompt, timeout=30)
+            response = self._call_llm_with_timeout(prompt, timeout=self._timeout)
             if response is None:
                 # 超时
                 self._consecutive_timeout_count += 1
@@ -329,17 +371,16 @@ class MemoryExtractor:
             self._consecutive_timeout_count += 1
             return None
 
-    def _call_llm_with_timeout(self, prompt: str, timeout: int = 5) -> Optional[str]:
+    def _call_llm_with_timeout(self, prompt: str, timeout: int = 120) -> Optional[str]:
         """调用 LLM，带超时保护。
 
         Args:
             prompt: 完整 Prompt
-            timeout: 超时秒数
+            timeout: 超时秒数，默认 60 秒
 
         Returns:
-            LLM 响应文本，None 表示超时
+            LLM 响应文本，None 表示超时或调用失败（含空响应）
         """
-        import signal
         import threading
 
         result = {"response": None, "done": False}
@@ -366,13 +407,20 @@ class MemoryExtractor:
             logger.warning(f"LLM 提取超时（{timeout}s）")
             return None
 
+        # simple_chat 内部捕获异常后返回空字符串，此处需将空响应也视为失败
+        # 否则空响应会被误判为"LLM判定无价值"，导致 raw 条目被错误标记为 processed
+        if not result["response"]:
+            logger.warning("LLM 返回空响应，视为调用失败")
+            return None
+
         return result["response"]
 
     def _parse_extraction_response(self, response: str) -> List[Dict]:
         """解析 LLM 提取响应。
 
-        预期格式：
-            - MEMORY: [主题标签] 记忆内容描述
+        支持两种格式：
+            新格式：- MEMORY: [type:reference 或 type:caution] [主题标签] 记忆内容描述
+            旧格式：- MEMORY: [主题标签] 记忆内容描述（默认 type=reference）
             或
             - NONE
 
@@ -394,7 +442,45 @@ class MemoryExtractor:
             if not line:
                 continue
 
-            # 匹配: - MEMORY: [标签1] [标签2] 内容
+            # 新格式: - MEMORY: [type:reference] [标签1, 标签2] 内容
+            match = re.match(
+                r"^-\s*MEMORY:\s*\[type:(reference|caution)\]\s*\[([^\]]+)\]\s*(.+)$",
+                line,
+            )
+            if match:
+                mem_type = match.group(1)
+                tags_str = match.group(2)
+                content = match.group(3).strip()
+                tags = [t.strip() for t in tags_str.split(",") if t.strip()]
+
+                content = self._normalize_entities(content, tags)
+                memories.append({
+                    "type": mem_type,
+                    "tags": tags,
+                    "content": content,
+                })
+                continue
+
+            # 新格式（无前导 -）: MEMORY: [type:reference] [标签] 内容
+            match = re.match(
+                r"^MEMORY:\s*\[type:(reference|caution)\]\s*\[([^\]]+)\]\s*(.+)$",
+                line,
+            )
+            if match:
+                mem_type = match.group(1)
+                tags_str = match.group(2)
+                content = match.group(3).strip()
+                tags = [t.strip() for t in tags_str.split(",") if t.strip()]
+
+                content = self._normalize_entities(content, tags)
+                memories.append({
+                    "type": mem_type,
+                    "tags": tags,
+                    "content": content,
+                })
+                continue
+
+            # 旧格式兼容: - MEMORY: [标签1] [标签2] 内容
             match = re.match(
                 r"^-\s*MEMORY:\s*\[([^\]]+)\]\s*(.+)$",
                 line,
@@ -404,15 +490,15 @@ class MemoryExtractor:
                 content = match.group(2).strip()
                 tags = [t.strip() for t in tags_str.split(",") if t.strip()]
 
-                # 实体规范化
                 content = self._normalize_entities(content, tags)
-
                 memories.append({
+                    "type": "reference",
                     "tags": tags,
                     "content": content,
                 })
+                continue
 
-            # 重试格式：MEMORY: [标签] 内容（无前导 -）
+            # 旧格式兼容（无前导 -）: MEMORY: [标签] 内容
             match = re.match(
                 r"^MEMORY:\s*\[([^\]]+)\]\s*(.+)$",
                 line,
@@ -423,11 +509,12 @@ class MemoryExtractor:
                 tags = [t.strip() for t in tags_str.split(",") if t.strip()]
 
                 content = self._normalize_entities(content, tags)
-
                 memories.append({
+                    "type": "reference",
                     "tags": tags,
                     "content": content,
                 })
+                continue
 
         # 限制最大条目数
         if len(memories) > self._max_entries_per_query:
@@ -468,7 +555,7 @@ class MemoryExtractor:
 
         Args:
             template_entry: 原始条目（用于继承 session_id, query_id 等）
-            memory: 提取出的记忆（含 tags 和 content）
+            memory: 提取出的记忆（含 type, tags, content）
 
         Returns:
             新条目 ID
@@ -482,6 +569,9 @@ class MemoryExtractor:
 
         iso_timestamp = now.isoformat()
 
+        # 获取类型，默认为 reference
+        mem_type = memory.get("type", "reference")
+
         entry = {
             "id": entry_id,
             "timestamp": iso_timestamp,
@@ -493,6 +583,8 @@ class MemoryExtractor:
             "status": "unprocessed",
             "compacted": False,
             "evolved": False,
+            "type": mem_type,
+            "source_problem_id": memory.get("source_problem_id"),
             "metadata": {
                 "created_at": iso_timestamp,
                 "last_accessed": iso_timestamp,
@@ -537,8 +629,12 @@ class MemoryExtractor:
         # 追加写入 Layer 1（MEMORY.md）—— 构建职责
         # extract() 负责将提取的记忆写入 Layer 1，不再依赖 compact() 来搬运
         # 写入 session_id 以支持召回时的显式过滤（禁止召回当前 session 的记忆）
+        # caution 类型在 Layer 1 中增加 [caution] 标记
         session_id = template_entry.get("session_id", "")
-        tags_str = "".join(f"[{t}]" for t in memory.get("tags", []))
+        tags = memory.get("tags", [])
+        if mem_type == "caution":
+            tags = ["caution"] + tags  # caution 标记放在最前
+        tags_str = "".join(f"[{t}]" for t in tags)
         layer1_line = f"- {tags_str} {memory.get('content', '')}"
         if entry_id:
             layer1_line += f" (id={entry_id})"
@@ -568,9 +664,17 @@ class MemoryExtractor:
             "5. 为每条记忆打上 1~3 个主题标签（如 [数据库]、[路径规范]、[API规范]）。\n"
             "6. 如果多个轮次记录了同一件事的演进过程，只保留最终结论。\n"
             "7. 实体规范化：如果记忆中涉及的实体与已有记忆中的实体是同一对象，"
-            "使用已有记忆中的标准名称。\n\n"
+            "使用已有记忆中的标准名称。\n"
+            "8. 类型判断：对于每条提取的记忆，请额外判断其类型：\n"
+            "   - reference: 参考性记忆（知识、经验、偏好、设计决策等）\n"
+            "   - caution: 警示性记忆（从 Bug 中归纳出的通用规则，用于避免重蹈覆辙）\n"
+            "   caution 类型的准入门槛（必须满足以下条件之一）：\n"
+            "   1. 该 Bug 揭示了一个可复现的代码模式\n"
+            "   2. 该 Bug 反映了一个反复出现的认知偏差\n"
+            "   3. 该 Bug 的教训可以跨文件、跨模块适用\n"
+            "   不满足以上条件的具体 Bug，不要提取为 caution 记忆。\n\n"
             "输出格式（每条一行）：\n"
-            "- MEMORY: [主题标签] 记忆内容描述\n"
+            "- MEMORY: [type:reference 或 type:caution] [主题标签] 记忆内容描述\n"
             "或\n"
             "- NONE\n\n"
             "交互记录（按时间排列）：\n"

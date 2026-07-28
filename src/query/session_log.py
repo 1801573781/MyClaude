@@ -32,6 +32,8 @@ class SessionLog:
         # CLI 命令日志缓冲（命令 + 结果合并为一个条目）
         self._cli_command = None
         self._cli_result = None
+        # session 初始化前的 CLI 命令缓存（init_session 后补写）
+        self._pending_cli_entries = []
 
 
     def init_session(self):
@@ -49,6 +51,20 @@ class SessionLog:
         # 先标记已初始化，再调用 _save_session_log，避免递归调用 init_session
         self._session_inited = True
         self._save_session_log(save_session)
+
+        # 补写 session 初始化前缓存的 CLI 命令条目
+        if self._pending_cli_entries:
+            for cli_now, cli_cmd, cli_res in self._pending_cli_entries:
+                if self.format == "html":
+                    self._flush_cli_html(cli_now, cli_cmd, cli_res)
+                else:
+                    md_items = [{"time": cli_now}]
+                    if cli_cmd:
+                        md_items.append({"role": "user", "content": f"[CLI_COMMAND] {cli_cmd}"})
+                    if cli_res:
+                        md_items.append({"role": "user", "content": f"[CLI_RESULT] {cli_res}"})
+                    self._save_session_log(md_items)
+            self._pending_cli_entries = []
 
 
     def get_tokens(self):
@@ -154,7 +170,8 @@ class SessionLog:
                 "user": "👤 用户输入",
                 "reasoning": "💭 LLM 思考",
                 "assistant": "🤖 LLM 应答",
-                "tool": "🔧 工具执行",
+                "tool": "🔧 工具调用",
+                "tool_result": "📋 工具执行结果",
             }
 
             section_html_parts = []
@@ -344,6 +361,11 @@ class SessionLog:
         self._cli_command = None
         self._cli_result = None
 
+        # session 尚未初始化时，缓存到 pending 列表，等待 init_session 后补写
+        if not self.session_file_name:
+            self._pending_cli_entries.append((now, command, result))
+            return
+
         if self.format == "html":
             self._flush_cli_html(now, command, result)
         else:
@@ -527,7 +549,8 @@ class SessionLog:
             "user": "👤 用户输入",
             "reasoning": "💭 LLM 思考",
             "assistant": "🤖 LLM 应答",
-            "tool": "🔧 工具执行",
+            "tool": "🔧 工具调用",
+            "tool_result": "📋 工具执行结果",
         }
 
         # 检查是否有记忆召回 section，如果没有则添加占位
@@ -632,6 +655,18 @@ class SessionLog:
             if content.startswith("[系统提醒] 以下是与当前任务相关的历史记忆") or \
                content.startswith("[系统提醒] 以下是与你当前任务可能相关的历史记忆"):
                 return "memory_context"
+            # 系统提醒（非记忆相关，如追问提示等）→ 系统提示
+            if content.startswith("[系统提醒]"):
+                return "system_notice"
+            # 工具执行结果（role="user" 的工具结果）
+            _tool_prefixes = ("[file_view]", "[create]", "[str_replace]", "[bash]",
+                              "[use_skill]", "[excel_view]", "[AskUserQuestion]",
+                              "[done]", "[todowrite]")
+            if content.startswith(_tool_prefixes):
+                return "tool_result"
+            # CLI 命令及结果已由 _flush_cli_entry 独立记录，此处跳过避免重复展示
+            if content.startswith("[CLI_COMMAND]") or content.startswith("[CLI_RESULT]"):
+                return "cli_command"
             return "user"
 
         def _flush_section():
@@ -671,10 +706,31 @@ class SessionLog:
                 if role == "user":
                     # 细分 user 消息
                     new_section = _classify_user(item.get("content", ""))
+                    # CLI 命令/结果已独立记录，跳过不创建 section
+                    if new_section == "cli_command":
+                        return
                 elif role == "assistant":
                     new_section = "assistant"
                 elif role == "system":
                     content = item.get("content", "")
+                    # 工具执行结果（role="system" 的工具结果）→ tool_result
+                    _tool_result_prefixes = (
+                        "[file_view] 工具执行结果",
+                        "[create] 工具执行结果",
+                        "[str_replace] 工具执行结果",
+                        "[bash] 工具执行结果",
+                        "[use_skill] 工具执行结果",
+                        "[excel_view] 工具执行结果",
+                        "[AskUserQuestion] 工具执行结果",
+                    )
+                    if isinstance(content, str) and content.startswith(_tool_result_prefixes):
+                        new_section = "tool_result"
+                        if current_section != new_section:
+                            _flush_section()
+                            current_section = new_section
+                            current_items = []
+                        current_items.append(item)
+                        return
                     # query_loop 兜底消息（LLM 未输出 done 时自动结束）归属"系统提示"
                     if "LLM 未调用 done 工具" in str(content) or "未调用 done" in str(content):
                         new_section = "system_notice"

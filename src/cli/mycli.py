@@ -711,9 +711,10 @@ class MyClaudeCLI:
             return True
 
         elif cmd.startswith('/mem'):
-            # /mem compaction | /mem cpct | /mem evolution | /mem evol
-            parts = command.strip().split(maxsplit=1)
+            # /mem compaction | /mem cpct | /mem evolution | /mem evol | /mem rt | /mem rm
+            parts = command.strip().split(maxsplit=2)
             sub_cmd = parts[1].lower().strip() if len(parts) > 1 else ""
+            sub_cmd_full = parts[2].strip() if len(parts) > 2 else ""
 
             if sub_cmd in ("compaction", "com"):
                 # 手动触发记忆整理
@@ -1256,8 +1257,39 @@ class MyClaudeCLI:
                 self.query_loop.append_cli_result("\n".join(lines))
                 return True
 
-            elif sub_cmd in ("remove", "r"):
-                # /mem remove | /mem r — 清除所有持久化记忆（Layer 0/1/2 + 元数据）
+            elif sub_cmd in ("rt", "retrieve"):
+                # /mem rt <信息> — 记忆召回测试：给定信息，返回相关召回的记忆
+                if not sub_cmd_full:
+                    cli_print.print_error("缺少参数。用法: /mem rt <信息>")
+                    return True
+                memory = self.query_loop._memory
+                try:
+                    current_session_id = getattr(self.query_loop.session, 'session_file_name', '')
+                    chat_llm.set_context(query=sub_cmd_full, turn="CLI_COMMAND")
+                    mem_context = memory.get_context_for_query(
+                        sub_cmd_full, exclude_session_id=current_session_id
+                    )
+                    chat_llm.set_context()
+                except Exception as e:
+                    chat_llm.set_context()
+                    cli_print.print_error(f"记忆召回失败: {e}")
+                    return True
+
+                if not mem_context:
+                    cli_print.print_info("未召回任何相关记忆。")
+                    self.query_loop.append_cli_result(f"记忆召回测试: 0 条 (查询: {sub_cmd_full[:50]})")
+                else:
+                    recall_count = self.query_loop._count_recalled(mem_context)
+                    cli_print.print_info(
+                        f"记忆召回测试（共 {recall_count} 条）:\n"
+                        f"{'─' * 50}\n"
+                        f"{mem_context}"
+                    )
+                    self.query_loop.append_cli_result(f"记忆召回测试: {recall_count} 条 (查询: {sub_cmd_full[:50]})")
+                return True
+
+            elif sub_cmd in ("remove", "rm"):
+                # /mem remove | /mem rm — 清除所有持久化记忆（Layer 0/1/2 + 元数据）
                 stats = self.query_loop.clear_memory()
                 if not stats:
                     cli_print.print_info("当前没有记忆。")
@@ -1294,7 +1326,47 @@ class MyClaudeCLI:
                     "  /mem extract    — 提取 raw 记忆 (简写 /mem ext)\n"
                     "  /mem compaction — 整理记忆 (简写 /mem com)\n"
                     "  /mem evolution  — 进化记忆 (简写 /mem evo)\n"
-                    "  /mem remove     — 清除所有记忆 (简写 /mem r)"
+                    "  /mem rt <信息>  — 记忆召回测试 (简写 /mem retrieve)\n"
+                    "  /mem remove     — 清除所有记忆 (简写 /mem rm)"
+                )
+                return True
+
+        elif cmd.startswith('/bug'):
+            # /bug 系列命令 — Bug库操作
+            bug_parts = command.strip().split(maxsplit=2)
+            bug_sub = bug_parts[1].lower() if len(bug_parts) > 1 else ""
+            bug_arg = bug_parts[2].strip() if len(bug_parts) > 2 else ""
+
+            if bug_sub == "show":
+                self._handle_bug_show(bug_arg)
+                return True
+            elif bug_sub in ("ext", "extract"):
+                self._handle_bug_extract(bug_arg)
+                return True
+            elif bug_sub in ("rt", "retrieve"):
+                if not bug_arg:
+                    cli_print.print_error("缺少参数。用法: /bug rt <模块路径 | 文件名称>")
+                    return True
+                self._handle_bug_retrieve(bug_arg)
+                return True
+            elif bug_sub in ("rm", "remove"):
+                self._handle_bug_remove()
+                return True
+            elif bug_sub == "archive":
+                self._handle_bug_archive(bug_arg)
+                return True
+            elif bug_sub == "stats":
+                self._handle_bug_stats()
+                return True
+            else:
+                cli_print.print_error(
+                    "未知的 /bug 子命令。可用:\n"
+                    "  /bug show [选项]    — 查看Bug库\n"
+                    "  /bug ext            — 从原始记忆(raw_memory)提取Bug\n"
+                    "  /bug rt <模块路径|文件名> — 召回测试\n"
+                    "  /bug rm             — 清除所有Bug\n"
+                    "  /bug archive [选项] — 归档已修复的Bug\n"
+                    "  /bug stats          — 统计信息"
                 )
                 return True
 
@@ -1422,6 +1494,368 @@ class MyClaudeCLI:
             return True
 
         return True
+
+
+    def _get_bug_base(self):
+        """获取或初始化 BugBase 实例。"""
+        if not hasattr(self, '_bug_base') or self._bug_base is None:
+            from pathlib import Path
+            from src.memory_ex.bug_base.bug_base import BugBase
+            from src.query import chat_llm
+            from src.utility.config_loader import global_cfg
+
+            base_dir = Path(global_cfg.base_path.project_root) / "memory_storage" / "memory_ex" / "bug_base"
+            injection_cfg = getattr(global_cfg.memory_ex, 'injection', None) if hasattr(global_cfg, 'memory_ex') else None
+            max_injection_tokens = getattr(injection_cfg, 'max_tokens', 2000) if injection_cfg else 2000
+            self._bug_base = BugBase(
+                base_dir=base_dir,
+                llm_client=chat_llm,
+                max_injection_tokens=max_injection_tokens,
+            )
+        return self._bug_base
+
+    def _handle_bug_show(self, arg: str):
+        """处理 /bug show 命令。"""
+        bb = self._get_bug_base()
+
+        if arg.startswith("--id"):
+            # 查看指定Bug详情
+            record_id = arg[4:].strip()
+            if not record_id:
+                cli_print.print_error("缺少Bug ID。用法: /bug show --id <ID>")
+                return
+            record = bb.get_record(record_id)
+            if not record:
+                cli_print.print_error(f"未找到Bug: {record_id}")
+                return
+            lines = [
+                f"Bug详情: {record.id}",
+                f"  标题: {record.title}",
+                f"  模块: {record.module}",
+                f"  状态: {record.status}",
+                f"  涉及文件: {', '.join(record.affected_files)}",
+                f"  涉及函数: {', '.join(record.affected_functions) if record.affected_functions else '无'}",
+                f"  根因: {record.root_cause}",
+                f"  症状: {record.symptoms}",
+                f"  修复模式: {record.fix_pattern}",
+                f"  注意事项: {record.caution}",
+                f"  创建时间: {record.created_at}",
+                f"  来源Session: {record.source_session}",
+            ]
+            if record.generalization:
+                lines.append(f"  泛化: {record.generalization}")
+            if record.memory_linked:
+                lines.append(f"  已关联记忆: {record.memory_linked}")
+            cli_print.print_info("\n".join(lines))
+            self.query_loop.append_cli_result(f"查看Bug详情: {record.id}")
+            return
+
+        if arg == "--archive":
+            # 查看归档的Bug
+            stats = bb.get_stats()
+            archived = stats.get("_archive", {})
+            count = archived.get("archived", 0)
+            if count == 0:
+                cli_print.print_info("归档中没有Bug。")
+            else:
+                cli_print.print_info(f"归档中共有 {count} 条Bug。")
+            self.query_loop.append_cli_result(f"查看归档Bug: {count} 条")
+            return
+
+        if arg.startswith("--module"):
+            module = arg[8:].strip()
+            records = bb.get_by_module(module)
+            if not records:
+                cli_print.print_info(f"模块 '{module}' 没有 open 状态的Bug。")
+                return
+            self._print_bug_list(records, f"模块 '{module}' 的Bug")
+            self.query_loop.append_cli_result(f"查看模块 {module} Bug: {len(records)} 条")
+            return
+
+        if arg.startswith("--status"):
+            status = arg[8:].strip()
+            if status == "fixed":
+                records = bb.store.get_all_fixed()
+            elif status == "open":
+                records = bb.get_all_open()
+            else:
+                cli_print.print_error(f"不支持的状态: {status}（可选: open, fixed）")
+                return
+            if not records:
+                cli_print.print_info(f"没有 {status} 状态的Bug。")
+                return
+            self._print_bug_list(records, f"状态为 '{status}' 的Bug")
+            self.query_loop.append_cli_result(f"查看 {status} 状态Bug: {len(records)} 条")
+            return
+
+        # 默认：显示所有 open 状态的Bug（分模块展示）
+        records = bb.get_all_open()
+        if not records:
+            cli_print.print_info("当前没有 open 状态的Bug。")
+            self.query_loop.append_cli_result("查看Bug库: 0 条")
+            return
+
+        # 按模块分组展示
+        module_groups: dict[str, list] = {}
+        for r in records:
+            module_groups.setdefault(r.module, []).append(r)
+
+        lines = ["Bug库（open 状态）", "=" * 50]
+        for module, recs in sorted(module_groups.items()):
+            lines.append(f"\n[{module}] ({len(recs)} 条)")
+            for r in recs:
+                lines.append(f"  {r.id}  {r.title}")
+        lines.append("=" * 50)
+        lines.append(f"合计: {len(records)} 条")
+        cli_print.print_info("\n".join(lines))
+        self.query_loop.append_cli_result(f"查看Bug库: {len(records)} 条 open")
+
+    def _handle_bug_extract(self, arg: str):
+        """处理 /bug ext 命令。从 raw_memory.jsonl 提取 Bug，而非当前 session。"""
+        bb = self._get_bug_base()
+
+        # 设置 token 统计上下文
+        from src.query import chat_llm
+        chat_llm.set_context(query="/bug ext", turn="CLI_COMMAND")
+
+        cli_print.print_info("开始从原始记忆（raw_memory）中提取 Bug...")
+
+        import sys
+        import time
+        import threading
+        from datetime import datetime as _dt
+
+        is_tty = sys.stdout.isatty()
+        spinner_chars = ('⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏')
+        all_done = threading.Event()
+        output_lock = threading.Lock()
+        spin_start = time.time()
+
+        def _spin():
+            i = 0
+            while not all_done.is_set():
+                char = spinner_chars[i % len(spinner_chars)]
+                with output_lock:
+                    if all_done.is_set():
+                        break
+                    if is_tty:
+                        elapsed = int(time.time() - spin_start)
+                        msg = f"  {char} 正在调用 LLM 提取Bug... ({elapsed}s)"
+                        sys.stdout.write(f"\r{msg.ljust(60)}")
+                        sys.stdout.flush()
+                time.sleep(0.15)
+                i += 1
+
+        spinner_thread = threading.Thread(target=_spin, daemon=True)
+        spinner_thread.start()
+
+        op_start = _dt.now()
+        try:
+            result = bb.extract_from_raw_entries()
+        except Exception as e:
+            result = {"error": str(e), "processed": 0, "extracted": 0, "skipped": 0}
+        finally:
+            all_done.set()
+            spinner_thread.join(timeout=1.0)
+            with output_lock:
+                if is_tty:
+                    sys.stdout.write(f"\r{' ' * 60}\r")
+                    sys.stdout.flush()
+
+        op_end = _dt.now()
+        duration_str = self._format_duration(int((op_end - op_start).total_seconds() * 1000))
+        chat_llm.set_context()
+
+        if "error" in result and result.get("error"):
+            cli_print.print_error(f"Bug提取执行失败: {result['error']}")
+            self.query_loop.append_cli_result(f"Bug提取执行失败: {result['error']}")
+            return
+
+        processed = result.get("processed", 0)
+        extracted = result.get("extracted", 0)
+        skipped = result.get("skipped", 0)
+
+        if extracted == 0:
+            cli_print.print_info(
+                f"Bug提取完成:\n"
+                f"  耗时: {duration_str}\n"
+                f"  处理原始条目: {processed} 条\n"
+                f"  跳过（已提取/空内容）: {skipped} 条\n"
+                f"  新增Bug: 0 条（未发现可提取的 Bug）"
+            )
+            self.query_loop.append_cli_result(
+                f"Bug提取完成: 0 条 (处理 {processed} 条, 跳过 {skipped} 条)"
+            )
+        else:
+            cli_print.print_info(
+                f"Bug提取完成:\n"
+                f"  耗时: {duration_str}\n"
+                f"  处理原始条目: {processed} 条\n"
+                f"  跳过（已提取/空内容）: {skipped} 条\n"
+                f"  新增Bug: {extracted} 条"
+            )
+            self.query_loop.append_cli_result(
+                f"Bug提取完成: 新增 {extracted} 条 (处理 {processed} 条, 跳过 {skipped} 条)"
+            )
+
+    def _handle_bug_retrieve(self, arg: str):
+        """处理 /bug rt 命令。支持模块路径或文件名称（全路径）。"""
+        bb = self._get_bug_base()
+        target = arg.strip()
+
+        cli_print.print_info(f"正在召回与 '{target}' 相关的Bug...")
+
+        try:
+            records = bb.retrieve([target], task_context="", skip_stage2=True)
+        except Exception as e:
+            cli_print.print_error(f"召回失败: {e}")
+            return
+
+        if not records:
+            cli_print.print_info("未召回任何相关Bug。")
+            self.query_loop.append_cli_result(f"Bug召回: 0 条 (目标: {target})")
+            return
+
+        self._print_bug_list(records, f"与 '{target}' 相关的Bug")
+        self.query_loop.append_cli_result(f"Bug召回: {len(records)} 条 (目标: {target})")
+
+    def _handle_bug_remove(self):
+        """处理 /bug rm 命令。清除所有Bug记录。"""
+        bb = self._get_bug_base()
+        try:
+            stats = bb.get_stats()
+        except Exception as e:
+            cli_print.print_error(f"获取统计信息失败: {e}")
+            return
+
+        total = 0
+        for module, s in stats.items():
+            total += s.get("open", 0) + s.get("fixed", 0)
+        archived = stats.get("_archive", {}).get("archived", 0)
+        total += archived
+
+        if total == 0:
+            cli_print.print_info("当前Bug库为空，无需清除。")
+            self.query_loop.append_cli_result("清除Bug库: 空")
+            return
+
+        # 清除所有 open 和 fixed 记录
+        import shutil
+        from pathlib import Path
+        for jsonl_file in bb.store.base_dir.glob("*.jsonl"):
+            jsonl_file.unlink()
+        for md_file in bb.store.base_dir.glob("*.md"):
+            md_file.unlink()
+        # 清除归档
+        if bb.store.archive_dir.exists():
+            shutil.rmtree(bb.store.archive_dir)
+            bb.store.archive_dir.mkdir(parents=True, exist_ok=True)
+
+        cli_print.print_info(f"已清除所有Bug记录（共 {total} 条，含归档 {archived} 条）。")
+        self.query_loop.append_cli_result(f"清除Bug库: {total} 条 (含归档 {archived} 条)")
+
+    def _handle_bug_archive(self, arg: str):
+        """处理 /bug archive 命令。"""
+        bb = self._get_bug_base()
+
+        if arg.startswith("--id"):
+            record_id = arg[4:].strip()
+            if not record_id:
+                cli_print.print_error("缺少Bug ID。用法: /bug archive --id <ID>")
+                return
+            try:
+                count = bb.archive_fixed(record_id)
+            except Exception as e:
+                cli_print.print_error(f"归档失败: {e}")
+                return
+            if count > 0:
+                cli_print.print_info(f"已归档Bug: {record_id}")
+                self.query_loop.append_cli_result(f"Bug归档: {record_id}")
+            else:
+                cli_print.print_error(f"归档失败: 未找到状态为 fixed 的Bug {record_id}")
+            return
+
+        if arg == "--all-fixed":
+            try:
+                count = bb.archive_fixed()
+            except Exception as e:
+                cli_print.print_error(f"归档失败: {e}")
+                return
+            cli_print.print_info(f"已归档所有 fixed 状态的Bug: {count} 条")
+            self.query_loop.append_cli_result(f"Bug归档(all-fixed): {count} 条")
+            return
+
+        # 默认：自动检测文件哈希变更，标记 fixed 并归档
+        cli_print.print_info("正在检查文件哈希变更...")
+        try:
+            fixed_count = bb.check_and_archive_fixed()
+        except Exception as e:
+            cli_print.print_error(f"归档失败: {e}")
+            return
+
+        if fixed_count > 0:
+            cli_print.print_info(
+                f"归档完成:\n"
+                f"  检测到文件变更并标记为 fixed: {fixed_count} 条\n"
+                f"  已归档的 fixed 记录也已移至 _archive/"
+            )
+            self.query_loop.append_cli_result(f"Bug自动归档: {fixed_count} 条")
+        else:
+            cli_print.print_info("归档完成: 没有检测到文件变更，无新归档。")
+            self.query_loop.append_cli_result("Bug自动归档: 0 条")
+
+    def _handle_bug_stats(self):
+        """处理 /bug stats 命令。"""
+        bb = self._get_bug_base()
+        try:
+            stats = bb.get_stats()
+        except Exception as e:
+            cli_print.print_error(f"获取统计信息失败: {e}")
+            return
+
+        if not stats:
+            cli_print.print_info("Bug库为空。")
+            self.query_loop.append_cli_result("Bug统计: 空")
+            return
+
+        # 构建表格输出
+        lines = [
+            "Bug库统计",
+            "─" * 45,
+            f"{'模块':<15} {'open':<8} {'fixed':<8} {'archived':<8}",
+            "─" * 45,
+        ]
+        total_open = 0
+        total_fixed = 0
+        total_archived = 0
+        for module in sorted(stats.keys()):
+            s = stats[module]
+            o = s.get("open", 0)
+            f = s.get("fixed", 0)
+            a = s.get("archived", 0)
+            total_open += o
+            total_fixed += f
+            total_archived += a
+            display_name = module if module != "_archive" else "归档"
+            lines.append(f"{display_name:<15} {o:<8} {f:<8} {a:<8}")
+        lines.append("─" * 45)
+        lines.append(f"{'合计':<15} {total_open:<8} {total_fixed:<8} {total_archived:<8}")
+        cli_print.print_info("\n".join(lines))
+        self.query_loop.append_cli_result(
+            f"Bug统计: open={total_open}, fixed={total_fixed}, archived={total_archived}"
+        )
+
+    @staticmethod
+    def _print_bug_list(records: list, title: str):
+        """以列表形式打印Bug记录。"""
+        lines = [f"{title}（共 {len(records)} 条）", "=" * 50]
+        for r in records:
+            lines.append(f"  {r.id}  [{r.module}]  {r.title}")
+            if r.affected_files:
+                lines.append(f"    文件: {', '.join(r.affected_files[:3])}")
+            lines.append(f"    根因: {r.root_cause[:80]}")
+        lines.append("=" * 50)
+        cli_print.print_info("\n".join(lines))
 
 
     # 不需要记录到 session 上下文的命令（纯 UI 操作或重置操作）

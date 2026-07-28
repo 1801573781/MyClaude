@@ -148,7 +148,7 @@ class QueryLoop:
         Args:
             command: 用户输入的 CLI 命令（如 /test --st-e）
         """
-        self.api_messages.append_micro_info("user", f"[CLI_COMMAND] {command}")
+        self.api_messages.append_micro_info("system", f"[CLI_COMMAND] {command}")
         self.session.log_cli_command(command)
 
     def append_cli_result(self, result_summary: str):
@@ -157,7 +157,7 @@ class QueryLoop:
         Args:
             result_summary: 命令执行结果的精炼摘要或完整输出
         """
-        self.api_messages.append_micro_info("user", f"[CLI_RESULT] {result_summary}")
+        self.api_messages.append_micro_info("system", f"[CLI_RESULT] {result_summary}")
         self.session.log_cli_result(result_summary)
 
     def get_tokens(self):
@@ -389,8 +389,8 @@ class QueryLoop:
                     self._print_info(f"[记忆召回] 已召回 {recall_count} 条相关记忆")
 
                     if mem_context:
-                        self.api_messages.append_micro_info("user", mem_context)
-                        self.session.log_dict_info({"role": "user", "content": mem_context})
+                        self.api_messages.append_micro_info("system", mem_context)
+                        self.session.log_dict_info({"role": "system", "content": mem_context})
                         logger.debug(f"记忆上下文已注入，长度: {len(mem_context)}")
                 except Exception as e:
                     chat_llm.set_context()  # 确保异常时也清除上下文
@@ -409,8 +409,8 @@ class QueryLoop:
                 recall_count = self._count_recalled(mem_context)
                 self._print_info(f"[记忆召回] 已召回 {recall_count} 条相关记忆（回退到用户输入）")
                 if mem_context:
-                    self.api_messages.append_micro_info("user", mem_context)
-                    self.session.log_dict_info({"role": "user", "content": mem_context})
+                    self.api_messages.append_micro_info("system", mem_context)
+                    self.session.log_dict_info({"role": "system", "content": mem_context})
                     logger.debug(f"回退记忆上下文已注入，长度: {len(mem_context)}")
             except Exception as e:
                 chat_llm.set_context()
@@ -419,13 +419,13 @@ class QueryLoop:
         # 倒数最后一轮，命令式提醒
         if turn == self.max_turns and self.is_multi_turns:
             command = "命令：如果你已完成所有修改，请立即调用 <llm_tool>done</llm_tool> 结束任务。不要继续调用其他工具。"
-            self.api_messages.append_micro_info("user", command)
+            self.api_messages.append_micro_info("system", command)
 
         # 每轮注入 [TODO_STATUS] 上下文（如果有活跃的 todo 列表）
         todo_context = self._todo_manager.get_context_message()
         if todo_context:
-            self.api_messages.append_micro_info("user", todo_context)
-            self.session.log_dict_info({"role": "user", "content": todo_context})
+            self.api_messages.append_micro_info("system", todo_context)
+            self.session.log_dict_info({"role": "system", "content": todo_context})
 
         # 事前记录轮次及发送给LLM的req
         self.session.log_turn(turn)
@@ -583,7 +583,7 @@ class QueryLoop:
                 self._print_info(f"[追问结果] 成功获取到 {len(tools)} 个工具，进入执行")
             # 追问成功：将追问消息和 LLM 回复追加到正式 api_messages，
             # 确保后续工具执行结果前面有完整的 assistant 消息，避免上下文断裂
-            self.api_messages.append_micro_info("user", prompt)
+            self.api_messages.append_micro_info("system", prompt)
             self.api_messages.append_llm_response(ai_response_clean)
         else:
             if not silent:
@@ -718,8 +718,8 @@ class QueryLoop:
                         recall_count = self._count_recalled(mem_context)
                         self._print_info(f"[记忆召回] 已召回 {recall_count} 条相关记忆（基于文件内容）")
                         if mem_context:
-                            self.api_messages.append_micro_info("user", mem_context)
-                            self.session.log_dict_info({"role": "user", "content": mem_context})
+                            self.api_messages.append_micro_info("system", mem_context)
+                            self.session.log_dict_info({"role": "system", "content": mem_context})
                             logger.debug(f"延迟记忆上下文已注入，长度: {len(mem_context)}")
                     except Exception as e:
                         chat_llm.set_context()

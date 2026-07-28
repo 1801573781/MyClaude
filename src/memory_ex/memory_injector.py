@@ -57,6 +57,10 @@ class MemoryInjector:
             <条目内容>
 
             [召回数: N]
+
+        注意：
+            caution 类型的记忆条目，其首个 tag 为 [caution]，
+            注入时替换为 [⚠️ caution] 以增加视觉警示效果。
         """
         if not entries:
             return ""
@@ -66,6 +70,11 @@ class MemoryInjector:
         for entry in entries:
             raw_line = entry.get("raw_line", "")
             if raw_line:
+                # caution 类型增加警示标记
+                if raw_line.strip().startswith("- [caution]"):
+                    raw_line = raw_line.replace(
+                        "- [caution]", "- [⚠️ caution]", 1
+                    )
                 layer1_lines.append(raw_line)
 
         if not layer1_lines:

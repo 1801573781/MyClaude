@@ -1,12 +1,9 @@
 # MyClaude.md
 
 ## 1. 项目 DNA
-- **定位**：Claude Code 的 Python 复刻，基于国产大模型（DeepSeek）的终端 AI 编程助手。
+- **定位**：Claude Code 的 Python 复刻，基于LLM的终端 AI 编程助手。
 - **核心循环**：Query Loop —— 用户输入 → LLM 决策 → XML 工具执行 → 结果反馈 → 多轮循环直至 `<done>`。
-- **技术栈**：Python 3.12 + OpenAI SDK（调用 MiniMax）+ Rich（终端 UI）+ PyYAML（配置）+ pathlib（路径管理）。
-- **架构风格**：全同步（刻意不用 async/await），降低心智负担；终端显示与业务逻辑部分解耦。
-- **非目标**：不做 Web UI、不做多模态、不做分布式并发、不追求完全解耦（接受 CLI 与 QueryLoop 在"何时打印"上存在合理耦合）。
-
+- **技术栈**：Python + OpenAI SDK（调用 LLM）+ Rich（终端 UI）+ PyYAML（配置）+ pathlib（路径管理）。
 
 ## 2 文件系统规范
 
@@ -81,7 +78,7 @@ Skill 行为模板（任务策略、工具组合规范、禁忌与示例）存�
 ## 3. 架构契约
 - **同步流式**：`chat_llm.stream_chat()` 使用 OpenAI 同步流式（`stream=True`），返回 `(content: str, is_truncated: bool)`。禁止在核心循环引入 async/await。
 - **回调注入**：`QueryLoop.run()` 接收 `on_context_mgr`、`on_llm_text`、`on_tool_call` 等 Callable，由 `ClaudeStyleCLI` 注册 Rich 显示行为。引擎不直接 import cli_print。
-- **消息格式**：发给 LLM 的 `api_messages` 必须是 `List[Dict[str, str]]`，仅含 `role` 和 `content`。**MiniMax 严禁对话中间出现 `role="system"`**（报错 2013）。
+- **消息格式**：发给 LLM 的 `api_messages` 必须是 `List[Dict[str, str]]`，仅含 `role` 和 `content`。
 - **工具协议**：LLM 输出 XML 标签。`parse_tools()` 提取后返回 `(remaining_text, tools_list)`。`tools_list` 元素为 `{"llm_tool": "...", "params": {...}}`。
 - **路径解析**：所有文件路径通过 `Path(root) / path` 拼接。若传入绝对路径，直接透传；相对路径则拼接到 `code_output_root`。
 - **截断与重试**：`_chat_with_retry()` 检测到 `finish_reason == "length"` 时自动翻倍 `max_tokens`（上限 64000），最多重试 3 次。
@@ -97,19 +94,7 @@ Skill 行为模板（任务策略、工具组合规范、禁忌与示例）存�
 - **[规范]Rich 显示接口必须通过 cli_print 封装**，禁止在业务代码里直接写 `console.print()`。
 - **[规范]成员函数之间空两行**（PyCharm Code Style），有默认值的 dataclass 字段必须放在无默认值字段之后。
 
-## 5. 常见任务速查
-| 任务 | 应该改的文件 | 关键注意事项 |
-|------|-------------|-------------|
-| 新增 LLM 提供商 | `query/chat_llm.py` + `config.yaml` | 保持 `stream_chat()` 返回 `(content, is_truncated)` 签名；MiniMax 与 OpenAI 的 `finish_reason` 语义一致即可复用 |
-| 新增 XML 工具（如 `<search>`） | `llm_tool/tool_executor.py`（parse_tools/execute_tool）+ `llm_tool/file_tool.py` | 在 `parse_tools()` 的 `patterns` 列表里加正则；返回 `{"role":"user", "content":"..."}` |
-| 修改终端样式/主题 | `cli/cli_print.py` | 新增封装函数如 `print_tool_call()`，不要在 `query_loop.py` 里直接调 `console.print()` |
-| 修改系统提示词 | `message/sys_prompt.md` | 保持 Layer 1~7 结构；Negative Example 紧跟 Output Example；Layer 6 声明 Windows 环境 |
-| 添加配置项 | `config.yaml` + `utility/config_loader.py` | 用 `_dict_to_namespace()` 递归转换；YAML 中文字段不要加引号（除非含特殊符号） |
-| 接入记忆系统 | `query/query_loop.py`（注入时机）+ 新增 `memory/` 模块 | 参考之前设计的 `MemoryStore` / `MemoryRetrieval` / `MemoryInjector`；注意 MiniMax 的 token 上限 |
-| 修改会话日志格式 | `query/session_log.py` + `query/query_loop.py`（调用点） | 保持 Markdown 输出；时间戳用 `%Y-%m-%d %H : %M : %S`；批次之间用分隔线 |
-| 双平台推送 | 命令行：`git push`（默认 Gitee）/ `git push github master`（GitHub） | origin 已指向 Gitee；github 为备用远程 |
-
-## 6. 快速启动（给 AI 自己用的上下文）
+## 5. 快速启动（给 AI 自己用的上下文）
 ```bash
 # 安装依赖
 pip install openai rich pyyaml numpy pytest
@@ -120,8 +105,3 @@ pip install openai rich pyyaml numpy pytest
 # 运行
 python -m src.myclaude
 
-## 7. 当前已知限制
-LLM 偶尔不输出 <done>，依赖 QueryLoop 的 not tools 兜底分支退出。
-strip_thinking() 对 MiniMax 中文思考过程的过滤依赖正则，可能存在误伤。
-尚未接入完整的分层记忆系统（Working/Short-term/Long-term），目前仅通过 api_messages 维护短期上下文。
-终端打字机效果与 Markdown 渲染的切换逻辑基于关键词启发式（def  / import ），非 100% 准确。

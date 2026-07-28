@@ -22,6 +22,37 @@ base_url = provider_cfg.base_url
 model_name = provider_cfg.model_name
 extra_body = getattr(provider_cfg, 'extra_body', None)
 
+# 检查当前 provider 是否限制 system 角色只能出现在消息列表首位
+_restrict_system_at_start = False
+_restricted_providers = []
+if hasattr(global_cfg, 'api_constraints'):
+    constraint_cfg = getattr(global_cfg.api_constraints, 'system_role_only_at_start', None)
+    if constraint_cfg is not None:
+        _restricted_providers = getattr(constraint_cfg, 'providers', [])
+        if model_provider in _restricted_providers:
+            _restrict_system_at_start = True
+
+logger.info(f"Provider={model_provider}, system_role_only_at_start={_restrict_system_at_start}, restricted_providers={_restricted_providers}")
+
+
+def _sanitize_messages_for_provider(messages):
+    """根据 provider 限制清洗消息列表。
+
+    部分 provider（如 MiniMax）限制 system 角色只能出现在消息列表首位。
+    此函数将首条之后的 system 消息转换为 user 消息，确保 API 调用不报错。
+    """
+    if not _restrict_system_at_start:
+        return messages
+
+    result = []
+    for i, msg in enumerate(messages):
+        if msg.get("role") == "system" and i > 0:
+            result.append({"role": "user", "content": msg["content"]})
+        else:
+            result.append(msg)
+    return result
+
+
 client = OpenAI(
     api_key=api_key,
     base_url=base_url,
@@ -94,6 +125,9 @@ def stream_chat(msg, max_tokens=global_cfg.model_chat.initial_max_tokens):
     usage = None
 
     try:
+        # 根据 provider 限制清洗消息（如 MiniMax 要求 system 只能在首位）
+        msg = _sanitize_messages_for_provider(msg)
+
         # 构建 API 调用参数，仅在 extra_body 非空时传入
         api_kwargs = dict(
             model=model_name,
@@ -164,7 +198,7 @@ def stream_chat(msg, max_tokens=global_cfg.model_chat.initial_max_tokens):
 
 
 def simple_chat(prompt: str, temperature: float = 0.3, max_tokens: int = 1024,
-                  query: str = "", turn: str = "") -> str:
+                  query: str = "", turn: str = "", timeout: float = 120) -> str:
     """非流式单轮调用，供记忆系统（提取器/整理器/进化器）使用。
 
     接收纯文本 prompt，构建单条 user 消息发送给 LLM，返回纯文本响应。
@@ -181,17 +215,21 @@ def simple_chat(prompt: str, temperature: float = 0.3, max_tokens: int = 1024,
                若未传入，则使用模块级上下文 _context_query。
         turn: 轮次标识（如 CLI_COMMAND、CLI_RESULT，用于 token 统计）。
               若未传入，则使用模块级上下文 _context_turn。
+        timeout: HTTP 请求超时秒数，默认 180 秒。
+                 httpx.Client 默认超时仅 5 秒，对 LLM 非流式调用远远不够。
 
     Returns:
         LLM 响应的纯文本内容；异常时返回空字符串
     """
     try:
+        messages = _sanitize_messages_for_provider([{"role": "user", "content": prompt}])
         api_kwargs = dict(
             model=model_name,
-            messages=[{"role": "user", "content": prompt}],
+            messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
             stream=False,
+            timeout=timeout,
         )
         # 刻意不传 extra_body，避免 thinking 模式消耗 token 导致 content 为空
 

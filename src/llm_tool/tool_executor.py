@@ -768,7 +768,7 @@ def execute_code_tool(tool):
     如果 LLM 没有遵守指令，回复的是相对路径，出现错误，那就错吧
     '''
     if name == "file_view":
-        # file_view 内部已经做了 _is_invalid_path 检测，这里再做一层目录截断
+        # file_view 内部已经做了 _is_invalid_path 检测，这里再做一层目录截断和大文件截断
         raw_path = p.get("path", "")
         result = file_view(spec_root, raw_path,
                            limit=p.get("limit"),
@@ -777,9 +777,14 @@ def execute_code_tool(tool):
         if result and not result.startswith("错误") and not result.startswith("[BLOCKED]") and not result.startswith(
                 "[ERROR]"):
             lines = result.split("\n")
+            # 目录列表截断
             if len(lines) > 30 and all(line.startswith("[DIR]") or line.startswith("[FILE]") for line in lines):
                 result = "\n".join(
                     lines[:30]) + f"\n...（共 {len(lines)} 项，已截断前 30 项。请使用更精确的路径或 limit 参数缩小范围）"
+            # 文件内容截断：超过 1000 行时截断，防止大文件耗尽 token
+            elif len(lines) > 1000:
+                result = "\n".join(
+                    lines[:1000]) + f"\n...（文件共 {len(lines)} 行，已截断前 1000 行。请使用 limit/offset 参数分段读取剩余内容）"
 
     elif name == "create":
         # 写入前最终清理：确保内容中不含任何 XML 工具标签泄露
@@ -905,12 +910,12 @@ def execute_code_tool(tool):
     # 返回 dict，不是 list
     if name == "bash":
         tool_result = {
-            "role": "user",
+            "role": "system",
             "content": f"[{name}] 工具执行结果：\n{result}"
         }
     else:
         tool_result = {
-            "role": "user",
+            "role": "system",
             "content": f"[{name}] 工具执行结果：{result}"
         }
 

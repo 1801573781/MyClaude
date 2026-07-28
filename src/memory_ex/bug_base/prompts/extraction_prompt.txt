@@ -1,0 +1,39 @@
+你是一个 Bug 分析专家。请从以下 AI 编程助手的对话记录中，提取所有出现过的 Bug/问题/错误。
+
+对于每个 Bug，提取以下字段：
+- title: 一句话标题，简明概括问题
+- affected_files: 涉及的文件路径列表（相对路径）
+- affected_functions: 涉及的函数/类/方法名列表
+- root_cause: 根本原因（为什么会出错）
+- symptoms: 问题表现（出了什么问题）
+- fix_pattern: 修复方式（泛化描述，不要写具体代码）
+- caution: 注意事项（下次如何避免）
+- generalization: 举一反三（更大范围的警示）
+
+要求：
+1. 只提取真正的 Bug/错误，不要提取正常的设计讨论或功能实现
+2. fix_pattern 和 caution 必须是泛化描述，不是"在第X行改成Y"
+3. generalization 要有更广的视角，如"所有涉及XXX的场景都应注意YYY"
+4. 如果对话中没有 Bug，返回空列表 []
+
+输出格式：JSON 数组，每个元素是一个包含上述字段的对象。
+
+示例输出：
+```json
+[
+  {
+    "title": "统计数据读取层级错误",
+    "affected_files": ["src/cli/mycli.py"],
+    "affected_functions": ["handle_mem_evo"],
+    "root_cause": "从 result 顶层读取 stats 字段，但函数将字段嵌套在 result['stats'] 子字典中返回",
+    "symptoms": "CLI 统计输出始终为 0",
+    "fix_pattern": "访问嵌套字典时检查层级，使用 result.get('stats',{}).get('field') 而非 result.get('field')",
+    "caution": "调用任何返回嵌套结构的函数时，先确认其返回值层级，不要假设字段在顶层",
+    "generalization": "所有从复杂返回值中取字段的场景，都应先打印一次完整返回值结构确认层级"
+  }
+]
+```
+
+以下是对话记录：
+
+{dialog}

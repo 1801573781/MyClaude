@@ -40,6 +40,11 @@ command:
   auto_scan: true         # 启动时自动扫描
   profile: "core"         # 工作流模式：core 或 expanded
 
+# API 兼容性约束
+api_constraints:
+  system_role_only_at_start:
+    providers: ["minimax"]  # 哪些 provider 限制 system 角色只能出现在消息列表首位
+
 # log配置
 log:
   format: "html"   # 可选 "md" 或 "html"

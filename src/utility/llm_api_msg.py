@@ -16,7 +16,7 @@ class LLMAPIMessage:
         project_context = self._load_project_context(role)
         if project_context:
             context_msg = {
-                "role": "user",
+                "role": "system",
                 "content": f"[项目上下文]\n{project_context}"
             }
             self._append_info(context_msg)
@@ -25,7 +25,7 @@ class LLMAPIMessage:
         tree_cache = self._load_tree_cache()
         if tree_cache:
             tree_cache_msg = {
-                "role": "user",
+                "role": "system",
                 "content": f"[项目目录树]\n{tree_cache}"
             }
             self._append_info(tree_cache_msg)

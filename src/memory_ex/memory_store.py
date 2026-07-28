@@ -220,7 +220,7 @@ class MemoryStore:
 
         格式设计：
         - 以 --- 分隔不同条目
-        - 显示 ID、时间戳、标签、来源、状态
+        - 显示 ID、时间戳、标签、来源、状态、类型、关联错题
         - content 原样输出（保留内部换行）
         """
         lines = []
@@ -230,6 +230,8 @@ class MemoryStore:
         source = entry.get("source", "")
         status = entry.get("status", "")
         content = entry.get("content", "")
+        entry_type = entry.get("type", "reference")
+        source_problem_id = entry.get("source_problem_id")
 
         lines.append("---")
         lines.append(f"**ID:** {eid}")
@@ -237,7 +239,10 @@ class MemoryStore:
         if tags:
             tags_str = ", ".join(f"`{t}`" for t in tags)
             lines.append(f"**标签:** {tags_str}")
-        lines.append(f"**来源:** {source}  |  **状态:** {status}")
+        meta_parts = [f"**来源:** {source}", f"**状态:** {status}", f"**类型:** {entry_type}"]
+        if source_problem_id:
+            meta_parts.append(f"**关联错题:** {source_problem_id}")
+        lines.append("  |  ".join(meta_parts))
         lines.append("")
         lines.append(content)
         lines.append("")  # 条目尾部空行，方便阅读
@@ -338,7 +343,11 @@ class MemoryStore:
         return None
 
     def iter_layer0(self) -> List[Dict]:
-        """遍历 Layer 0 全部条目。"""
+        """遍历 Layer 0 全部条目。
+
+        向后兼容：旧记录没有 type 和 source_problem_id 字段，
+        读取时默认填充为 "reference" 和 None。
+        """
         entries = []
         try:
             content = self._layer0_path.read_text(encoding="utf-8")
@@ -347,7 +356,13 @@ class MemoryStore:
                 if not line:
                     continue
                 try:
-                    entries.append(json.loads(line))
+                    entry = json.loads(line)
+                    # 向后兼容：补充 type 和 source_problem_id
+                    if "type" not in entry:
+                        entry["type"] = "reference"
+                    if "source_problem_id" not in entry:
+                        entry["source_problem_id"] = None
+                    entries.append(entry)
                 except json.JSONDecodeError as e:
                     logger.warning(f"Layer 0 JSONL 解析错误: {e}")
         except FileNotFoundError:

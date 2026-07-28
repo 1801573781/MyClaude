@@ -200,7 +200,14 @@ Welcome to MyClaude Code CLI! A beautiful terminal interface for AI Coding.
 - `/mem extract` (或 `/mem ext`) - 手动触发记忆提取（从原始对话中提取结构化记忆）
 - `/mem compaction` (或 `/mem com`) - 手动触发记忆整理（合并、降级、淘汰）
 - `/mem evolution` (或 `/mem evo`) - 手动触发记忆进化（模式识别、矛盾解决、归纳、趋势）
-- `/mem remove` (或 `/mem r`) - 清除所有记忆（短期 + 长期 + 工作记忆）
+- `/mem rt <信息>` - 记忆召回测试：给定信息，返回相关召回的记忆
+- `/mem remove` (或 `/mem rm`) - 清除所有记忆（短期 + 长期 + 工作记忆）
+- `/bug show` - 查看Bug库（按模块/状态/ID筛选）
+- `/bug ext` (或 `/bug extract`) - 从当前session对话中提取Bug到Bug库
+- `/bug rt <模块路径 | 文件名称>` - 召回测试：给定模块路径或文件名称，返回相关Bug
+- `/bug rm` (或 `/bug remove`) - 清除所有Bug记录
+- `/bug archive` - 归档已修复的Bug
+- `/bug stats` - 统计各模块Bug数及状态分布
 - `/init` - 创建MyClaude的项目工程树
 - `/cs` - 统计项目代码行数
 - `/test` - 单元测试和系统测试，/test --help 显示test命令帮助信息
