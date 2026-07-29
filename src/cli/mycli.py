@@ -727,7 +727,7 @@ class MyClaudeCLI:
                     "  /mem extract    — 提取 raw 记忆 (简写 /mem ext)\n"
                     "  /mem compaction — 整理记忆 (简写 /mem com)\n"
                     "  /mem evolution  — 进化记忆 (简写 /mem evo)\n"
-                    "  /mem rt <信息>  — 记忆召回测试 (简写 /mem retrieve)\n"
+                    "  /mem retrieve <信息>  — 记忆召回测试 (简写 /mem rt)\n"
                     "  /mem remove     — 清除所有记忆 (简写 /mem rm)"
                 )
                 return True
@@ -1333,7 +1333,7 @@ class MyClaudeCLI:
                     "  /mem extract    — 提取 raw 记忆 (简写 /mem ext)\n"
                     "  /mem compaction — 整理记忆 (简写 /mem com)\n"
                     "  /mem evolution  — 进化记忆 (简写 /mem evo)\n"
-                    "  /mem rt <信息>  — 记忆召回测试 (简写 /mem retrieve)\n"
+                    "  /mem retrieve <信息>  — 记忆召回测试 (简写 /mem rt)\n"
                     "  /mem remove     — 清除所有记忆 (简写 /mem rm)"
                 )
                 return True
@@ -1349,12 +1349,12 @@ class MyClaudeCLI:
                     "bug base相关命令，输入 /bug 查看命令列表\n"
                     "\n"
                     "可用命令:\n"
-                    "  /bug show [选项]    — 查看Bug库\n"
-                    "  /bug ext            — 从MD会话日志提取Bug\n"
-                    "  /bug rt <模块路径|文件名> — 召回测试\n"
-                    "  /bug rm             — 清除所有Bug\n"
-                    "  /bug archive [选项] — 归档已修复的Bug\n"
-                    "  /bug stats          — 统计信息"
+                    "  /bug show [选项]            — 查看Bug库\n"
+                    "  /bug extract                — 从MD会话日志提取Bug (简写 /bug ext)\n"
+                    "  /bug retrieve <模块路径|文件名> — 召回测试 (简写 /bug rt)\n"
+                    "  /bug remove                 — 清除所有Bug (简写 /bug rm)\n"
+                    "  /bug archive [选项]         — 归档已修复的Bug\n"
+                    "  /bug stats                  — 统计信息"
                 )
                 return True
 
@@ -1382,12 +1382,12 @@ class MyClaudeCLI:
             else:
                 cli_print.print_error(
                     "未知的 /bug 子命令。可用:\n"
-                    "  /bug show [选项]    — 查看Bug库\n"
-                    "  /bug ext            — 从MD会话日志提取Bug\n"
-                    "  /bug rt <模块路径|文件名> — 召回测试\n"
-                    "  /bug rm             — 清除所有Bug\n"
-                    "  /bug archive [选项] — 归档已修复的Bug\n"
-                    "  /bug stats          — 统计信息"
+                    "  /bug show [选项]            — 查看Bug库\n"
+                    "  /bug extract                — 从MD会话日志提取Bug (简写 /bug ext)\n"
+                    "  /bug retrieve <模块路径|文件名> — 召回测试 (简写 /bug rt)\n"
+                    "  /bug remove                 — 清除所有Bug (简写 /bug rm)\n"
+                    "  /bug archive [选项]         — 归档已修复的Bug\n"
+                    "  /bug stats                  — 统计信息"
                 )
                 return True
 

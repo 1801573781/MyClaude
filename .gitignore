@@ -23,7 +23,6 @@ code_output/*
 context/*
 log/*
 spec/*
-memory_storage/*
 tests/*
 token_statistics/*
 
@@ -35,7 +34,28 @@ token_statistics/*
 !spec/myclaude_test_spec.md
 !spec/unit_test_case_generator_spec.md
 !spec/unit_test_spec_origin.txt
-!memory_storage/.gitkeep
 !tests/.gitkeep
 !token_statistics/.gitkeep
 
+# memory有点复杂，单独列
+
+# 忽略 memory_storage 目录下的所有内容
+memory_storage/*
+
+# 保留 memory_storage 下的 memory_ex 目录
+!memory_storage/memory_ex/
+
+# 忽略 memory_ex 目录下的所有内容
+memory_storage/memory_ex/*
+
+# 保留 bug_base 和 raw_memory 目录本身
+!memory_storage/memory_ex/bug_base/
+!memory_storage/memory_ex/raw_memory/
+
+# 忽略这两个目录下的所有内容
+memory_storage/memory_ex/bug_base/*
+memory_storage/memory_ex/raw_memory/*
+
+# 但保留这两个目录下的 .gitkeep 文件
+!memory_storage/memory_ex/bug_base/.gitkeep
+!memory_storage/memory_ex/raw_memory/.gitkeep
