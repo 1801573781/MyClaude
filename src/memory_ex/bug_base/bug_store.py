@@ -400,3 +400,32 @@ class BugStore:
         meta_path.write_text(
             json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
         )
+
+    def get_extracted_md_files(self) -> set:
+        """获取已提取过 Bug 的 MD 文件名集合。
+
+        读取 bug_ext_record.md，返回已处理过的
+        MD 会话日志文件名集合，避免重复提取。
+        """
+        record_path = self.base_dir / "bug_ext_record.md"
+        if not record_path.exists():
+            return set()
+        try:
+            content = record_path.read_text(encoding="utf-8")
+            return set(line.strip() for line in content.splitlines() if line.strip())
+        except Exception:
+            return set()
+
+    def mark_md_file_extracted(self, filename: str):
+        """标记 MD 文件已完成 Bug 提取。
+
+        Args:
+            filename: MD 会话日志文件名（如 MyClaude_2026-07-28_22-21-56.md）
+        """
+        record_path = self.base_dir / "bug_ext_record.md"
+        try:
+            with open(record_path, "a", encoding="utf-8") as f:
+                f.write(filename + "\n")
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"写入 bug_ext_record.md 失败: {e}")

@@ -76,11 +76,8 @@ def _get_default_config() -> SimpleNamespace:
     return SimpleNamespace(
         storage=SimpleNamespace(
             base_dir="D:/AI/MyClaude/memory_storage/memory_ex/",
-            layer0_file="raw_memory.jsonl",
-            layer0_md_file="raw_memory.md",
             layer1_file="MEMORY.md",
             metadata_file="metadata.json",
-            archive_dir="archive/",
         ),
         watermarks=SimpleNamespace(
             warning=150,
@@ -126,10 +123,6 @@ def _get_default_config() -> SimpleNamespace:
             code_absorbed_penalty=0.40,
             recency_halflife_days=7,
             access_frequency_max=10,
-        ),
-        archive=SimpleNamespace(
-            trigger_lines=1000,
-            max_archive_files=5,
         ),
         retrieval=SimpleNamespace(
             default_top_k=5,
@@ -205,15 +198,16 @@ class MemoryEx(MemoryExInterface):
 
     @property
     def raw_prompt_threshold(self) -> int:
-        """raw 条目累积提示阈值，供 query_loop 读取。"""
-        return int(getattr(self._mem_config.extractor, "raw_prompt_threshold", 10))
+        """raw 条目累积提示阈值（已废弃，保留仅为接口兼容）。"""
+        return 999999  # 返回极大值，确保不会触发提示
 
     # ===== 兼容 MemoryInterface 的方法 =====
 
     def add(self, role: str, content: str, metadata=None) -> str:
-        """存储记忆。将原始内容直接写入 Layer 0（status=raw），不调用 LLM。
+        """存储记忆（已废弃，不再写入 Layer 0）。
 
-        提取器在 Query 结束后通过 extract() 方法批量处理。
+        保留此方法仅为接口兼容，实际不做任何操作。
+        记忆提取已改为从 MD 会话日志中直接提取，不再需要逐条写入。
 
         Args:
             role: 角色（通常为空字符串或 "user"）
@@ -221,13 +215,16 @@ class MemoryEx(MemoryExInterface):
             metadata: 附加元数据（turn, has_tools, user_input 等）
 
         Returns:
-            新条目的 ID
+            空字符串
         """
-        return self._store.add_raw(role, content, metadata)
+        return ""
 
     def get(self, memory_id: str) -> Optional[Dict]:
-        """按 ID 从 Layer 0 获取单条记忆。"""
-        return self._store.get_layer0_entry(memory_id)
+        """按 ID 获取单条记忆（已废弃，不再从 Layer 0 读取）。
+
+        保留此方法仅为接口兼容。
+        """
+        return None
 
     def search(self, query: str, top_k: int = None, **filters) -> List[Dict]:
         """搜索 Layer 0 + Layer 2。供 CLI /mem search 命令调用。"""
@@ -380,13 +377,46 @@ class MemoryEx(MemoryExInterface):
     def stats(self) -> Dict:
         """返回记忆统计信息。"""
         result = self._store.get_stats()
-        # 添加 raw 条目的 query_id 分组数
-        raw_entries = self._store.get_raw_entries()
-        query_groups = set()
-        for entry in raw_entries:
-            qid = entry.get("query_id", 0)
-            query_groups.add(qid)
-        result["layer0_raw_groups"] = len(query_groups)
+
+        # MD 会话日志统计（新提取源）
+        import os
+        import json
+
+        raw_memory_dir = Path(self._store._base_dir) / "raw_memory"
+        if raw_memory_dir.exists():
+            md_files = list(raw_memory_dir.glob("MyClaude_*.md"))
+            result["md_total"] = len(md_files)
+
+            # 优先读取 JSON 格式记录，兼容旧 MD 格式
+            json_path = Path(self._store._base_dir) / "mem_ext_record.json"
+            old_md_path = Path(self._store._base_dir) / "mem_ext_record.md"
+
+            extracted_count = 0
+            if json_path.exists():
+                try:
+                    record = json.loads(json_path.read_text(encoding="utf-8"))
+                    # 统计已提取且有增量内容待提取的文件数
+                    extracted_count = len(record)
+                except Exception:
+                    extracted_count = 0
+            elif old_md_path.exists():
+                try:
+                    extracted = set(
+                        line.strip()
+                        for line in old_md_path.read_text(encoding="utf-8").splitlines()
+                        if line.strip()
+                    )
+                    extracted_count = len(extracted)
+                except Exception:
+                    extracted_count = 0
+
+            result["md_extracted"] = extracted_count
+            result["md_pending"] = len(md_files) - extracted_count
+        else:
+            result["md_total"] = 0
+            result["md_extracted"] = 0
+            result["md_pending"] = 0
+
         return result
 
     def maintain(self) -> int:
@@ -396,11 +426,13 @@ class MemoryEx(MemoryExInterface):
     # ===== 扩展方法 =====
 
     def extract(self) -> dict:
-        """从 Layer 0 中 status=raw 的条目中提取结构化记忆。
+        """从 MD 会话日志中提取结构化记忆。
 
-        Query 结束后由 query_loop.py 显式调用。
+        扫描 raw_memory/ 目录下的 MyClaude_*.md 文件，
+        调用 LLM 提取记忆，写入 MEMORY.md。
+        已提取的文件记录在 mem_ext_record.md 中，不会重复提取。
         """
-        return self._extractor.extract_raw_entries()
+        return self._extractor.extract_from_md_logs()
 
     def evolve(self) -> dict:
         """手动触发全类型进化。返回进化统计信息。"""

@@ -298,6 +298,140 @@ class BugExtractor:
             return "请从以下对话中提取所有 Bug/问题/错误。\n\n对话内容：\n{dialog}"
         return prompt_path.read_text(encoding="utf-8")
 
+    def extract_from_md_logs(self) -> dict:
+        """从 MD 会话日志中提取 Bug。
+
+        扫描 raw_memory/MyClaude_*.md 文件，
+        跳过已提取的文件（记录在 bug_ext_record.md 中），
+        调用 LLM 提取 Bug，存入 Bug库。
+
+        Returns:
+            统计信息字典
+        """
+        from pathlib import Path
+
+        # 1. 定位 raw_memory 目录
+        raw_memory_dir = self.store.base_dir.parent / "raw_memory"
+        if not raw_memory_dir.exists():
+            return {"processed": 0, "extracted": 0, "skipped": 0, "details": [],
+                    "error": "raw_memory目录不存在"}
+
+        # 2. 扫描 MD 会话日志
+        md_files = sorted(raw_memory_dir.glob("MyClaude_*.md"))
+        if not md_files:
+            return {"processed": 0, "extracted": 0, "skipped": 0, "details": []}
+
+        # 3. 读取已提取记录
+        extracted_files = self.store.get_extracted_md_files()
+        pending_files = [f for f in md_files if f.name not in extracted_files]
+        if not pending_files:
+            return {"processed": 0, "extracted": 0, "skipped": 0, "details": [],
+                    "skipped_reason": "所有MD日志已提取"}
+
+        # 4. 逐文件提取
+        total_extracted = 0
+        total_processed = 0
+        total_skipped = 0
+        details = []
+        now_str = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+
+        for md_file in pending_files:
+            try:
+                content = md_file.read_text(encoding="utf-8")
+            except Exception as e:
+                total_skipped += 1
+                details.append({
+                    "file": md_file.name, "action": f"读取失败: {e}",
+                })
+                continue
+
+            if not content.strip():
+                self.store.mark_md_file_extracted(md_file.name)
+                total_skipped += 1
+                details.append({
+                    "file": md_file.name, "action": "空文件跳过",
+                })
+                continue
+
+            # 输入长度截断保护
+            MAX_INPUT_CHARS = 12000
+            if len(content) > MAX_INPUT_CHARS:
+                content = content[:MAX_INPUT_CHARS]
+                content += "\n\n[注意：原始记录过长，已截断]"
+
+            # 构造 LLM 请求
+            prompt = self.extraction_prompt.replace("{dialog}", content)
+            messages = [{"role": "user", "content": prompt}]
+
+            # 调用 LLM
+            response = self._call_llm(messages)
+            if not response:
+                details.append({
+                    "file": md_file.name, "action": "LLM调用失败，保留待下次提取",
+                })
+                continue
+
+            # 解析 LLM 返回
+            raw_records = self._parse_llm_response(response)
+            if not raw_records:
+                self.store.mark_md_file_extracted(md_file.name)
+                total_processed += 1
+                details.append({
+                    "file": md_file.name, "action": "LLM判定无Bug，标记已提取",
+                })
+                continue
+
+            # 构造 BugRecord 并存储
+            for raw in raw_records:
+                affected_files = raw.get("affected_files", [])
+                if not affected_files:
+                    continue
+
+                module = self.store._resolve_module(affected_files[0])
+
+                file_hashes = {}
+                for fp in affected_files:
+                    h = self.store._compute_file_hash(fp)
+                    if h:
+                        file_hashes[fp] = h
+
+                record_id = self.store.generate_id()
+                record = BugRecord(
+                    id=record_id,
+                    title=raw.get("title", "未命名问题"),
+                    module=module,
+                    affected_files=affected_files,
+                    affected_functions=raw.get("affected_functions", []),
+                    root_cause=raw.get("root_cause", ""),
+                    symptoms=raw.get("symptoms", ""),
+                    fix_pattern=raw.get("fix_pattern", ""),
+                    caution=raw.get("caution", ""),
+                    generalization=raw.get("generalization", ""),
+                    status="open",
+                    file_hashes=file_hashes,
+                    created_at=now_str,
+                    source_session="md_log_extraction",
+                    memory_linked=None,
+                )
+
+                self.store.add(record)
+                total_extracted += 1
+                details.append({
+                    "file": md_file.name,
+                    "action": f"提取出Bug: {record_id} ({record.title})",
+                })
+
+            # 标记文件已提取
+            self.store.mark_md_file_extracted(md_file.name)
+            total_processed += 1
+
+        return {
+            "processed": total_processed,
+            "extracted": total_extracted,
+            "skipped": total_skipped,
+            "details": details,
+        }
+
     def _format_dialog(self, api_messages: list[dict]) -> str:
         """将 api_messages 格式化为对话文本。"""
         lines = []

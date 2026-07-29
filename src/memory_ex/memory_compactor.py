@@ -51,6 +51,7 @@ class MemoryCompactor:
         comp_config = mem_config.compactor
         self._temperature = float(getattr(comp_config, "temperature", 0.3))
         self._max_tokens = int(getattr(comp_config, "max_tokens", 2048))
+        self._timeout = int(getattr(comp_config, "timeout", 120))
 
         # 水位配置
         wm = mem_config.watermarks
@@ -358,7 +359,9 @@ class MemoryCompactor:
                         if tag not in merged_tags:
                             merged_tags.append(tag)
                     used.add(j)
-                    merged_count += 1
+
+                # 统计参与合并的总条目数（原始条目 + 候选条目）
+                merged_count += len(merged_from)
 
                 entry["content"] = merged_content
                 entry["tags"] = merged_tags
@@ -398,7 +401,7 @@ class MemoryCompactor:
         prompt = prompt_template.replace("{memory_entries}", entries_text)
 
         try:
-            response = self._call_llm(prompt, timeout=10)
+            response = self._call_llm(prompt, timeout=self._timeout)
             if not response:
                 return 0, entries, []
 
@@ -435,7 +438,7 @@ class MemoryCompactor:
                 if i not in merged_indices:
                     new_entries.append(e)
 
-            return len(merged_indices) - 1, new_entries, merge_details
+            return len(merged_indices), new_entries, merge_details
 
         except Exception as e:
             logger.error(f"LLM 辅助合并失败: {e}")
@@ -546,50 +549,68 @@ class MemoryCompactor:
         return line
 
     def _same_tags(self, tags_a: List[str], tags_b: List[str]) -> bool:
-        """判断两组标签是否相同。"""
-        return set(tags_a) == set(tags_b) and bool(tags_a)
+        """判断两组标签是否相似（Jaccard 相似度 ≥ 0.5）。"""
+        if not tags_a or not tags_b:
+            return False
+        set_a = set(tags_a)
+        set_b = set(tags_b)
+        intersection = set_a & set_b
+        union = set_a | set_b
+        return len(intersection) / len(union) >= 0.5
 
     def _jaccard_similarity(self, text_a: str, text_b: str) -> float:
-        """计算两段文本的 Jaccard 相似度。"""
-        set_a = set(text_a.split())
-        set_b = set(text_b.split())
+        """计算两段文本的 Jaccard 相似度。
+
+        对中文文本，空格分词无效，改用字符级 bigram 集合计算。
+        对英文/混合文本，bigram 仍能有效捕捉相似度。
+        """
+        def _bigrams(text: str) -> set:
+            text = text.strip()
+            if len(text) < 2:
+                return {text} if text else set()
+            return {text[i:i+2] for i in range(len(text) - 1)}
+
+        set_a = _bigrams(text_a)
+        set_b = _bigrams(text_b)
         if not set_a or not set_b:
             return 0.0
         intersection = set_a & set_b
         union = set_a | set_b
         return len(intersection) / len(union)
 
-    def _call_llm(self, prompt: str, timeout: int = 10) -> Optional[str]:
-        """调用 LLM，带超时保护。"""
+    def _call_llm(self, prompt: str, timeout: int = 120) -> Optional[str]:
+        """调用 LLM，带超时保护。
+
+        直接将 timeout 传递给 simple_chat，由 httpx 在 HTTP 层处理超时，
+        确保超时后连接被正确关闭，避免线程泄漏和僵尸连接。
+        """
         if not self._llm_chat_fn:
             return None
 
-        import threading
+        import time
 
-        result = {"response": None, "done": False}
+        try:
+            start = time.time()
+            response = self._llm_chat_fn(
+                prompt,
+                temperature=self._temperature,
+                max_tokens=self._max_tokens,
+                timeout=float(timeout),
+            )
+            elapsed = time.time() - start
 
-        def _call():
-            try:
-                response = self._llm_chat_fn(
-                    prompt,
-                    temperature=self._temperature,
-                    max_tokens=self._max_tokens,
-                )
-                result["response"] = response
-            except Exception as e:
-                logger.error(f"LLM 调用异常: {e}")
-            finally:
-                result["done"] = True
+            if not response:
+                if elapsed >= timeout * 0.9:
+                    logger.warning(f"LLM 整理疑似超时（耗时 {elapsed:.1f}s，阈值 {timeout}s）")
+                else:
+                    logger.warning(f"LLM 整理返回空响应（耗时 {elapsed:.1f}s）")
+                return None
 
-        thread = threading.Thread(target=_call, daemon=True)
-        thread.start()
-        thread.join(timeout=timeout)
-
-        if not result["done"]:
-            logger.warning(f"LLM 整理超时（{timeout}s）")
+            logger.info(f"LLM 整理成功（耗时 {elapsed:.1f}s）")
+            return response
+        except Exception as e:
+            logger.error(f"LLM 整理调用异常: {e}")
             return None
-
-        return result["response"]
 
     def _get_builtin_merge_prompt(self) -> str:
         """内置合并 Prompt。"""

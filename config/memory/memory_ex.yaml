@@ -1,11 +1,8 @@
 memory_ex:
   storage:
     base_dir: "D:/AI/MyClaude/memory_storage/memory_ex/"
-    layer0_file: "raw_memory.jsonl"
-    layer0_md_file: "raw_memory.md"
     layer1_file: "MEMORY.md"
     metadata_file: "metadata.json"
-    archive_dir: "archive/"
 
   watermarks:
     warning: 150
@@ -52,13 +49,10 @@ memory_ex:
     recency_halflife_days: 7
     access_frequency_max: 10
 
-  archive:
-    trigger_lines: 1000
-    max_archive_files: 5
-
   retrieval:
     default_top_k: 5
     max_top_k: 20
+    timeout: 30               # LLM 预检索超时秒数（非流式调用，建议 15~60）
 
   injection:
     max_tokens: 2000

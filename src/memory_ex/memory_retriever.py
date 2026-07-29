@@ -1,13 +1,10 @@
-﻿"""记忆召回模块。
+"""记忆召回模块。
 
-对应设计文档第二章。
-
-召回策略：索引层按需注入 + 主题文件懒加载。
+召回策略：Layer 1 按需注入 + 倒排索引搜索。
 
 职责：
 - 读取 Layer 1（MEMORY.md）内容供注入
-- 解析 Layer 1 中的主题文件指针
-- 利用倒排索引搜索 Layer 0 原始数据（回退机制）
+- 利用倒排索引搜索 Layer 1 数据
 - 提供搜索接口供 CLI /mem search 命令调用
 """
 
@@ -55,6 +52,7 @@ class MemoryRetriever:
         retrieval_config = mem_config.retrieval
         self._default_top_k = int(getattr(retrieval_config, "default_top_k", 5))
         self._max_top_k = int(getattr(retrieval_config, "max_top_k", 20))
+        self._timeout = int(getattr(retrieval_config, "timeout", 30))
 
         injection_config = mem_config.injection
         self._max_injection_tokens = int(
@@ -117,7 +115,7 @@ class MemoryRetriever:
 
         # 调用 LLM 筛选
         try:
-            response = self._call_llm_with_timeout(prompt, timeout=15)
+            response = self._call_llm_with_timeout(prompt, timeout=self._timeout)
             if response is None:
                 logger.warning("LLM 预检索超时，跳过召回")
                 return []
@@ -246,8 +244,11 @@ class MemoryRetriever:
 
         return indices
 
-    def _call_llm_with_timeout(self, prompt: str, timeout: int = 15) -> Optional[str]:
+    def _call_llm_with_timeout(self, prompt: str, timeout: int = 30) -> Optional[str]:
         """调用 LLM，带超时保护。
+
+        直接将 timeout 传递给 simple_chat，由 httpx 在 HTTP 层处理超时，
+        确保超时后连接被正确关闭，避免线程泄漏和僵尸连接。
 
         Args:
             prompt: 完整 Prompt
@@ -256,32 +257,30 @@ class MemoryRetriever:
         Returns:
             LLM 响应文本，None 表示超时
         """
-        import threading
+        import time
 
-        result = {"response": None, "done": False}
+        try:
+            start = time.time()
+            response = self._llm_chat_fn(
+                prompt,
+                temperature=0.1,
+                max_tokens=10240,
+                timeout=float(timeout),
+            )
+            elapsed = time.time() - start
 
-        def _call():
-            try:
-                response = self._llm_chat_fn(
-                    prompt,
-                    temperature=0.1,
-                    max_tokens=10240,
-                )
-                result["response"] = response
-            except Exception as e:
-                logger.error(f"LLM 预检索调用异常: {e}")
-            finally:
-                result["done"] = True
+            if not response:
+                if elapsed >= timeout * 0.9:
+                    logger.warning(f"LLM 预检索疑似超时（耗时 {elapsed:.1f}s，阈值 {timeout}s）")
+                else:
+                    logger.warning(f"LLM 预检索返回空响应（耗时 {elapsed:.1f}s）")
+                return None
 
-        thread = threading.Thread(target=_call, daemon=True)
-        thread.start()
-        thread.join(timeout=timeout)
-
-        if not result["done"]:
-            logger.warning(f"LLM 预检索超时（{timeout}s）")
+            logger.info(f"LLM 预检索成功（耗时 {elapsed:.1f}s）")
+            return response
+        except Exception as e:
+            logger.error(f"LLM 预检索调用异常: {e}")
             return None
-
-        return result["response"]
 
     def get_layer1_content(self) -> str:
         """读取 Layer 1（MEMORY.md）内容（全量，向后兼容）。
@@ -298,11 +297,11 @@ class MemoryRetriever:
         return self._store.get_layer1_stats()
 
     def search(self, query: str, top_k: int = None, **filters) -> List[Dict]:
-        """搜索 Layer 0。
+        """搜索 Layer 1。
 
-        供 CLI /mem search 命令调用。仅搜索 Layer 0。
+        供 CLI /mem search 命令调用。仅搜索 Layer 1（MEMORY.md）。
 
-        利用倒排索引进行快速定位，避免全量扫描 JSONL。
+        利用倒排索引进行快速定位，再回退到内容匹配。
 
         Args:
             query: 搜索关键词
@@ -324,24 +323,24 @@ class MemoryRetriever:
         # 1. 通过倒排索引查找匹配的条目 ID
         matched_ids = self._store.search_inverted_index(keywords)
 
-        # 2. 精准读取匹配的 Layer 0 条目
-        results = []
-        all_entries = self._store.iter_layer0()
+        # 2. 从 Layer 1 读取并匹配
+        layer1_content = self._store.read_layer1()
+        if not layer1_content:
+            return []
+
+        all_entries = self._parse_layer1_entries(layer1_content)
         id_set = set(matched_ids)
 
+        results = []
         for entry in all_entries:
-            if entry.get("id") in id_set:
-                # 应用过滤条件
+            entry_id = entry.get("id", "")
+            content = entry.get("content", "")
+            tags = entry.get("tags", [])
+
+            # 倒排索引命中或内容匹配
+            if entry_id in id_set or any(kw.lower() in content.lower() for kw in keywords):
                 if self._matches_filters(entry, filters):
                     results.append(entry)
-
-            # 也做内容匹配（补充倒排索引的遗漏）
-            if len(results) < top_k and entry.get("id") not in id_set:
-                content = entry.get("content", "")
-                if any(kw.lower() in content.lower() for kw in keywords):
-                    if self._matches_filters(entry, filters):
-                        if entry not in results:
-                            results.append(entry)
 
             if len(results) >= top_k:
                 break
@@ -349,37 +348,15 @@ class MemoryRetriever:
         return results[:top_k]
 
     def search_layer0_by_keywords(self, keywords: List[str]) -> List[Dict]:
-        """通过关键词搜索 Layer 0 原始数据（回退机制）。
-
-        当 LLM 发现索引层信息不够时，可主动搜索 Layer 0。
+        """通过关键词搜索（已废弃，保留仅为接口兼容）。
 
         Args:
             keywords: 关键词列表
 
         Returns:
-            匹配的 Layer 0 条目列表
+            空列表
         """
-        if not keywords:
-            return []
-
-        # 优先使用倒排索引
-        matched_ids = self._store.search_inverted_index(keywords)
-        if matched_ids:
-            all_entries = self._store.iter_layer0()
-            id_set = set(matched_ids)
-            return [e for e in all_entries if e.get("id") in id_set]
-
-        # 降级：全量扫描
-        results = []
-        for entry in self._store.iter_layer0():
-            content = entry.get("content", "")
-            tags = entry.get("tags", [])
-            searchable_text = content + " " + " ".join(tags)
-
-            if any(kw.lower() in searchable_text.lower() for kw in keywords):
-                results.append(entry)
-
-        return results
+        return []
 
     # ===== 辅助方法 =====
 

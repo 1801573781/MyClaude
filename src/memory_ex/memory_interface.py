@@ -91,7 +91,7 @@ class MemoryExInterface(MemoryInterface):
 
     @abstractmethod
     def extract(self) -> dict:
-        """从 Layer 0 中 status=raw 的条目中提取结构化记忆。
+        """从会话日志中提取结构化记忆，写入 Layer 1。
 
         Query 结束后由 query_loop.py 显式调用。
         """
@@ -109,7 +109,7 @@ class MemoryExInterface(MemoryInterface):
 
     @abstractmethod
     def check_evolution_needed(self) -> bool:
-        """检查是否需要进化（基于 Layer 0 积累量）。"""
+        """检查是否需要进化（基于 Layer 1 积累量）。"""
         ...
 
     @abstractmethod

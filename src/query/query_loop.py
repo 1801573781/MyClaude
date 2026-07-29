@@ -76,6 +76,9 @@ class QueryLoop:
         self._pending_memory_recall = False
         self._current_user_input = ""
 
+        # file_view 重复查看检测：同一文件在同一 Query 中被查看超过 2 次时提醒 LLM
+        self._file_view_counts = {}  # {文件路径: 查看次数}
+
 
     def _init_memory(self):
         """通过工厂函数创建记忆实例，容错降级为 NoopMemory。"""
@@ -206,6 +209,7 @@ class QueryLoop:
         self._todo_manager.reset()  # 每次新 Turn 重置 todo 列表
         self._pending_memory_recall = False  # 重置延迟召回标志
         self._current_user_input = ""  # 清空缓存的用户输入
+        self._file_view_counts = {}  # 重置 file_view 重复查看计数器
 
         # 如果有斜杠命令上下文，用命令内容重置 api_messages
         self._command_context = command_context
@@ -302,19 +306,7 @@ class QueryLoop:
                     logger.warning(f"自动进化失败: {e}")
 
                 # 4. 提示机制
-                # 4.1 raw 条目累积提示（提醒用户手动执行提取）
-                try:
-                    stats = self._memory.stats()
-                    raw_count = stats.get("layer0_raw", 0)
-                    threshold = getattr(self._memory, "raw_prompt_threshold", 10)
-                    if raw_count >= threshold:
-                        self._print_info(
-                            f"已有 {raw_count} 条未提取记忆，执行 /mem extract 提取记忆"
-                        )
-                except Exception:
-                    pass
-
-                # 4.2 整理与进化提示（如果自动关闭且需要执行）
+                # 4.1 整理与进化提示（如果自动关闭且需要执行）
                 if self._memory.check_compaction_needed():
                     self._print_info("记忆需要整理，执行 /mem compaction 命令整理记忆")
                 if self._memory.check_evolution_needed():
@@ -701,6 +693,20 @@ class QueryLoop:
 
                 # 将 tool 的执行结果，append 到 api_messages
                 self.api_messages.append_tool_exec_result(result_msg)
+
+                # ===== file_view 重复查看检测 =====
+                if t["llm_tool"] == "file_view":
+                    view_path = t["params"].get("path", "")
+                    if view_path:
+                        self._file_view_counts[view_path] = self._file_view_counts.get(view_path, 0) + 1
+                        count = self._file_view_counts[view_path]
+                        if count > 2:
+                            reminder = (
+                                f"[系统提醒] 文件 {view_path} 已被查看 {count} 次。"
+                                f"如果已掌握足够信息，建议直接开始修改；如确实需要继续查看，请忽略此提醒。"
+                            )
+                            self.api_messages.append_micro_info("system", reminder)
+                            self._print_info(f"[file_view 提醒] {view_path} 已查看 {count} 次，已注入提醒")
 
                 # ===== 延迟记忆召回：file_view 执行后用文件内容触发召回 =====
                 if t["llm_tool"] == "file_view" and self._pending_memory_recall:

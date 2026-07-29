@@ -1,16 +1,14 @@
 """记忆提取器。
 
-对应设计文档第一章 1.4 节。
-
 职责：
-- Query 结束后批量处理 status=raw 的条目
+- 从 MD 会话日志中批量提取结构化记忆
 - 使用 LLM 从原始对话中提取 1~3 条结构化记忆
 - 前置过滤降低 LLM 调用成本
-- 更新条目状态为 unprocessed 或 processed
 - 维护倒排索引和实体规范化
 """
 
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -33,8 +31,8 @@ def _load_prompt(filename: str) -> str:
 class MemoryExtractor:
     """记忆提取器。
 
-    在 Query 结束后由 query_loop.py 显式调用 extract() 方法，
-    批量处理该 Query 中所有 status=raw 的条目。
+    从 MD 会话日志中提取结构化记忆，写入 Layer 1（MEMORY.md）。
+    由 query_loop.py 或 CLI /mem extract 命令显式调用。
     """
 
     # 技术关键词列表（用于前置过滤判断）
@@ -70,6 +68,9 @@ class MemoryExtractor:
 
         # 错题集实例（延迟注入，用于 caution 类型的双向关联）
         self._problem_base = None
+
+        # 最近一次 LLM 调用的失败原因（timeout / empty_response / error / None）
+        self._last_error_reason = None
 
     def set_llm_chat_fn(self, fn):
         """注入 LLM 调用函数。"""
@@ -125,124 +126,234 @@ class MemoryExtractor:
 
         return None
 
-    def extract_raw_entries(self) -> dict:
-        """提取入口：处理所有 status=raw 的条目。
+    def _read_mem_ext_record(self) -> Dict[str, int]:
+        """读取已提取记录（文件名 → 字节偏移量）。
+
+        返回字典，key 为 MD 文件名，value 为上次提取时的文件字节大小。
+        下次提取时，从该偏移量之后读取新增内容。
+        """
+        import json
+
+        record_path = Path(self._store._base_dir) / "mem_ext_record.json"
+        if not record_path.exists():
+            return self._migrate_old_record()
+        try:
+            data = json.loads(record_path.read_text(encoding="utf-8"))
+            return {k: int(v) for k, v in data.items()}
+        except Exception:
+            return {}
+
+    def _migrate_old_record(self) -> Dict[str, int]:
+        """从旧格式 mem_ext_record.md 迁移到 JSON 格式。
+
+        旧格式仅记录文件名，迁移时将每个文件当前大小作为偏移量，
+        确保旧内容不会重复提取。
+        """
+        import os
+
+        old_path = Path(self._store._base_dir) / "mem_ext_record.md"
+        if not old_path.exists():
+            return {}
+        try:
+            old_names = set(
+                line.strip()
+                for line in old_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            )
+            raw_memory_dir = Path(self._store._base_dir) / "raw_memory"
+            record: Dict[str, int] = {}
+            for name in old_names:
+                fp = raw_memory_dir / name
+                if fp.exists():
+                    record[name] = os.path.getsize(str(fp))
+            self._save_mem_ext_record(record)
+            old_path.unlink()
+            logger.info(f"迁移旧提取记录: {len(record)} 条")
+            return record
+        except Exception as e:
+            logger.warning(f"迁移旧提取记录失败: {e}")
+            return {}
+
+    def _save_mem_ext_record(self, record: Dict[str, int]):
+        """保存已提取记录到 JSON 文件。"""
+        import json
+
+        record_path = Path(self._store._base_dir) / "mem_ext_record.json"
+        try:
+            record_path.write_text(
+                json.dumps(record, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception as e:
+            logger.error(f"写入 mem_ext_record.json 失败: {e}")
+
+    def _mark_file_extracted(self, filename: str, byte_offset: int):
+        """标记 MD 文件已提取到指定字节偏移量。
+
+        Args:
+            filename: MD 日志文件名
+            byte_offset: 提取完成时的文件字节大小
+        """
+        record = self._read_mem_ext_record()
+        record[filename] = byte_offset
+        self._save_mem_ext_record(record)
+
+    def _read_incremental_content(self, file_path: Path, byte_offset: int) -> str:
+        """从指定字节偏移读取文件内容（增量或全量）。
+
+        处理偏移落在行中间或多字节字符中间的情况：
+        跳到下一个完整行的起始，确保不截断 UTF-8 字符。
+
+        Args:
+            file_path: MD 文件路径
+            byte_offset: 起始字节偏移（0 表示全量读取）
 
         Returns:
-            统计信息字典
+            读取到的文本内容
         """
-        raw_entries = self._store.get_raw_entries()
-        if not raw_entries:
-            return {"skipped": True, "reason": "no_raw_entries", "processed": 0}
+        if byte_offset == 0:
+            return file_path.read_text(encoding="utf-8")
 
-        # 按 query_id 分组
-        query_groups: Dict[int, List[Dict]] = {}
-        for entry in raw_entries:
-            qid = entry.get("query_id", 0)
-            query_groups.setdefault(qid, []).append(entry)
+        with open(file_path, "rb") as f:
+            f.seek(byte_offset)
+            raw_bytes = f.read()
+
+        if not raw_bytes:
+            return ""
+
+        # 尝试直接解码
+        try:
+            content = raw_bytes.decode("utf-8")
+            # 如果不是从行首开始，跳到下一行
+            if not content.startswith("\n"):
+                first_newline = content.find("\n")
+                if first_newline >= 0:
+                    content = content[first_newline + 1:]
+        except UnicodeDecodeError:
+            # 偏移落在多字节字符中间，跳到下一行边界
+            first_newline = raw_bytes.find(b"\n")
+            if first_newline >= 0:
+                content = raw_bytes[first_newline + 1:].decode("utf-8", errors="replace")
+            else:
+                content = ""
+
+        return content
+
+    def extract_from_md_logs(self) -> dict:
+        """从 MD 会话日志中提取结构化记忆。
+
+        扫描 {raw_memory}/MyClaude_*.md 文件，
+        跳过已提取的文件（记录在 mem_ext_record.md 中），
+        调用 LLM 提取记忆，写入 MEMORY.md。
+        """
+        raw_memory_dir = Path(self._store._base_dir) / "raw_memory"
+        if not raw_memory_dir.exists():
+            return {"skipped": True, "reason": "raw_memory目录不存在", "processed": 0}
+
+        md_files = sorted(raw_memory_dir.glob("MyClaude_*.md"))
+        if not md_files:
+            return {"skipped": True, "reason": "无MD会话日志", "processed": 0}
+
+        extracted_files = self._read_mem_ext_record()
+        pending_files = [f for f in md_files if f.name not in extracted_files]
+        if not pending_files:
+            return {"skipped": True, "reason": "所有MD日志已提取", "processed": 0}
 
         total_extracted = 0
-        total_marked_processed = 0
+        total_processed = 0
         total_filtered = 0
-        total_timed_out = 0
+        total_timeout = 0
+        total_empty_response = 0
+        total_error = 0
         total_llm_none = 0
         details: List[Dict[str, Any]] = []
 
-        def _entry_brief(entry: Dict) -> Dict:
-            """提取条目的摘要信息（用于明细展示）。"""
-            meta = entry.get("metadata", {})
-            user_input = meta.get("user_input", "")
-            content_preview = entry.get("content", "")[:300].replace("\n", " ")
-            return {
-                "id": entry.get("id", ""),
-                "query_id": entry.get("query_id", 0),
-                "turn": meta.get("turn", 0),
-                "user_input": user_input,
-                "content_preview": content_preview,
-            }
-
-        total_groups = len(query_groups)
-        for group_idx, (qid, entries) in enumerate(query_groups.items(), 1):
-            # 通知进度回调
+        total_files = len(pending_files)
+        for file_idx, md_file in enumerate(pending_files, 1):
             if self._progress_callback:
                 try:
-                    self._progress_callback(group_idx, total_groups, "正在处理")
+                    self._progress_callback(file_idx, total_files, "正在处理")
                 except Exception:
                     pass
 
-            # 前置过滤
-            if self._should_skip_extraction(entries):
-                logger.info(f"Query {qid} 被前置过滤跳过")
-                for entry in entries:
-                    self._store.update_layer0_entry(
-                        entry["id"],
-                        {"status": "processed"},
-                    )
-                    self._store.update_metadata_entry(entry["id"], status="processed")
-                    details.append({
-                        **_entry_brief(entry),
-                        "action": "前置过滤跳过",
-                        "reason": "对话过短或无技术关键词，不值得提取",
-                    })
-                total_filtered += len(entries)
-                total_marked_processed += len(entries)
+            try:
+                raw_content = md_file.read_text(encoding="utf-8")
+            except Exception as e:
+                logger.warning(f"读取 MD 文件失败 {md_file.name}: {e}")
                 continue
 
-            # 雪崩防护：连续 2 次超时则跳过
+            # 从 MD 日志中提取用户输入
+            user_input = self._extract_user_input_from_md(raw_content)
+
+            # 智能提取内容预览（优先展示 Query 段，而非 CLI 噪音）
+            content_preview = self._extract_content_preview(raw_content)
+
+            if not raw_content.strip():
+                self._mark_file_extracted(md_file.name, os.path.getsize(str(md_file)))
+                total_filtered += 1
+                details.append({
+                    "id": md_file.name, "query_id": 0, "turn": 0,
+                    "user_input": user_input, "content_preview": "(空文件)",
+                    "action": "空文件跳过", "reason": "MD 日志文件为空",
+                })
+                continue
+
+            # 原始内容完整送 LLM 提取（CLI 段中也可能包含有价值信息）
+            content = raw_content
+
             if self._consecutive_timeout_count >= 2:
                 logger.warning("连续 2 次提取超时，跳过本轮提取")
-                for entry in entries:
-                    details.append({
-                        **_entry_brief(entry),
-                        "action": "超时跳过",
-                        "reason": "连续 2 次 LLM 提取超时，雪崩防护",
-                    })
-                total_timed_out += len(entries)
+                details.append({
+                    "id": md_file.name, "query_id": 0, "turn": 0,
+                    "user_input": user_input, "content_preview": content_preview,
+                    "action": "超时跳过", "reason": "连续 2 次 LLM 提取超时，雪崩防护",
+                })
+                total_timeout += 1
                 continue
 
-            # LLM 提取
-            extracted_memories = self._extract_with_llm(entries)
+            session_id = md_file.name
+            extracted_memories = self._extract_with_llm([{"content": content}])
+
             if extracted_memories is None:
-                # 超时或失败，保留 raw 状态
-                for entry in entries:
-                    details.append({
-                        **_entry_brief(entry),
-                        "action": "超时/失败",
-                        "reason": "LLM 提取超时或调用失败，保留 raw 状态",
-                    })
-                total_timed_out += len(entries)
+                error_reason = self._last_error_reason or "unknown"
+                if error_reason == "timeout":
+                    reason_text = f"LLM 提取超时（{self._timeout}s），保留待下次提取"
+                    total_timeout += 1
+                elif error_reason == "empty_response":
+                    reason_text = "LLM 返回空响应（可能因输入过长或内部异常），保留待下次提取"
+                    total_empty_response += 1
+                else:
+                    reason_text = f"LLM 调用失败（{error_reason}），保留待下次提取"
+                    total_error += 1
+                details.append({
+                    "id": md_file.name, "query_id": 0, "turn": 0,
+                    "user_input": user_input, "content_preview": content_preview,
+                    "action": f"超时/失败（{error_reason}）", "reason": reason_text,
+                })
                 continue
 
             if not extracted_memories:
-                # LLM 返回 NONE，标记为 processed
-                for entry in entries:
-                    self._store.update_layer0_entry(
-                        entry["id"],
-                        {"status": "processed"},
-                    )
-                    self._store.update_metadata_entry(entry["id"], status="processed")
-                    details.append({
-                        **_entry_brief(entry),
-                        "action": "LLM判定无价值，标记已处理",
-                        "reason": "LLM 返回 NONE，认为无可提取的长期记忆",
-                    })
-                total_marked_processed += len(entries)
-                total_llm_none += len(entries)
+                self._mark_file_extracted(md_file.name, os.path.getsize(str(md_file)))
+                total_llm_none += 1
+                total_processed += 1
+                details.append({
+                    "id": md_file.name, "query_id": 0, "turn": 0,
+                    "user_input": user_input, "content_preview": content_preview,
+                    "action": "LLM判定无价值，标记已提取", "reason": "LLM 返回 NONE",
+                })
                 continue
 
-            # 写入提取结果
             extracted_summaries = []
             for idx, memory in enumerate(extracted_memories, 1):
-                # caution 类型尝试关联错题集
                 if memory.get("type") == "caution" and self._problem_base:
                     pb_id = self._find_related_problem(memory)
                     if pb_id:
                         memory["source_problem_id"] = pb_id
 
-                new_id = self._write_extracted_memory(entries[0], memory)
+                template_entry = {"session_id": session_id, "query_id": 0}
+                new_id = self._write_extracted_memory(template_entry, memory)
                 total_extracted += 1
 
-                # 双向关联：标记错题集记录的 memory_linked 字段
                 if memory.get("type") == "caution" and memory.get("source_problem_id") and new_id:
                     if self._problem_base:
                         self._problem_base.mark_memory_linked(
@@ -252,41 +363,34 @@ class MemoryExtractor:
                 tags_str = "".join(f"[{t}]" for t in memory.get("tags", []))
                 extracted_summaries.append(f"({idx}) {tags_str} {memory.get('content', '')[:300]}")
 
-            # 将原始条目标记为 processed（已提取）
-            # 同一 Query 的多个原始条目只在首条显示完整提取详情，避免重复
-            for entry_idx, entry in enumerate(entries):
-                self._store.update_layer0_entry(
-                    entry["id"],
-                    {"status": "processed", "source": "query_extraction"},
-                )
-                self._store.update_metadata_entry(entry["id"], status="processed")
-                if entry_idx == 0:
-                    reason = f"提取出 {len(extracted_memories)} 条记忆: " + " | ".join(extracted_summaries)
-                else:
-                    reason = f"同 Query {entry.get('query_id', 0)} 的原始条目，提取结果同上"
-                details.append({
-                    **_entry_brief(entry),
-                    "action": "成功提取后，标记已处理",
-                    "reason": reason,
-                })
-            total_marked_processed += len(entries)
+            self._mark_file_extracted(md_file.name, os.path.getsize(str(md_file)))
+            total_processed += 1
+            reason_lines = [f"提取出 {len(extracted_memories)} 条记忆:"]
+            for summary in extracted_summaries:
+                reason_lines.append(f"  {summary}")
+            details.append({
+                "id": md_file.name, "query_id": 0, "turn": 0,
+                "user_input": user_input, "content_preview": content_preview,
+                "action": "成功提取后，标记已提取",
+                "reason": "\n".join(reason_lines),
+            })
 
-        # 提取完成
         if self._progress_callback:
             try:
-                self._progress_callback(total_groups, total_groups, "完成")
+                self._progress_callback(total_files, total_files, "完成")
             except Exception:
                 pass
 
-        # 持久化元数据
         self._store.save_metadata()
 
         return {
-            "processed": len(raw_entries),
+            "processed": total_processed,
             "extracted": total_extracted,
-            "marked_processed": total_marked_processed,
+            "marked_processed": total_processed,
             "filtered": total_filtered,
-            "timed_out": total_timed_out,
+            "timeout": total_timeout,
+            "empty_response": total_empty_response,
+            "error": total_error,
             "llm_none": total_llm_none,
             "details": details,
         }
@@ -317,6 +421,32 @@ class MemoryExtractor:
             if kw.lower() in text_lower:
                 return True
         return False
+
+    def _extract_user_input_from_md(self, content: str) -> str:
+        """从 MD 日志内容中提取用户输入。
+
+        MD 日志格式: "## 📋 Query N: 用户输入内容"
+        提取第一个 Query 的用户输入作为代表。
+        """
+        match = re.search(r"^## 📋 Query \d+: (.+)$", content, re.MULTILINE)
+        if match:
+            return match.group(1).strip()
+        return ""
+
+    def _extract_content_preview(self, content: str, max_chars: int = 500) -> str:
+        """从 MD 日志中智能提取内容预览。
+
+        优先展示 Query 段内容（包含用户输入和 LLM 交互），
+        如果没有 Query 段则回退到文件开头。
+        """
+        query_match = re.search(
+            r"(^## 📋 Query \d+:.*?)(?=^## (?:📋 Query|⌨️ CLI)|\Z)",
+            content,
+            flags=re.MULTILINE | re.DOTALL,
+        )
+        if query_match:
+            return query_match.group(1)[:max_chars]
+        return content[:max_chars]
 
     def _extract_with_llm(self, entries: List[Dict]) -> Optional[List[Dict]]:
         """调用 LLM 从原始条目中提取结构化记忆。
@@ -374,46 +504,50 @@ class MemoryExtractor:
     def _call_llm_with_timeout(self, prompt: str, timeout: int = 120) -> Optional[str]:
         """调用 LLM，带超时保护。
 
+        直接将 timeout 传递给 simple_chat，由 httpx 在 HTTP 层处理超时，
+        确保超时后连接被正确关闭，避免线程泄漏和僵尸连接。
+
         Args:
             prompt: 完整 Prompt
-            timeout: 超时秒数，默认 60 秒
+            timeout: 超时秒数，默认 120 秒
 
         Returns:
             LLM 响应文本，None 表示超时或调用失败（含空响应）
         """
-        import threading
+        import time
 
-        result = {"response": None, "done": False}
+        try:
+            start = time.time()
+            response = self._llm_chat_fn(
+                prompt,
+                temperature=self._temperature,
+                max_tokens=self._max_tokens,
+                timeout=float(timeout),
+            )
+            elapsed = time.time() - start
 
-        def _call():
-            try:
-                response = self._llm_chat_fn(
-                    prompt,
-                    temperature=self._temperature,
-                    max_tokens=self._max_tokens,
-                )
-                result["response"] = response
-            except Exception as e:
-                logger.error(f"LLM 调用异常: {e}")
-            finally:
-                result["done"] = True
+            if not response:
+                # simple_chat 内部捕获异常后返回空字符串
+                # 用耗时启发式区分：接近超时阈值 → 大概率是 HTTP 超时
+                if elapsed >= timeout * 0.9:
+                    logger.warning(
+                        f"LLM 疑似超时（耗时 {elapsed:.1f}s，阈值 {timeout}s）"
+                    )
+                    self._last_error_reason = "timeout"
+                else:
+                    logger.warning(
+                        f"LLM 返回空响应（耗时 {elapsed:.1f}s）"
+                    )
+                    self._last_error_reason = "empty_response"
+                return None
 
-        # 使用线程实现超时（signal 在非主线程中不可用）
-        thread = threading.Thread(target=_call, daemon=True)
-        thread.start()
-        thread.join(timeout=timeout)
-
-        if not result["done"]:
-            logger.warning(f"LLM 提取超时（{timeout}s）")
+            logger.info(f"LLM 提取成功（耗时 {elapsed:.1f}s）")
+            self._last_error_reason = None
+            return response
+        except Exception as e:
+            logger.error(f"LLM 调用异常: {e}")
+            self._last_error_reason = "error"
             return None
-
-        # simple_chat 内部捕获异常后返回空字符串，此处需将空响应也视为失败
-        # 否则空响应会被误判为"LLM判定无价值"，导致 raw 条目被错误标记为 processed
-        if not result["response"]:
-            logger.warning("LLM 返回空响应，视为调用失败")
-            return None
-
-        return result["response"]
 
     def _parse_extraction_response(self, response: str) -> List[Dict]:
         """解析 LLM 提取响应。
@@ -551,7 +685,7 @@ class MemoryExtractor:
         return prompt
 
     def _write_extracted_memory(self, template_entry: Dict, memory: Dict) -> str:
-        """将提取的结构化记忆写入 Layer 0 并更新元数据。
+        """将提取的结构化记忆写入 Layer 1 并更新元数据。
 
         Args:
             template_entry: 原始条目（用于继承 session_id, query_id 等）
@@ -561,50 +695,16 @@ class MemoryExtractor:
             新条目 ID
         """
         from datetime import datetime
+        import uuid
 
         now = datetime.now()
         timestamp_str = now.strftime("%Y%m%d_%H%M%S")
-        entry_id = f"m_{timestamp_str}_{self._store._seq_counter}"
-        self._store._seq_counter += 1
-
+        # 生成唯一 ID（不再依赖 Layer 0 的序号计数器）
+        entry_id = f"m_{timestamp_str}_{uuid.uuid4().hex[:6]}"
         iso_timestamp = now.isoformat()
 
         # 获取类型，默认为 reference
         mem_type = memory.get("type", "reference")
-
-        entry = {
-            "id": entry_id,
-            "timestamp": iso_timestamp,
-            "session_id": template_entry.get("session_id", ""),
-            "query_id": template_entry.get("query_id", 0),
-            "tags": memory.get("tags", []),
-            "content": memory.get("content", ""),
-            "source": "query_extraction",
-            "status": "unprocessed",
-            "compacted": False,
-            "evolved": False,
-            "type": mem_type,
-            "source_problem_id": memory.get("source_problem_id"),
-            "metadata": {
-                "created_at": iso_timestamp,
-                "last_accessed": iso_timestamp,
-                "access_count": 0,
-            },
-        }
-
-        # 追加到 Layer 0
-        import json
-
-        line = json.dumps(entry, ensure_ascii=False)
-        try:
-            with open(self._store._layer0_path, "a", encoding="utf-8") as f:
-                f.write(line + "\n")
-        except Exception as e:
-            logger.error(f"写入提取记忆失败: {e}")
-            return ""
-
-        # 同步追加到 raw_memory.md（人类可读副本）
-        self._store._append_layer0_md(entry)
 
         # 更新元数据
         self._store.update_metadata_entry(

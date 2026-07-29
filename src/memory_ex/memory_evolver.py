@@ -1,7 +1,5 @@
 """记忆进化模块。
 
-对应设计文档第四章。
-
 四类进化操作：
 1. Pattern Recognition（模式识别）
 2. Conflict Resolution（矛盾解决）
@@ -10,6 +8,7 @@
 
 特性：
 - 加法操作，只向 Layer 1 追加新条目，不修改已有条目
+- 从 Layer 1 读取数据进行进化分析
 - LLM Prompt 合并优化（单次调用输出四类结果）
 - 分批处理（>50 条时分批）
 - 不中断策略 + 细粒度进度反馈
@@ -41,7 +40,7 @@ def _load_prompt(filename: str) -> str:
 class MemoryEvolver:
     """记忆进化器。
 
-    通过对已有记忆的深度推理，发现隐含的模式、规律、偏好和趋势，
+    通过对 Layer 1 已有记忆的深度推理，发现隐含的模式、规律、偏好和趋势，
     生成原数据中不存在的高层认知。
 
     进化是加法操作，产出新条目追加到 Layer 1。
@@ -59,6 +58,7 @@ class MemoryEvolver:
         evo_config = mem_config.evolver
         self._temperature = float(getattr(evo_config, "temperature", 0.3))
         self._max_tokens = int(getattr(evo_config, "max_tokens", 1024))
+        self._timeout = int(getattr(evo_config, "timeout", 120))
 
         auto_config = mem_config.auto_evolution
         self._auto_enabled = bool(getattr(auto_config, "enabled", False))
@@ -90,10 +90,59 @@ class MemoryEvolver:
     def check_needed(self) -> bool:
         """检查是否需要进化。
 
-        条件：Layer 0 中 evolved=False 的 unprocessed 条目 ≥ 10 条。
+        条件：Layer 1 中未进化条目 ≥ 10 条。
         """
-        unevolved = self._store.get_unevolved_entries()
-        return len(unevolved) >= self._accumulation_threshold
+        entries = self._get_unevolved_from_layer1()
+        return len(entries) >= self._accumulation_threshold
+
+    def _get_unevolved_from_layer1(self) -> List[Dict]:
+        """从 Layer 1 读取未进化的条目。
+
+        解析 Layer 1 的 Markdown 条目，排除已标记为 EVOLVED 的条目，
+        以及在元数据中标记为 is_evolved=True 的条目。
+        """
+        layer1_content = self._store.read_layer1()
+        if not layer1_content:
+            return []
+
+        entries = []
+        for line in layer1_content.split("\n"):
+            line = line.strip()
+            if not line.startswith("- "):
+                continue
+
+            # 跳过进化条目
+            if "[EVOLVED]" in line:
+                continue
+
+            # 提取 ID
+            id_match = re.search(r"\(id=([^)]+)\)", line)
+            entry_id = id_match.group(1) if id_match else ""
+
+            # 检查元数据中是否已进化
+            if entry_id:
+                meta = self._store.get_metadata_entry(entry_id)
+                if meta and meta.get("is_evolved", False):
+                    continue
+
+            # 提取标签
+            tags = re.findall(r"\[([^\]]+)\]", line)
+            tags = [t for t in tags if not t.startswith("id=")]
+
+            # 提取内容
+            content = re.sub(r"^\-\s+", "", line)
+            content = re.sub(r"\[[^\]]+\]", "", content).strip()
+            content = re.sub(r"\(id=[^)]+\)", "", content).strip()
+            content = re.sub(r"\(session=[^)]+\)", "", content).strip()
+
+            entries.append({
+                "id": entry_id,
+                "tags": tags,
+                "content": content,
+                "raw_line": line,
+            })
+
+        return entries
 
     def run_auto_evolution(self) -> dict:
         """自动进化入口。
@@ -103,7 +152,7 @@ class MemoryEvolver:
         if not self._auto_enabled:
             return {"skipped": True, "reason": "auto_evolution disabled"}
 
-        unevolved = self._store.get_unevolved_entries()
+        unevolved = self._get_unevolved_from_layer1()
         if len(unevolved) < self._accumulation_threshold:
             return {"skipped": True, "reason": "insufficient_accumulation"}
 
@@ -118,7 +167,7 @@ class MemoryEvolver:
         start_time = datetime.now()
         evolution_id = f"evo_{start_time.strftime('%Y%m%d_%H%M%S')}"
 
-        unevolved = self._store.get_unevolved_entries()
+        unevolved = self._get_unevolved_from_layer1()
         if len(unevolved) < self._accumulation_threshold:
             return {
                 "skipped": True,
@@ -138,11 +187,6 @@ class MemoryEvolver:
             elapsed = (datetime.now() - start_time).total_seconds()
             self._report_progress(batch_idx + 1, total_batches, "进化中", elapsed)
 
-            # 检查 Layer 0 是否需要先归档
-            if len(unevolved) > 200 and batch_idx == 0:
-                logger.info("待进化记录 > 200，先执行 Layer 0 归档")
-                self._store.archive_layer0()
-
             # LLM 进化（合并 Prompt，单次调用输出四类结果）
             evolutions, batch_diag = self._evolve_batch(batch)
             all_diagnostics.append(batch_diag)
@@ -156,9 +200,6 @@ class MemoryEvolver:
 
             # 标记本批条目为已进化
             for entry in batch:
-                self._store.update_layer0_entry(
-                    entry["id"], {"evolved": True}
-                )
                 self._store.update_metadata_entry(entry["id"], is_evolved=True)
 
             # 即时保存元数据
@@ -302,7 +343,7 @@ class MemoryEvolver:
         prompt = self._build_combined_prompt(batch)
 
         try:
-            response = self._call_llm(prompt, timeout=30)
+            response = self._call_llm(prompt, timeout=self._timeout)
             if not response:
                 diag["llm_status"] = "timeout"
                 return [], diag
@@ -622,41 +663,39 @@ TREND:
 
     # ===== 辅助 =====
 
-    def _call_llm(self, prompt: str, timeout: int = 30) -> Optional[str]:
+    def _call_llm(self, prompt: str, timeout: int = 120) -> Optional[str]:
         """调用 LLM，带超时保护。
 
-        进化操作不设硬超时中断（设计文档 4.8 节），
-        但线程级超时仍保留以防止无限等待。
+        直接将 timeout 传递给 simple_chat，由 httpx 在 HTTP 层处理超时，
+        确保超时后连接被正确关闭，避免线程泄漏和僵尸连接。
         """
         if not self._llm_chat_fn:
             return None
 
-        import threading
+        import time
 
-        result = {"response": None, "done": False}
+        try:
+            start = time.time()
+            response = self._llm_chat_fn(
+                prompt,
+                temperature=self._temperature,
+                max_tokens=self._max_tokens,
+                timeout=float(timeout),
+            )
+            elapsed = time.time() - start
 
-        def _call():
-            try:
-                response = self._llm_chat_fn(
-                    prompt,
-                    temperature=self._temperature,
-                    max_tokens=self._max_tokens,
-                )
-                result["response"] = response
-            except Exception as e:
-                logger.error(f"LLM 调用异常: {e}")
-            finally:
-                result["done"] = True
+            if not response:
+                if elapsed >= timeout * 0.9:
+                    logger.warning(f"LLM 进化疑似超时（耗时 {elapsed:.1f}s，阈值 {timeout}s）")
+                else:
+                    logger.warning(f"LLM 进化返回空响应（耗时 {elapsed:.1f}s）")
+                return None
 
-        thread = threading.Thread(target=_call, daemon=True)
-        thread.start()
-        thread.join(timeout=timeout)
-
-        if not result["done"]:
-            logger.warning(f"LLM 进化超时（{timeout}s）")
+            logger.info(f"LLM 进化成功（耗时 {elapsed:.1f}s）")
+            return response
+        except Exception as e:
+            logger.error(f"LLM 进化调用异常: {e}")
             return None
-
-        return result["response"]
 
     def _report_progress(
         self, batch: int, total_batches: int, stage: str, elapsed: float

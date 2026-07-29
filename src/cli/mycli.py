@@ -113,7 +113,9 @@ class MyClaudeCLI:
         extracted = result.get('extracted', 0)
         marked_processed = result.get('marked_processed', 0)
         filtered = result.get('filtered', 0)
-        timed_out = result.get('timed_out', 0)
+        timeout = result.get('timeout', 0)
+        empty_response = result.get('empty_response', 0)
+        error = result.get('error', 0)
         llm_none = result.get('llm_none', 0)
         llm_processed = marked_processed - filtered
         llm_extracted = llm_processed - llm_none
@@ -137,7 +139,9 @@ class MyClaudeCLI:
             f"| 其中前置过滤 | {filtered} | 对话过短/无技术关键词，未调用 LLM 直接标记 |",
             f"| 其中LLM判定无价值 | {llm_none} | LLM 返回 NONE，认为无可提取的长期记忆 |",
             f"| 其中LLM成功提取 | {llm_extracted} | LLM 成功提取出结构化记忆后，原始条目标记已处理 |",
-            f"| 超时跳过 | {timed_out} | LLM 超时/失败，保留 raw 状态待下次提取 |",
+            f"| 提取超时 | {timeout} | LLM 调用超过超时阈值，保留 raw 状态待下次提取 |",
+            f"| 空响应 | {empty_response} | LLM 返回空响应（可能因输入过长或内部异常），保留待下次提取 |",
+            f"| 调用异常 | {error} | LLM 调用过程发生异常，保留待下次提取 |",
             f"",
             f"## 逐条明细",
             f"",
@@ -148,14 +152,12 @@ class MyClaudeCLI:
                 qid = d.get('query_id', 0)
                 turn = d.get('turn', 0)
                 eid = d.get('id', '')
-                user_in = d.get('user_input', '')[:200]
-                preview = d.get('content_preview', '')[:300]
+                user_in = d.get('user_input', '')[:300]
                 action = d.get('action', '')
                 reason = d.get('reason', '')
                 lines.append(f"### [Q{qid} T{turn}] `{eid}`")
                 lines.append(f"")
                 lines.append(f"- **用户输入**: {user_in}")
-                lines.append(f"- **内容预览**: {preview}")
                 lines.append(f"- **去向**: {action}")
                 lines.append(f"- **原因**: {reason}")
                 lines.append(f"")
@@ -711,10 +713,24 @@ class MyClaudeCLI:
             return True
 
         elif cmd.startswith('/mem'):
-            # /mem compaction | /mem cpct | /mem evolution | /mem evol | /mem rt | /mem rm
             parts = command.strip().split(maxsplit=2)
             sub_cmd = parts[1].lower().strip() if len(parts) > 1 else ""
             sub_cmd_full = parts[2].strip() if len(parts) > 2 else ""
+
+            if not sub_cmd:
+                # /mem 无子命令 — 显示记忆相关命令列表
+                cli_print.print_info(
+                    "memory相关命令，输入 /mem 查看命令列表\n"
+                    "\n"
+                    "可用命令:\n"
+                    "  /mem show       — 查看记忆概览\n"
+                    "  /mem extract    — 提取 raw 记忆 (简写 /mem ext)\n"
+                    "  /mem compaction — 整理记忆 (简写 /mem com)\n"
+                    "  /mem evolution  — 进化记忆 (简写 /mem evo)\n"
+                    "  /mem rt <信息>  — 记忆召回测试 (简写 /mem retrieve)\n"
+                    "  /mem remove     — 清除所有记忆 (简写 /mem rm)"
+                )
+                return True
 
             if sub_cmd in ("compaction", "com"):
                 # 手动触发记忆整理
@@ -1043,7 +1059,7 @@ class MyClaudeCLI:
                 return True
 
             elif sub_cmd in ("extract", "ext"):
-                # 手动触发记忆提取（从 Layer 0 raw 条目中用 LLM 提取结构化记忆）
+                # 手动触发记忆提取（从 MD 会话日志中用 LLM 提取结构化记忆）
                 import sys
                 import time
                 import threading
@@ -1056,23 +1072,23 @@ class MyClaudeCLI:
                 # 设置 token 统计上下文
                 chat_llm.set_context(query=command.strip(), turn="CLI_COMMAND")
 
-                # 检查 raw 条目数量，预估时间
+                # 检查待提取的 MD 文件数量，预估时间
                 try:
                     stats = memory.stats()
-                    raw_count = stats.get("layer0_raw", 0)
-                    raw_groups = stats.get("layer0_raw_groups", 0)
+                    md_pending = stats.get("md_pending", 0)
+                    md_total = stats.get("md_total", 0)
                 except Exception:
-                    raw_count = 0
-                    raw_groups = 0
+                    md_pending = 0
+                    md_total = 0
 
-                if raw_count == 0:
-                    cli_print.print_info("没有需要提取的 raw 记忆。")
+                if md_pending == 0:
+                    cli_print.print_info("没有需要提取的 MD 会话日志。")
                     return True
 
-                est_time = self._format_estimated_time(raw_count)
+                est_time = self._format_estimated_time(md_pending)
                 cli_print.print_info(
                     f"开始执行记忆提取...\n"
-                    f"  待处理 raw 记忆: {raw_count} 条，{raw_groups} 组（按 query_id 分组，每组调用一次 LLM）\n"
+                    f"  待提取 MD 日志: {md_pending} 个文件（共 {md_total} 个，已提取 {md_total - md_pending} 个）\n"
                     f"  预计耗时: {est_time}"
                 )
 
@@ -1169,7 +1185,9 @@ class MyClaudeCLI:
                 extracted = result.get('extracted', 0)
                 archived = result.get('marked_processed', 0)
                 filtered = result.get('filtered', 0)
-                timed_out = result.get('timed_out', 0)
+                timeout = result.get('timeout', 0)
+                empty_response = result.get('empty_response', 0)
+                error = result.get('error', 0)
                 llm_none = result.get('llm_none', 0)
                 llm_archived = archived - filtered
                 llm_extracted = llm_archived - llm_none
@@ -1190,14 +1208,16 @@ class MyClaudeCLI:
                     f"    其中前置过滤: {filtered} 条（对话过短/无技术关键词，未调用 LLM 直接标记）\n"
                     f"    其中LLM判定无价值: {llm_none} 条（LLM 返回 NONE，认为无可提取的长期记忆）\n"
                     f"    其中LLM成功提取: {llm_extracted} 条（LLM 成功提取后，原始条目标记已处理）\n"
-                    f"  超时跳过: {timed_out} 条（LLM 超时/失败，保留 raw 状态待下次提取）\n"
+                    f"  提取超时: {timeout} 条（LLM 调用超过超时阈值，保留 raw 状态待下次提取）\n"
+                    f"  空响应: {empty_response} 条（LLM 返回空响应，可能因输入过长或内部异常）\n"
+                    f"  调用异常: {error} 条（LLM 调用过程发生异常，保留待下次提取）\n"
                     f"  逐条明细报告已保存到: {report_path}"
                 )
                 self.query_loop.append_cli_result(
                     f"记忆提取完成: 开始时间 {op_start_str}, 结束时间 {op_end_str}, 耗时: {op_duration_str}, "
                     f"处理 {processed} 条, 提取 {extracted} 条, "
                     f"标记已处理 {archived} 条(前置过滤 {filtered}, LLM无价值 {llm_none}, LLM成功提取 {llm_extracted}), "
-                    f"超时跳过 {timed_out} 条。报告: {report_path}"
+                    f"超时 {timeout} 条, 空响应 {empty_response} 条, 异常 {error} 条。报告: {report_path}"
                 )
                 # 清除 token 统计上下文
                 chat_llm.set_context()
@@ -1217,17 +1237,14 @@ class MyClaudeCLI:
                     return True
 
                 backend = stats.get("backend", "unknown")
-                layer0_total = stats.get("layer0_total", 0)
-                layer0_raw = stats.get("layer0_raw", 0)
-                layer0_unprocessed = stats.get("layer0_unprocessed", 0)
-                layer0_processed = stats.get("layer0_processed", 0)
                 layer1_entries = stats.get("layer1_entries", 0)
-                layer1_lines = stats.get("layer1_lines", 0)
-                layer1_tokens = stats.get("layer1_tokens", 0)
                 unconsumed = stats.get("unconsumed", 0)
                 unevolved = stats.get("unevolved", 0)
                 compaction_logs = stats.get("compaction_logs", 0)
                 evolution_logs = stats.get("evolution_logs", 0)
+                md_total = stats.get("md_total", 0)
+                md_extracted = stats.get("md_extracted", 0)
+                md_pending = stats.get("md_pending", 0)
 
                 lines = [
                     "=" * 50,
@@ -1235,11 +1252,10 @@ class MyClaudeCLI:
                     "=" * 50,
                     f"  后端类型: {backend}",
                     "",
-                    f"  ── Layer 0（原始记忆） ──",
-                    f"    总条目: {layer0_total}",
-                    f"    未提取 (raw): {layer0_raw}",
-                    f"    已提取 (unprocessed): {layer0_unprocessed}",
-                    f"    已处理 (processed): {layer0_processed}",
+                    f"  ── MD 会话日志（提取源） ──",
+                    f"    总文件数: {md_total}",
+                    f"    已提取: {md_extracted}",
+                    f"    待提取: {md_pending}",
                     "",
                     f"  ── Layer 1（正式记忆） ──",
                     f"    条数: {layer1_entries}",
@@ -1289,7 +1305,8 @@ class MyClaudeCLI:
                 return True
 
             elif sub_cmd in ("remove", "rm"):
-                # /mem remove | /mem rm — 清除所有持久化记忆（Layer 0/1/2 + 元数据）
+                # /mem remove | /mem rm — 清除所有持久化记忆（Layer 1 + 元数据）
+                # 注意：不删除 raw_memory/ 目录下的 MD 会话日志文件（由用户自行管理）
                 stats = self.query_loop.clear_memory()
                 if not stats:
                     cli_print.print_info("当前没有记忆。")
@@ -1298,23 +1315,13 @@ class MyClaudeCLI:
                     cli_print.print_info(f"已清除所有记忆（共 {stats['total']} 条）。")
                     self.query_loop.append_cli_result(f"已清除所有记忆（共 {stats['total']} 条）。")
                 else:
-                    layer0_total = stats.get("layer0_total", 0)
-                    layer0_raw = stats.get("layer0_raw", 0)
-                    layer0_unprocessed = stats.get("layer0_unprocessed", 0)
-                    layer0_processed = stats.get("layer0_processed", 0)
                     layer1_entries = stats.get("layer1_entries", 0)
 
                     lines = [
                         "已清除所有记忆，详细统计如下：",
-                        f"  原始记忆（Layer 0）: {layer0_total} 条",
+                        f"  正式记忆（Layer 1）: {layer1_entries} 条",
+                        "  注意: MD 会话日志文件未删除（由用户自行管理）",
                     ]
-                    if layer0_raw > 0:
-                        lines.append(f"    其中未提取（raw）: {layer0_raw} 条")
-                    if layer0_unprocessed > 0:
-                        lines.append(f"    其中已提取（unprocessed）: {layer0_unprocessed} 条")
-                    if layer0_processed > 0:
-                        lines.append(f"    其中已处理（processed）: {layer0_processed} 条")
-                    lines.append(f"  正式记忆（Layer 1）: {layer1_entries} 条")
                     cli_print.print_info("\n".join(lines))
                     self.query_loop.append_cli_result("\n".join(lines))
                 return True
@@ -1332,10 +1339,24 @@ class MyClaudeCLI:
                 return True
 
         elif cmd.startswith('/bug'):
-            # /bug 系列命令 — Bug库操作
             bug_parts = command.strip().split(maxsplit=2)
             bug_sub = bug_parts[1].lower() if len(bug_parts) > 1 else ""
             bug_arg = bug_parts[2].strip() if len(bug_parts) > 2 else ""
+
+            if not bug_sub:
+                # /bug 无子命令 — 显示Bug库相关命令列表
+                cli_print.print_info(
+                    "bug base相关命令，输入 /bug 查看命令列表\n"
+                    "\n"
+                    "可用命令:\n"
+                    "  /bug show [选项]    — 查看Bug库\n"
+                    "  /bug ext            — 从MD会话日志提取Bug\n"
+                    "  /bug rt <模块路径|文件名> — 召回测试\n"
+                    "  /bug rm             — 清除所有Bug\n"
+                    "  /bug archive [选项] — 归档已修复的Bug\n"
+                    "  /bug stats          — 统计信息"
+                )
+                return True
 
             if bug_sub == "show":
                 self._handle_bug_show(bug_arg)
@@ -1362,7 +1383,7 @@ class MyClaudeCLI:
                 cli_print.print_error(
                     "未知的 /bug 子命令。可用:\n"
                     "  /bug show [选项]    — 查看Bug库\n"
-                    "  /bug ext            — 从原始记忆(raw_memory)提取Bug\n"
+                    "  /bug ext            — 从MD会话日志提取Bug\n"
                     "  /bug rt <模块路径|文件名> — 召回测试\n"
                     "  /bug rm             — 清除所有Bug\n"
                     "  /bug archive [选项] — 归档已修复的Bug\n"
@@ -1455,7 +1476,7 @@ class MyClaudeCLI:
 
         elif cmd == '/opsx':
             # /opsx — 列出所有已注册的 OpenSpec 斜杠命令
-            cli_print.print_command_list(self.registry)
+            cli_print.print_command_list(self.registry, prefix="/opsx")
             return True
 
         elif cmd.startswith('/'):
@@ -1607,18 +1628,19 @@ class MyClaudeCLI:
                 lines.append(f"  {r.id}  {r.title}")
         lines.append("=" * 50)
         lines.append(f"合计: {len(records)} 条")
-        cli_print.print_info("\n".join(lines))
-        self.query_loop.append_cli_result(f"查看Bug库: {len(records)} 条 open")
+        output_text = "\n".join(lines)
+        cli_print.print_info(output_text)
+        self.query_loop.append_cli_result(output_text)
 
     def _handle_bug_extract(self, arg: str):
-        """处理 /bug ext 命令。从 raw_memory.jsonl 提取 Bug，而非当前 session。"""
+        """处理 /bug ext 命令。从 MD 会话日志提取 Bug。"""
         bb = self._get_bug_base()
 
         # 设置 token 统计上下文
         from src.query import chat_llm
         chat_llm.set_context(query="/bug ext", turn="CLI_COMMAND")
 
-        cli_print.print_info("开始从原始记忆（raw_memory）中提取 Bug...")
+        cli_print.print_info("开始从 MD 会话日志中提取 Bug...")
 
         import sys
         import time
@@ -1651,7 +1673,7 @@ class MyClaudeCLI:
 
         op_start = _dt.now()
         try:
-            result = bb.extract_from_raw_entries()
+            result = bb.extract_from_md_logs()
         except Exception as e:
             result = {"error": str(e), "processed": 0, "extracted": 0, "skipped": 0}
         finally:
@@ -1679,23 +1701,23 @@ class MyClaudeCLI:
             cli_print.print_info(
                 f"Bug提取完成:\n"
                 f"  耗时: {duration_str}\n"
-                f"  处理原始条目: {processed} 条\n"
-                f"  跳过（已提取/空内容）: {skipped} 条\n"
+                f"  处理 MD 日志: {processed} 个\n"
+                f"  跳过（已提取/空内容）: {skipped} 个\n"
                 f"  新增Bug: 0 条（未发现可提取的 Bug）"
             )
             self.query_loop.append_cli_result(
-                f"Bug提取完成: 0 条 (处理 {processed} 条, 跳过 {skipped} 条)"
+                f"Bug提取完成: 0 条 (处理 {processed} 个MD文件, 跳过 {skipped} 个)"
             )
         else:
             cli_print.print_info(
                 f"Bug提取完成:\n"
                 f"  耗时: {duration_str}\n"
-                f"  处理原始条目: {processed} 条\n"
-                f"  跳过（已提取/空内容）: {skipped} 条\n"
+                f"  处理 MD 日志: {processed} 个\n"
+                f"  跳过（已提取/空内容）: {skipped} 个\n"
                 f"  新增Bug: {extracted} 条"
             )
             self.query_loop.append_cli_result(
-                f"Bug提取完成: 新增 {extracted} 条 (处理 {processed} 条, 跳过 {skipped} 条)"
+                f"Bug提取完成: 新增 {extracted} 条 (处理 {processed} 个MD文件, 跳过 {skipped} 个)"
             )
 
     def _handle_bug_retrieve(self, arg: str):
@@ -1720,7 +1742,10 @@ class MyClaudeCLI:
         self.query_loop.append_cli_result(f"Bug召回: {len(records)} 条 (目标: {target})")
 
     def _handle_bug_remove(self):
-        """处理 /bug rm 命令。清除所有Bug记录。"""
+        """处理 /bug rm 命令。清除所有Bug记录。
+
+        注意：不删除 raw_memory/ 目录下的 MD 会话日志文件。
+        """
         bb = self._get_bug_base()
         try:
             stats = bb.get_stats()
@@ -1744,14 +1769,17 @@ class MyClaudeCLI:
         from pathlib import Path
         for jsonl_file in bb.store.base_dir.glob("*.jsonl"):
             jsonl_file.unlink()
-        for md_file in bb.store.base_dir.glob("*.md"):
-            md_file.unlink()
+        # 注意：不删除 .md 文件（bug_ext_record.md 是提取记录，不包含 Bug 数据）
+        # 也不删除 raw_memory/ 目录下的 MD 会话日志
         # 清除归档
         if bb.store.archive_dir.exists():
             shutil.rmtree(bb.store.archive_dir)
             bb.store.archive_dir.mkdir(parents=True, exist_ok=True)
 
-        cli_print.print_info(f"已清除所有Bug记录（共 {total} 条，含归档 {archived} 条）。")
+        cli_print.print_info(
+            f"已清除所有Bug记录（共 {total} 条，含归档 {archived} 条）。\n"
+            f"  注意: MD 会话日志文件未删除（由用户自行管理）"
+        )
         self.query_loop.append_cli_result(f"清除Bug库: {total} 条 (含归档 {archived} 条)")
 
     def _handle_bug_archive(self, arg: str):
@@ -1859,7 +1887,7 @@ class MyClaudeCLI:
 
 
     # 不需要记录到 session 上下文的命令（纯 UI 操作或重置操作）
-    _NO_LOG_COMMANDS = {'/quit', '/exit', '/q', '/cls', '/help', '/new session', '/opsx'}
+    _NO_LOG_COMMANDS = {'/quit', '/exit', '/q', '/cls', '/help', '/new session', '/opsx', '/mem', '/bug'}
 
     def _should_log_cli_command(self, command: str) -> bool:
         """判断该 CLI 命令是否需要记录到 session 上下文。

@@ -120,6 +120,7 @@ class ContextCompressor:
             recovery_turns=3,
             summary_max_tokens=2048,
             summary_temperature=0.1,
+            summary_timeout=120,
             tool_result_truncate_lines=20,
             file_view_large_threshold=50,
             fallback_token_estimation=True,
@@ -384,36 +385,34 @@ class ContextCompressor:
         prompt = prompt_template.replace("{conversation_turns}", conversation_text)
 
         try:
-            import threading
+            summary_timeout = int(getattr(self._compress_config, "summary_timeout", 120))
+            summary_temp = float(
+                getattr(self._compress_config, "summary_temperature", 0.1)
+            )
+            summary_max_tokens = int(
+                getattr(self._compress_config, "summary_max_tokens", 2048)
+            )
 
-            result = {"response": None, "done": False}
+            import time
 
-            def _call():
-                try:
-                    response = self._llm_chat_fn(
-                        prompt,
-                        temperature=float(
-                            getattr(self._compress_config, "summary_temperature", 0.1)
-                        ),
-                        max_tokens=int(
-                            getattr(self._compress_config, "summary_max_tokens", 2048)
-                        ),
-                    )
-                    result["response"] = response
-                except Exception as e:
-                    logger.error(f"LLM 摘要调用异常: {e}")
-                finally:
-                    result["done"] = True
+            start = time.time()
+            response = self._llm_chat_fn(
+                prompt,
+                temperature=summary_temp,
+                max_tokens=summary_max_tokens,
+                timeout=float(summary_timeout),
+            )
+            elapsed = time.time() - start
 
-            thread = threading.Thread(target=_call, daemon=True)
-            thread.start()
-            thread.join(timeout=15)
-
-            if not result["done"]:
-                logger.warning("LLM 摘要超时")
+            if not response:
+                if elapsed >= summary_timeout * 0.9:
+                    logger.warning(f"LLM 摘要疑似超时（耗时 {elapsed:.1f}s，阈值 {summary_timeout}s）")
+                else:
+                    logger.warning(f"LLM 摘要返回空响应（耗时 {elapsed:.1f}s）")
                 return None
 
-            return result["response"]
+            logger.info(f"LLM 摘要成功（耗时 {elapsed:.1f}s）")
+            return response
 
         except Exception as e:
             logger.error(f"生成摘要失败: {e}")

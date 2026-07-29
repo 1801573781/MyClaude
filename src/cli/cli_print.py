@@ -196,18 +196,8 @@ Welcome to MyClaude Code CLI! A beautiful terminal interface for AI Coding.
 - `/tokens` - Show the tokens statistics
 - `/t number` - 展开指定 Turn 的思考过程
 - `/new session` - 开启新 Session（清空上下文 + 清空记忆 + 新日志文件）
-- `/mem show` - 查看记忆系统概览信息
-- `/mem extract` (或 `/mem ext`) - 手动触发记忆提取（从原始对话中提取结构化记忆）
-- `/mem compaction` (或 `/mem com`) - 手动触发记忆整理（合并、降级、淘汰）
-- `/mem evolution` (或 `/mem evo`) - 手动触发记忆进化（模式识别、矛盾解决、归纳、趋势）
-- `/mem rt <信息>` - 记忆召回测试：给定信息，返回相关召回的记忆
-- `/mem remove` (或 `/mem rm`) - 清除所有记忆（短期 + 长期 + 工作记忆）
-- `/bug show` - 查看Bug库（按模块/状态/ID筛选）
-- `/bug ext` (或 `/bug extract`) - 从当前session对话中提取Bug到Bug库
-- `/bug rt <模块路径 | 文件名称>` - 召回测试：给定模块路径或文件名称，返回相关Bug
-- `/bug rm` (或 `/bug remove`) - 清除所有Bug记录
-- `/bug archive` - 归档已修复的Bug
-- `/bug stats` - 统计各模块Bug数及状态分布
+- `/mem` - memory相关命令，输入 /mem 查看命令列表
+- `/bug` - bug base相关命令，输入 /bug 查看命令列表
 - `/init` - 创建MyClaude的项目工程树
 - `/cs` - 统计项目代码行数
 - `/test` - 单元测试和系统测试，/test --help 显示test命令帮助信息
@@ -409,14 +399,24 @@ def show_token_count(token_stats: dict):
     )
 
 
-def print_command_list(registry) -> None:
-    """打印已注册的斜杠命令列表"""
+def print_command_list(registry, prefix: str = None) -> None:
+    """打印已注册的斜杠命令列表
+
+    Args:
+        registry: 命令注册表
+        prefix: 可选前缀筛选，如 "/opsx" 只显示 opsx 相关命令。
+                为 None 时显示全部已注册命令。
+    """
     commands = registry.list_commands()
+    if prefix:
+        commands = [c for c in commands if c.command_name.startswith(prefix)]
+
     if not commands:
         print_info("当前没有已注册的斜杠命令。")
         return
 
-    table = Table(title="OpenSpec 命令列表", show_header=True, border_style="blue")
+    title = f"{prefix.strip('/').upper()} 命令列表" if prefix else "已注册命令列表"
+    table = Table(title=title, show_header=True, border_style="blue")
     table.add_column("命令", style="cyan", min_width=20)
     table.add_column("用途", style="white")
 
@@ -424,7 +424,7 @@ def print_command_list(registry) -> None:
         table.add_row(cmd.command_name, cmd.description or "(无描述)")
 
     console.print(table)
-    _append_html('<p style="color:#3b82f6;">✅ OpenSpec 命令列表已显示</p>')
+    _append_html(f'<p style="color:#3b82f6;">✅ {html_escape(title)} 已显示</p>')
 
 
 def print_command_invoked(command_name: str, user_arg: str, file_path: str = "") -> None:

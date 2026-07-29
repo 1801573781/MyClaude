@@ -38,6 +38,18 @@ class BugBase:
         """
         return self.extractor.extract_from_raw_entries()
 
+    def extract_from_md_logs(self) -> dict:
+        """从 MD 会话日志中提取 Bug。
+
+        扫描 raw_memory/MyClaude_*.md 文件，
+        跳过已提取的文件（记录在 bug_ext_record.md 中），
+        调用 LLM 提取 Bug，存入Bug库。
+
+        Returns:
+            统计信息字典
+        """
+        return self.extractor.extract_from_md_logs()
+
     def extract_from_session(
         self, api_messages: list[dict], session_id: str
     ) -> list[str]:

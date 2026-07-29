@@ -12,6 +12,9 @@ class SessionLog:
 
     def __init__(self):
         self.log_root = global_cfg.base_path.logs_root
+        # MD 日志输出到 raw_memory 目录（供记忆/Bug 提取使用）
+        self.md_log_root = str(Path(global_cfg.base_path.project_root) / "memory_storage" / "memory_ex" / "raw_memory")
+        Path(self.md_log_root).mkdir(parents=True, exist_ok=True)
         # 安全读取日志格式配置，默认 md
         log_cfg = getattr(global_cfg, 'log', None)
         self.format = getattr(log_cfg, 'format', 'md') if log_cfg else 'md'
@@ -35,6 +38,9 @@ class SessionLog:
         # session 初始化前的 CLI 命令缓存（init_session 后补写）
         self._pending_cli_entries = []
 
+        # 并行 MD 日志文件名（与 HTML 同名但 .md 扩展名，不含 LLM 思考）
+        self.md_session_file_name = ""
+
 
     def init_session(self):
         if self._session_inited:
@@ -52,6 +58,17 @@ class SessionLog:
         self._session_inited = True
         self._save_session_log(save_session)
 
+        # 并行初始化 MD 日志文件（与 HTML 同名但 .md 扩展名）
+        # MD 日志输出到 raw_memory 目录（供记忆/Bug 提取使用）
+        self.md_session_file_name = f"MyClaude_{now.strftime('%Y-%m-%d_%H-%M-%S')}.md"
+        md_header = (
+            f"# MyClaude Session Log (MD)\n\n"
+            f"**文件:** {self.md_session_file_name}\n\n"
+            f"**时间:** {now.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+            f"***************\n\n"
+        )
+        file_append(self.md_log_root, self.md_session_file_name, md_header)
+
         # 补写 session 初始化前缓存的 CLI 命令条目
         if self._pending_cli_entries:
             for cli_now, cli_cmd, cli_res in self._pending_cli_entries:
@@ -64,6 +81,8 @@ class SessionLog:
                     if cli_res:
                         md_items.append({"role": "user", "content": f"[CLI_RESULT] {cli_res}"})
                     self._save_session_log(md_items)
+                # 并行写入 MD 日志
+                self._append_md_cli(cli_now, cli_cmd, cli_res)
             self._pending_cli_entries = []
 
 
@@ -96,6 +115,8 @@ class SessionLog:
                 self._flush_query_html()
             else:
                 self._save_session_log(self._query_buffer)
+            # 并行写入 MD 日志
+            self._flush_query_md()
         self._query_buffer = []
         self._current_query = None
 
@@ -151,20 +172,22 @@ class SessionLog:
 
             sections = self._parse_buffer_sections(block[start_idx:])
 
-            # 记忆召回占位
-            has_memory_section = any(sec_name == "memory_context" for sec_name, _ in sections)
-            if not has_memory_section:
-                insert_idx = next((i for i, (name, _) in enumerate(sections) if name == "user"), -1)
-                if insert_idx >= 0:
-                    sections.insert(insert_idx + 1, ("memory_context", [{"role": "user", "content": "没有召回到相关记忆"}]))
-                else:
-                    sections.append(("memory_context", [{"role": "user", "content": "没有召回到相关记忆"}]))
+            # 记忆召回占位（仅首轮显示，后续 Turn 不添加）
+            is_first_turn = (query_idx == 1 and turn_num == 1)
+            if is_first_turn:
+                has_memory_section = any(sec_name == "memory_context" for sec_name, _ in sections)
+                if not has_memory_section:
+                    insert_idx = next((i for i, (name, _) in enumerate(sections) if name == "user"), -1)
+                    if insert_idx >= 0:
+                        sections.insert(insert_idx + 1, ("memory_context", [{"role": "user", "content": "没有召回到相关记忆"}]))
+                    else:
+                        sections.append(("memory_context", [{"role": "user", "content": "没有召回到相关记忆"}]))
 
             section_titles = {
-                "system": "⚙️ 系统消息",
+                "system": "⚙️ 系统宪法",
                 "system_notice": "⚙️ 系统提示",
                 "installed_skills": "📦 系统技能",
-                "project_context": "📋 项目宪法",
+                "project_context": "📋 项目章程",
                 "directory_tree": "🗂️ 项目目录",
                 "memory_context": "🧠 记忆召回",
                 "user": "👤 用户输入",
@@ -174,8 +197,14 @@ class SessionLog:
                 "tool_result": "📋 工具执行结果",
             }
 
+            # HTML 日志跳过的小节（与 MD 保持一致）
+            html_skip_sections = {"system", "installed_skills", "project_context", "directory_tree"}
+
             section_html_parts = []
             for section_name, items in sections:
+                # 跳过前置小节（系统宪法、技能、项目上下文、目录树）
+                if section_name in html_skip_sections:
+                    continue
                 if section_name == "reasoning":
                     reasoning_text = ""
                     for item in items:
@@ -256,6 +285,258 @@ class SessionLog:
             new_html = self._html_template(query_html)
 
         full_path.write_text(new_html, encoding="utf-8")
+
+
+    def _flush_query_md(self):
+        """将当前 Query 缓冲以纯 Markdown 格式追加写入 MD 文件。
+        按小节分节、添加小节标题、记忆召回占位。
+        query1/turn1 跳过前置小节（系统宪法/系统技能/项目章程/项目目录），从"用户输入"开始。
+        不含 HTML 标签，不记录 LLM 思考（reasoning）。"""
+        if not self.md_session_file_name or not self._query_buffer:
+            return
+
+        # 小节标题映射
+        section_titles = {
+            "system": "⚙️ 系统宪法",
+            "system_notice": "⚙️ 系统提示",
+            "installed_skills": "📦 系统技能",
+            "project_context": "📋 项目章程",
+            "directory_tree": "🗂️ 项目目录",
+            "memory_context": "🧠 记忆召回",
+            "user": "👤 用户输入",
+            "assistant": "🤖 LLM 应答",
+            "tool": "🔧 工具调用",
+            "tool_result": "📋 工具执行结果",
+        }
+
+        # MD 日志始终跳过的小节（系统宪法、技能、项目上下文、目录树）
+        skip_sections = {"system", "installed_skills", "project_context", "directory_tree"}
+
+        # 提取 Query 头信息
+        query_idx = 0
+        user_input = ""
+        for item in self._query_buffer:
+            if isinstance(item, dict) and "query" in item:
+                query_idx = item["query"]
+                user_input = item.get("user_input", "")
+                break
+
+        # 按 turn 标记拆分为多个 Turn 块
+        turn_blocks = []
+        current_block = []
+        for item in self._query_buffer[1:]:  # 跳过 query 头
+            if isinstance(item, dict) and "turn" in item:
+                if current_block:
+                    turn_blocks.append(current_block)
+                current_block = [item]
+            else:
+                current_block.append(item)
+        if current_block:
+            turn_blocks.append(current_block)
+
+        md_parts = []
+
+        # Query 标题
+        query_label = f"## 📋 Query {query_idx}: {user_input}" if user_input else f"## 📋 Query {query_idx}"
+        md_parts.append(query_label)
+
+        for block in turn_blocks:
+            turn_num = 0
+            for item in block:
+                if isinstance(item, dict) and "turn" in item:
+                    turn_num = item["turn"]
+                    break
+
+            # 跳过 turn 标记条目
+            start_idx = 0
+            for i, item in enumerate(block):
+                if isinstance(item, dict) and "turn" in item:
+                    start_idx = i + 1
+                    break
+
+            sections = self._parse_buffer_sections(block[start_idx:])
+
+            # 记忆召回占位
+            has_memory_section = any(sec_name == "memory_context" for sec_name, _ in sections)
+            if not has_memory_section:
+                insert_idx = next((i for i, (name, _) in enumerate(sections) if name == "user"), -1)
+                if insert_idx >= 0:
+                    sections.insert(insert_idx + 1, ("memory_context", [{"role": "user", "content": "没有召回到相关记忆"}]))
+                else:
+                    sections.append(("memory_context", [{"role": "user", "content": "没有召回到相关记忆"}]))
+
+            # Turn 标题
+            if turn_num < 0:
+                turn_label = f"### 🔄 追问 {abs(turn_num)}"
+            else:
+                turn_label = f"### 🔄 Turn {turn_num}"
+            md_parts.append(turn_label)
+
+            for section_name, items in sections:
+                # 跳过 reasoning
+                if section_name == "reasoning":
+                    continue
+                # 所有 Turn 都跳过前置小节（系统宪法、技能、项目上下文、目录树）
+                if section_name in skip_sections:
+                    continue
+
+                title = section_titles.get(section_name, section_name)
+                md_parts.append(f"#### {title}")
+                section_content = self._format_md_section_content(items, section_name)
+                if section_content:
+                    md_parts.append(section_content)
+
+        md_content = "\n\n".join(md_parts) + "\n\n***************\n\n"
+        file_append(self.md_log_root, self.md_session_file_name, md_content)
+
+
+    def _format_md_section_content(self, items, section_name: str) -> str:
+        """将小节中的条目格式化为纯 Markdown 文本（不含 role 头）。
+        根据小节类型采用不同的格式化策略。"""
+        parts = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            # 跳过纯时间戳条目
+            if "time" in item and len(item) == 1:
+                continue
+
+            if "role" in item:
+                content = item.get("content", "")
+                role = item["role"]
+                # file_view 工具执行结果截断
+                if role == "system" and isinstance(content, str) and content.startswith("[file_view] 工具执行结果"):
+                    content = "[file_view] 工具执行结果：略。"
+                parts.append(content)
+            elif "tool_name" in item:
+                tool = item["tool_name"]
+                tool_parts = [f"**工具:** `{tool}`"]
+                if "tool_paras" in item:
+                    paras = item["tool_paras"]
+                    if isinstance(paras, dict):
+                        para_lines = []
+                        for k, v in paras.items():
+                            if k == "content":
+                                v_str = str(v)
+                                if len(v_str) > 100:
+                                    v_str = v_str[:100] + "…[已截断]"
+                                para_lines.append(f"  - {k}: `{v_str}`")
+                            else:
+                                para_lines.append(f"  - {k}: `{v}`")
+                        tool_parts.append("\n".join(para_lines))
+                    else:
+                        tool_parts.append(f"**参数:** `{paras}`")
+                if "exec_result" in item:
+                    result = item["exec_result"]
+                    if isinstance(result, dict):
+                        if tool == "file_view":
+                            tool_parts.append("**结果:** 文件内容略")
+                        else:
+                            tool_parts.append(f"**结果:**\n{result.get('content', str(result))}")
+                    else:
+                        tool_parts.append(f"**结果:** {str(result)}")
+                parts.append("\n".join(tool_parts))
+            elif "todo_snapshot" in item:
+                parts.append(item["todo_snapshot"])
+
+        return "\n\n".join(parts)
+
+
+    def _format_md_item(self, item) -> str:
+        """将单个日志条目格式化为纯 Markdown 文本。
+        跳过 reasoning 内容，其余与 _format_log_item 逻辑一致但去除 HTML。"""
+        if isinstance(item, list):
+            parts = [self._format_md_item(sub) for sub in item]
+            return "\n\n".join(parts)
+
+        if not isinstance(item, dict):
+            return f"```\n{str(item)}\n```"
+
+        lines = []
+
+        if "time" in item:
+            lines.append(f"**🕐 {item['time']}**")
+
+        if "turn" in item:
+            if item["turn"] < 0:
+                lines.append(f"### 🔄 追问 {abs(item['turn'])}")
+            else:
+                lines.append(f"### 🔄 Turn {item['turn']}")
+
+        if "query" in item:
+            lines.append(f"## 📋 Query {item['query']}: {item.get('user_input', '')}")
+
+        if "file name" in item:
+            lines.append(f"> 📄 Session: `{item['file name']}`")
+
+        # 跳过 reasoning 内容
+        if "reasoning" in item:
+            return "\n".join(lines) if lines else ""
+
+        if "role" in item:
+            role = item["role"]
+            content = item.get("content", "")
+            if role == "system" and isinstance(content, str) and content.startswith("[file_view] 工具执行结果"):
+                content = "[file_view] 工具执行结果：略。"
+            emoji = {"system": "⚙️", "user": "👤", "assistant": "🤖"}.get(role, "📝")
+            lines.append(f"### {emoji} {role.upper()}")
+            lines.append("")
+            lines.append(content)
+
+        if "tool_name" in item:
+            tool = item["tool_name"]
+            lines.append(f"### 🔧 Tool: `{tool}`")
+            lines.append("")
+            if "tool_paras" in item:
+                paras = item["tool_paras"]
+                if isinstance(paras, dict):
+                    lines.append("**参数:**")
+                    for k, v in paras.items():
+                        if k == "content":
+                            v_str = str(v)
+                            if len(v_str) > 100:
+                                v_str = v_str[:100] + "…[已截断]"
+                            lines.append(f"- {k}: `{v_str}`")
+                        else:
+                            lines.append(f"- {k}: `{v}`")
+                else:
+                    lines.append(f"**参数:** `{paras}`")
+            if "exec_result" in item:
+                result = item["exec_result"]
+                if isinstance(result, dict):
+                    if tool == "file_view":
+                        lines.append("**结果:** 文件内容略")
+                    else:
+                        lines.append("**结果:**")
+                        lines.append(result.get("content", str(result)))
+                else:
+                    lines.append(f"**结果:** {str(result)}")
+
+        if "todo_snapshot" in item:
+            lines.append("### 📋 Todo 快照")
+            lines.append("")
+            lines.append(item["todo_snapshot"])
+
+        return "\n".join(lines)
+
+
+    def _append_md_cli(self, now: str, command: str, result: str):
+        """将 CLI 命令和结果以 Markdown 格式追加写入 MD 文件。
+        CLI 命令带标题头（与 HTML 一致），内部拆分为 CLI_COMMAND 和 CLI_RESULT 两个子节。"""
+        if not self.md_session_file_name:
+            return
+        # 标题：命令文本截断到 60 字符
+        title_cmd = command[:60] + ("…" if len(command) > 60 else "")
+        header = f"## ⌨️ CLI: {title_cmd}" if command else "## ⌨️ CLI"
+        lines = [header, f"**🕐 {now}**"]
+        if command:
+            lines.append(f"### ⌨️ CLI_COMMAND")
+            lines.append(command)
+        if result:
+            lines.append(f"### 📋 CLI_RESULT")
+            lines.append(result)
+        md_content = "\n\n".join(lines) + "\n\n***************\n\n"
+        file_append(self.md_log_root, self.md_session_file_name, md_content)
 
 
     def log_turn(self, turn):
@@ -375,6 +656,9 @@ class SessionLog:
             if result:
                 md_items.append({"role": "user", "content": f"[CLI_RESULT] {result}"})
             self._save_session_log(md_items)
+
+        # 并行写入 MD 日志
+        self._append_md_cli(now, command, result)
 
     def _flush_cli_html(self, now: str, command: str, result: str):
         """将 CLI 命令+结果以 HTML 折叠节点形式写入文件。
@@ -540,10 +824,10 @@ class SessionLog:
         # 为每个节构建子折叠 HTML
         section_html_parts = []
         section_titles = {
-            "system": "⚙️ 系统消息",
+            "system": "⚙️ 系统宪法",
             "system_notice": "⚙️ 系统提示",
             "installed_skills": "📦 系统技能",
-            "project_context": "📋 项目宪法",
+            "project_context": "📋 项目章程",
             "directory_tree": "🗂️ 项目目录",
             "memory_context": "🧠 记忆召回",
             "user": "👤 用户输入",
@@ -553,18 +837,25 @@ class SessionLog:
             "tool_result": "📋 工具执行结果",
         }
 
-        # 检查是否有记忆召回 section，如果没有则添加占位
-        # 记忆召回应放在"用户输入"之后（先有用户输入才能召回记忆）
-        has_memory_section = any(sec_name == "memory_context" for sec_name, _ in sections)
-        if not has_memory_section:
-            # 找到"用户输入" section 的位置，插在它后面
-            insert_idx = next((i for i, (name, _) in enumerate(sections) if name == "user"), -1)
-            if insert_idx >= 0:
-                sections.insert(insert_idx + 1, ("memory_context", [{"role": "user", "content": "没有召回到相关记忆"}]))
-            else:
-                sections.append(("memory_context", [{"role": "user", "content": "没有召回到相关记忆"}]))
+        # 记忆召回占位（仅首轮显示，后续 Turn 不添加）
+        is_first_turn = (self._query_counter == 1 and self._current_turn == 1)
+        if is_first_turn:
+            has_memory_section = any(sec_name == "memory_context" for sec_name, _ in sections)
+            if not has_memory_section:
+                # 找到"用户输入" section 的位置，插在它后面
+                insert_idx = next((i for i, (name, _) in enumerate(sections) if name == "user"), -1)
+                if insert_idx >= 0:
+                    sections.insert(insert_idx + 1, ("memory_context", [{"role": "user", "content": "没有召回到相关记忆"}]))
+                else:
+                    sections.append(("memory_context", [{"role": "user", "content": "没有召回到相关记忆"}]))
+
+        # HTML 日志跳过的小节（与 MD/新 HTML 保持一致）
+        html_skip_sections = {"system", "installed_skills", "project_context", "directory_tree"}
 
         for section_name, items in sections:
+            # 跳过前置小节（系统宪法、技能、项目上下文、目录树）
+            if section_name in html_skip_sections:
+                continue
             if section_name == "reasoning":
                 reasoning_text = ""
                 for item in items:
@@ -739,6 +1030,36 @@ class SessionLog:
                             current_section = "system_notice"
                             current_items = []
                         current_items.append(item)
+                        return
+                    # 记忆注入内容（role="system" 的 MEMORY_INJECTION）→ memory_context
+                    if isinstance(content, str) and content.startswith("[MEMORY_INJECTION_v1]"):
+                        new_section = "memory_context"
+                        if current_section != new_section:
+                            _flush_section()
+                            current_section = new_section
+                            current_items = []
+                        current_items.append(item)
+                        return
+                    # 项目上下文（role="system" 的 [项目上下文]）→ project_context
+                    if isinstance(content, str) and content.startswith("[项目上下文]"):
+                        new_section = "project_context"
+                        if current_section != new_section:
+                            _flush_section()
+                            current_section = new_section
+                            current_items = []
+                        current_items.append(item)
+                        return
+                    # 项目目录树（role="system" 的 [项目目录树]）→ directory_tree
+                    if isinstance(content, str) and content.startswith("[项目目录树]"):
+                        new_section = "directory_tree"
+                        if current_section != new_section:
+                            _flush_section()
+                            current_section = new_section
+                            current_items = []
+                        current_items.append(item)
+                        return
+                    # CLI 命令/结果已由 _flush_cli_entry 独立记录，跳过不创建 section
+                    if isinstance(content, str) and (content.startswith("[CLI_COMMAND]") or content.startswith("[CLI_RESULT]")):
                         return
                     # 检查是否需要将 Installed Skills 独立拆分
                     if "## Installed Skills" in str(content):
@@ -1301,6 +1622,9 @@ class SessionLog:
         if "role" in item:
             role = item["role"]
             content = item.get("content", "")
+            # 对 file_view 工具执行结果进行截断，避免日志过大
+            if role == "system" and isinstance(content, str) and content.startswith("[file_view] 工具执行结果"):
+                content = "[file_view] 工具执行结果：略。"
             emoji = {"system": "⚙️", "user": "👤", "assistant": "🤖"}.get(role, "📝")
             lines.append(f"### {emoji} {role.upper()}")
             lines.append("")
