@@ -1353,7 +1353,6 @@ class MyClaudeCLI:
                     "  /bug extract                — 从MD会话日志提取Bug (简写 /bug ext)\n"
                     "  /bug retrieve <模块路径|文件名> — 召回测试 (简写 /bug rt)\n"
                     "  /bug remove                 — 清除所有Bug (简写 /bug rm)\n"
-                    "  /bug archive [选项]         — 归档已修复的Bug\n"
                     "  /bug stats                  — 统计信息"
                 )
                 return True
@@ -1373,9 +1372,6 @@ class MyClaudeCLI:
             elif bug_sub in ("rm", "remove"):
                 self._handle_bug_remove()
                 return True
-            elif bug_sub == "archive":
-                self._handle_bug_archive(bug_arg)
-                return True
             elif bug_sub == "stats":
                 self._handle_bug_stats()
                 return True
@@ -1386,7 +1382,6 @@ class MyClaudeCLI:
                     "  /bug extract                — 从MD会话日志提取Bug (简写 /bug ext)\n"
                     "  /bug retrieve <模块路径|文件名> — 召回测试 (简写 /bug rt)\n"
                     "  /bug remove                 — 清除所有Bug (简写 /bug rm)\n"
-                    "  /bug archive [选项]         — 归档已修复的Bug\n"
                     "  /bug stats                  — 统计信息"
                 )
                 return True
@@ -1553,7 +1548,6 @@ class MyClaudeCLI:
                 f"Bug详情: {record.id}",
                 f"  标题: {record.title}",
                 f"  模块: {record.module}",
-                f"  状态: {record.status}",
                 f"  涉及文件: {', '.join(record.affected_files)}",
                 f"  涉及函数: {', '.join(record.affected_functions) if record.affected_functions else '无'}",
                 f"  根因: {record.root_cause}",
@@ -1571,48 +1565,20 @@ class MyClaudeCLI:
             self.query_loop.append_cli_result(f"查看Bug详情: {record.id}")
             return
 
-        if arg == "--archive":
-            # 查看归档的Bug
-            stats = bb.get_stats()
-            archived = stats.get("_archive", {})
-            count = archived.get("archived", 0)
-            if count == 0:
-                cli_print.print_info("归档中没有Bug。")
-            else:
-                cli_print.print_info(f"归档中共有 {count} 条Bug。")
-            self.query_loop.append_cli_result(f"查看归档Bug: {count} 条")
-            return
-
         if arg.startswith("--module"):
             module = arg[8:].strip()
             records = bb.get_by_module(module)
             if not records:
-                cli_print.print_info(f"模块 '{module}' 没有 open 状态的Bug。")
+                cli_print.print_info(f"模块 '{module}' 没有Bug。")
                 return
             self._print_bug_list(records, f"模块 '{module}' 的Bug")
             self.query_loop.append_cli_result(f"查看模块 {module} Bug: {len(records)} 条")
             return
 
-        if arg.startswith("--status"):
-            status = arg[8:].strip()
-            if status == "fixed":
-                records = bb.store.get_all_fixed()
-            elif status == "open":
-                records = bb.get_all_open()
-            else:
-                cli_print.print_error(f"不支持的状态: {status}（可选: open, fixed）")
-                return
-            if not records:
-                cli_print.print_info(f"没有 {status} 状态的Bug。")
-                return
-            self._print_bug_list(records, f"状态为 '{status}' 的Bug")
-            self.query_loop.append_cli_result(f"查看 {status} 状态Bug: {len(records)} 条")
-            return
-
-        # 默认：显示所有 open 状态的Bug（分模块展示）
-        records = bb.get_all_open()
+        # 默认：显示所有Bug（分模块展示）
+        records = bb.get_all()
         if not records:
-            cli_print.print_info("当前没有 open 状态的Bug。")
+            cli_print.print_info("当前Bug库为空。")
             self.query_loop.append_cli_result("查看Bug库: 0 条")
             return
 
@@ -1621,7 +1587,7 @@ class MyClaudeCLI:
         for r in records:
             module_groups.setdefault(r.module, []).append(r)
 
-        lines = ["Bug库（open 状态）", "=" * 50]
+        lines = ["Bug库", "=" * 50]
         for module, recs in sorted(module_groups.items()):
             lines.append(f"\n[{module}] ({len(recs)} 条)")
             for r in recs:
@@ -1640,7 +1606,36 @@ class MyClaudeCLI:
         from src.query import chat_llm
         chat_llm.set_context(query="/bug ext", turn="CLI_COMMAND")
 
-        cli_print.print_info("开始从 MD 会话日志中提取 Bug...")
+        # 检查待提取的 MD 文件数量，预估时间
+        try:
+            ext_stats = bb.get_extraction_stats()
+            md_pending = ext_stats.get("md_pending", 0)
+            md_total = ext_stats.get("md_total", 0)
+        except Exception:
+            md_pending = 0
+            md_total = 0
+
+        if md_pending == 0:
+            cli_print.print_info("没有需要提取的 MD 会话日志。")
+            chat_llm.set_context()
+            return
+
+        est_time = self._format_estimated_time(md_pending)
+        cli_print.print_info(
+            f"开始从 MD 会话日志中提取 Bug...\n"
+            f"  待提取 MD 日志: {md_pending} 个文件（共 {md_total} 个，已提取 {md_total - md_pending} 个）\n"
+            f"  预计耗时: {est_time}"
+        )
+
+        # 设置进度回调
+        progress_holder = {"completed": 0, "total": 0}
+
+        def _on_progress(completed: int, total: int, action: str):
+            progress_holder["completed"] = completed
+            progress_holder["total"] = total
+
+        if hasattr(bb, "set_extract_progress_callback"):
+            bb.set_extract_progress_callback(_on_progress)
 
         import sys
         import time
@@ -1655,6 +1650,7 @@ class MyClaudeCLI:
 
         def _spin():
             i = 0
+            last_heartbeat = time.time()
             while not all_done.is_set():
                 char = spinner_chars[i % len(spinner_chars)]
                 with output_lock:
@@ -1662,9 +1658,25 @@ class MyClaudeCLI:
                         break
                     if is_tty:
                         elapsed = int(time.time() - spin_start)
-                        msg = f"  {char} 正在调用 LLM 提取Bug... ({elapsed}s)"
-                        sys.stdout.write(f"\r{msg.ljust(60)}")
+                        completed = progress_holder["completed"]
+                        total = progress_holder["total"]
+                        if total > 0:
+                            msg = f"  {char} 正在调用 LLM 提取Bug... {completed}/{total} 文件 ({elapsed}s)"
+                        else:
+                            msg = f"  {char} 正在调用 LLM 提取Bug... ({elapsed}s)"
+                        sys.stdout.write(f"\r{msg.ljust(70)}")
                         sys.stdout.flush()
+                    else:
+                        now = time.time()
+                        if now - last_heartbeat >= 5.0:
+                            elapsed = int(now - spin_start)
+                            completed = progress_holder["completed"]
+                            total = progress_holder["total"]
+                            if total > 0:
+                                print(f"  ... 仍在提取Bug {completed}/{total} 文件 ({elapsed}s)")
+                            else:
+                                print(f"  ... 仍在提取Bug ({elapsed}s)")
+                            last_heartbeat = now
                 time.sleep(0.15)
                 i += 1
 
@@ -1672,6 +1684,7 @@ class MyClaudeCLI:
         spinner_thread.start()
 
         op_start = _dt.now()
+        op_start_str = op_start.strftime("%Y-%m-%d %H:%M:%S")
         try:
             result = bb.extract_from_md_logs()
         except Exception as e:
@@ -1681,11 +1694,13 @@ class MyClaudeCLI:
             spinner_thread.join(timeout=1.0)
             with output_lock:
                 if is_tty:
-                    sys.stdout.write(f"\r{' ' * 60}\r")
+                    sys.stdout.write(f"\r{' ' * 70}\r")
                     sys.stdout.flush()
 
         op_end = _dt.now()
-        duration_str = self._format_duration(int((op_end - op_start).total_seconds() * 1000))
+        op_end_str = op_end.strftime("%Y-%m-%d %H:%M:%S")
+        op_duration_ms = int((op_end - op_start).total_seconds() * 1000)
+        op_duration_str = MyClaudeCLI._format_duration(op_duration_ms)
         chat_llm.set_context()
 
         if "error" in result and result.get("error"):
@@ -1696,29 +1711,29 @@ class MyClaudeCLI:
         processed = result.get("processed", 0)
         extracted = result.get("extracted", 0)
         skipped = result.get("skipped", 0)
+        timeout_count = result.get("timeout", 0)
+        empty_response = result.get("empty_response", 0)
+        error_count = result.get("error", 0)
+        llm_none = result.get("llm_none", 0)
 
-        if extracted == 0:
-            cli_print.print_info(
-                f"Bug提取完成:\n"
-                f"  耗时: {duration_str}\n"
-                f"  处理 MD 日志: {processed} 个\n"
-                f"  跳过（已提取/空内容）: {skipped} 个\n"
-                f"  新增Bug: 0 条（未发现可提取的 Bug）"
-            )
-            self.query_loop.append_cli_result(
-                f"Bug提取完成: 0 条 (处理 {processed} 个MD文件, 跳过 {skipped} 个)"
-            )
-        else:
-            cli_print.print_info(
-                f"Bug提取完成:\n"
-                f"  耗时: {duration_str}\n"
-                f"  处理 MD 日志: {processed} 个\n"
-                f"  跳过（已提取/空内容）: {skipped} 个\n"
-                f"  新增Bug: {extracted} 条"
-            )
-            self.query_loop.append_cli_result(
-                f"Bug提取完成: 新增 {extracted} 条 (处理 {processed} 个MD文件, 跳过 {skipped} 个)"
-            )
+        cli_print.print_info(
+            f"Bug提取完成:\n"
+            f"  开始时间: {op_start_str}\n"
+            f"  结束时间: {op_end_str}\n"
+            f"  耗时: {op_duration_str}\n"
+            f"  处理 MD 日志: {processed} 个\n"
+            f"  跳过（已提取/空内容）: {skipped} 个\n"
+            f"  新增Bug: {extracted} 条\n"
+            f"  LLM判定无Bug: {llm_none} 个\n"
+            f"  超时: {timeout_count} 个\n"
+            f"  空响应: {empty_response} 个\n"
+            f"  异常: {error_count} 个"
+        )
+        self.query_loop.append_cli_result(
+            f"Bug提取完成: 开始时间 {op_start_str}, 结束时间 {op_end_str}, 耗时: {op_duration_str}, "
+            f"处理 {processed} 个MD文件, 跳过 {skipped} 个, "
+            f"新增Bug {extracted} 条 (LLM无Bug {llm_none}, 超时 {timeout_count}, 空响应 {empty_response}, 异常 {error_count})"
+        )
 
     def _handle_bug_retrieve(self, arg: str):
         """处理 /bug rt 命令。支持模块路径或文件名称（全路径）。"""
@@ -1753,84 +1768,32 @@ class MyClaudeCLI:
             cli_print.print_error(f"获取统计信息失败: {e}")
             return
 
-        total = 0
-        for module, s in stats.items():
-            total += s.get("open", 0) + s.get("fixed", 0)
-        archived = stats.get("_archive", {}).get("archived", 0)
-        total += archived
+        total = sum(stats.values()) if stats else 0
 
         if total == 0:
             cli_print.print_info("当前Bug库为空，无需清除。")
             self.query_loop.append_cli_result("清除Bug库: 空")
             return
 
-        # 清除所有 open 和 fixed 记录
-        import shutil
+        # 清除所有 Bug 记录文件（.md 模块文件）
         from pathlib import Path
-        for jsonl_file in bb.store.base_dir.glob("*.jsonl"):
-            jsonl_file.unlink()
-        # 注意：不删除 .md 文件（bug_ext_record.md 是提取记录，不包含 Bug 数据）
+        for md_file in bb.store.base_dir.glob("*.md"):
+            if md_file.name != "bug_ext_record.md":
+                md_file.unlink()
+        # 清除提取进度记录
+        ext_record = bb.store.base_dir / "bug_ext_record.json"
+        if ext_record.exists():
+            ext_record.unlink()
+        old_ext_record = bb.store.base_dir / "bug_ext_record.md"
+        if old_ext_record.exists():
+            old_ext_record.unlink()
         # 也不删除 raw_memory/ 目录下的 MD 会话日志
-        # 清除归档
-        if bb.store.archive_dir.exists():
-            shutil.rmtree(bb.store.archive_dir)
-            bb.store.archive_dir.mkdir(parents=True, exist_ok=True)
 
         cli_print.print_info(
-            f"已清除所有Bug记录（共 {total} 条，含归档 {archived} 条）。\n"
+            f"已清除所有Bug记录（共 {total} 条）。\n"
             f"  注意: MD 会话日志文件未删除（由用户自行管理）"
         )
-        self.query_loop.append_cli_result(f"清除Bug库: {total} 条 (含归档 {archived} 条)")
-
-    def _handle_bug_archive(self, arg: str):
-        """处理 /bug archive 命令。"""
-        bb = self._get_bug_base()
-
-        if arg.startswith("--id"):
-            record_id = arg[4:].strip()
-            if not record_id:
-                cli_print.print_error("缺少Bug ID。用法: /bug archive --id <ID>")
-                return
-            try:
-                count = bb.archive_fixed(record_id)
-            except Exception as e:
-                cli_print.print_error(f"归档失败: {e}")
-                return
-            if count > 0:
-                cli_print.print_info(f"已归档Bug: {record_id}")
-                self.query_loop.append_cli_result(f"Bug归档: {record_id}")
-            else:
-                cli_print.print_error(f"归档失败: 未找到状态为 fixed 的Bug {record_id}")
-            return
-
-        if arg == "--all-fixed":
-            try:
-                count = bb.archive_fixed()
-            except Exception as e:
-                cli_print.print_error(f"归档失败: {e}")
-                return
-            cli_print.print_info(f"已归档所有 fixed 状态的Bug: {count} 条")
-            self.query_loop.append_cli_result(f"Bug归档(all-fixed): {count} 条")
-            return
-
-        # 默认：自动检测文件哈希变更，标记 fixed 并归档
-        cli_print.print_info("正在检查文件哈希变更...")
-        try:
-            fixed_count = bb.check_and_archive_fixed()
-        except Exception as e:
-            cli_print.print_error(f"归档失败: {e}")
-            return
-
-        if fixed_count > 0:
-            cli_print.print_info(
-                f"归档完成:\n"
-                f"  检测到文件变更并标记为 fixed: {fixed_count} 条\n"
-                f"  已归档的 fixed 记录也已移至 _archive/"
-            )
-            self.query_loop.append_cli_result(f"Bug自动归档: {fixed_count} 条")
-        else:
-            cli_print.print_info("归档完成: 没有检测到文件变更，无新归档。")
-            self.query_loop.append_cli_result("Bug自动归档: 0 条")
+        self.query_loop.append_cli_result(f"清除Bug库: {total} 条")
 
     def _handle_bug_stats(self):
         """处理 /bug stats 命令。"""
@@ -1849,29 +1812,19 @@ class MyClaudeCLI:
         # 构建表格输出
         lines = [
             "Bug库统计",
-            "─" * 45,
-            f"{'模块':<15} {'open':<8} {'fixed':<8} {'archived':<8}",
-            "─" * 45,
+            "─" * 30,
+            f"{'模块':<15} {'Bug数':<8}",
+            "─" * 30,
         ]
-        total_open = 0
-        total_fixed = 0
-        total_archived = 0
+        total = 0
         for module in sorted(stats.keys()):
-            s = stats[module]
-            o = s.get("open", 0)
-            f = s.get("fixed", 0)
-            a = s.get("archived", 0)
-            total_open += o
-            total_fixed += f
-            total_archived += a
-            display_name = module if module != "_archive" else "归档"
-            lines.append(f"{display_name:<15} {o:<8} {f:<8} {a:<8}")
-        lines.append("─" * 45)
-        lines.append(f"{'合计':<15} {total_open:<8} {total_fixed:<8} {total_archived:<8}")
+            count = stats[module]
+            total += count
+            lines.append(f"{module:<15} {count:<8}")
+        lines.append("─" * 30)
+        lines.append(f"{'合计':<15} {total:<8}")
         cli_print.print_info("\n".join(lines))
-        self.query_loop.append_cli_result(
-            f"Bug统计: open={total_open}, fixed={total_fixed}, archived={total_archived}"
-        )
+        self.query_loop.append_cli_result(f"Bug统计: {total} 条")
 
     @staticmethod
     def _print_bug_list(records: list, title: str):

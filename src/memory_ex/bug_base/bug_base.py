@@ -83,58 +83,6 @@ class BugBase:
         """
         return self.retriever.retrieve(file_paths, task_context, skip_stage2=skip_stage2)
 
-    def check_and_archive_fixed(self) -> int:
-        """检查所有 open 记录的文件哈希，若文件已变更则标记为 fixed。
-
-        同时将已有的 fixed 记录归档到 _archive/。
-
-        Returns:
-            标记为 fixed 的记录数（不含归档数）。
-        """
-        count = 0
-
-        # 1. 检查 open 记录的文件哈希变更，标记为 fixed
-        for record in self.store.get_all_open():
-            if not record.file_hashes:
-                continue
-            for file_path, old_hash in record.file_hashes.items():
-                current_hash = self.store._compute_file_hash(file_path)
-                # 文件存在且哈希变更，或文件已被删除
-                if current_hash and current_hash != old_hash:
-                    self.store.update(record.id, status="fixed")
-                    count += 1
-                    break
-                elif not current_hash and old_hash:
-                    # 文件被删除也视为已修复（代码已变更）
-                    self.store.update(record.id, status="fixed")
-                    count += 1
-                    break
-
-        # 2. 归档所有已有的 fixed 记录（含本轮新标记的）
-        for record in self.store.get_all_fixed():
-            self.store.archive(record.id)
-
-        return count
-
-    def archive_fixed(self, record_id: str | None = None) -> int:
-        """归档已修复的Bug。
-
-        Args:
-            record_id: 指定 ID 归档。如果为 None，则归档所有 fixed 状态的记录。
-
-        Returns:
-            归档的记录数。
-        """
-        count = 0
-        if record_id:
-            if self.store.archive(record_id):
-                count = 1
-        else:
-            for record in self.store.get_all_fixed():
-                if self.store.archive(record.id):
-                    count += 1
-        return count
-
     def mark_memory_linked(self, record_id: str, memory_id: str) -> bool:
         """标记某Bug已提取到 Memory 系统。
 
@@ -143,7 +91,7 @@ class BugBase:
         """
         return self.store.update(record_id, memory_linked=memory_id)
 
-    def get_stats(self) -> dict[str, dict[str, int]]:
+    def get_stats(self) -> dict[str, int]:
         """获取统计信息。"""
         return self.store.get_stats()
 
@@ -151,14 +99,50 @@ class BugBase:
         """按 ID 获取记录。"""
         return self.store.get(record_id)
 
-    def get_all_open(self) -> list[BugRecord]:
-        """获取所有 open 状态的记录。"""
-        return self.store.get_all_open()
+    def get_all(self) -> list[BugRecord]:
+        """获取所有记录。"""
+        return self.store.get_all()
 
     def get_by_module(self, module: str) -> list[BugRecord]:
-        """获取指定模块的所有 open 状态记录。"""
+        """获取指定模块的所有记录。"""
         return self.store.get_by_module(module)
 
     def get_by_file(self, file_path: str) -> list[BugRecord]:
-        """获取涉及指定文件的所有 open 状态记录。"""
+        """获取涉及指定文件的所有记录。"""
         return self.store.get_by_file(file_path)
+
+    def set_extract_progress_callback(self, callback):
+        """设置提取进度回调函数。
+
+        Args:
+            callback: 回调函数，签名 callback(completed: int, total: int, action: str)
+        """
+        self.extractor.set_progress_callback(callback)
+
+    def get_extraction_stats(self) -> dict:
+        """获取Bug提取的统计信息（用于 /bug ext 启动前预估）。
+
+        Returns:
+            包含 md_total, md_extracted, md_pending 的字典
+        """
+        import os
+        raw_memory_dir = self.store.base_dir.parent / "raw_memory"
+        if not raw_memory_dir.exists():
+            return {"md_total": 0, "md_extracted": 0, "md_pending": 0}
+
+        md_files = sorted(raw_memory_dir.glob("MyClaude_*.md"))
+        md_total = len(md_files)
+        extracted_offsets = self.store.get_extracted_md_files()
+
+        md_pending = 0
+        for md_file in md_files:
+            current_size = os.path.getsize(str(md_file))
+            last_offset = extracted_offsets.get(md_file.name, 0)
+            if current_size > last_offset:
+                md_pending += 1
+
+        return {
+            "md_total": md_total,
+            "md_extracted": md_total - md_pending,
+            "md_pending": md_pending,
+        }

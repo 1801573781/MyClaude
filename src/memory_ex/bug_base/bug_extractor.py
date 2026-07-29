@@ -27,6 +27,15 @@ class BugExtractor:
         self.llm = llm_client
         self.store = store
         self.extraction_prompt = self._load_prompt()
+        self._progress_callback = None
+
+    def set_progress_callback(self, callback):
+        """注入进度回调函数。
+
+        Args:
+            callback: 回调函数，签名 callback(completed: int, total: int, action: str)
+        """
+        self._progress_callback = callback
 
     def extract_from_session(
         self, api_messages: list[dict], session_id: str
@@ -91,7 +100,6 @@ class BugExtractor:
                 fix_pattern=raw.get("fix_pattern", ""),
                 caution=raw.get("caution", ""),
                 generalization=raw.get("generalization", ""),
-                status="open",
                 file_hashes=file_hashes,
                 created_at=now_str,
                 source_session=session_id,
@@ -264,7 +272,6 @@ class BugExtractor:
                     fix_pattern=raw.get("fix_pattern", ""),
                     caution=raw.get("caution", ""),
                     generalization=raw.get("generalization", ""),
-                    status="open",
                     file_hashes=file_hashes,
                     created_at=now_str,
                     source_session="raw_extraction",
@@ -346,7 +353,7 @@ class BugExtractor:
                 continue
 
             if not content.strip():
-                self.store.mark_md_file_extracted(md_file.name)
+                self.store.mark_md_file_extracted(md_file.name, md_file.stat().st_size)
                 total_skipped += 1
                 details.append({
                     "file": md_file.name, "action": "空文件跳过",
@@ -374,7 +381,7 @@ class BugExtractor:
             # 解析 LLM 返回
             raw_records = self._parse_llm_response(response)
             if not raw_records:
-                self.store.mark_md_file_extracted(md_file.name)
+                self.store.mark_md_file_extracted(md_file.name, md_file.stat().st_size)
                 total_processed += 1
                 details.append({
                     "file": md_file.name, "action": "LLM判定无Bug，标记已提取",
@@ -407,7 +414,6 @@ class BugExtractor:
                     fix_pattern=raw.get("fix_pattern", ""),
                     caution=raw.get("caution", ""),
                     generalization=raw.get("generalization", ""),
-                    status="open",
                     file_hashes=file_hashes,
                     created_at=now_str,
                     source_session="md_log_extraction",
@@ -422,7 +428,7 @@ class BugExtractor:
                 })
 
             # 标记文件已提取
-            self.store.mark_md_file_extracted(md_file.name)
+            self.store.mark_md_file_extracted(md_file.name, md_file.stat().st_size)
             total_processed += 1
 
         return {
