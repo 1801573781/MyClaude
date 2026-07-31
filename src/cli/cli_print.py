@@ -199,6 +199,7 @@ Welcome to MyClaude Code CLI! A beautiful terminal interface for AI Coding.
 - `/mem` - memory相关命令，输入 /mem 查看命令列表
 - `/bug` - bug base相关命令，输入 /bug 查看命令列表
 - `/init` - 创建MyClaude的项目工程树
+- `/init file` - 创建函数级摘要 (简写 /init f)
 - `/cs` - 统计项目代码行数
 - `/test` - 单元测试和系统测试，/test --help 显示test命令帮助信息
 - `/opsx` - openspec相关命令，输入 /opsx 查看命令列表

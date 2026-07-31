@@ -445,6 +445,75 @@ class MyClaudeCLI:
         report_path.write_text("\n".join(lines), encoding="utf-8")
         return str(report_path)
 
+    @staticmethod
+    def _save_bug_extraction_report(result: dict, logs_root: str, start_time: str = "", end_time: str = "", duration_str: str = ""):
+        """将Bug提取的逐条明细保存为 Markdown 报告文件。
+
+        Args:
+            result: extract_from_md_logs() 返回的统计字典
+            logs_root: 日志根目录路径
+            start_time: 操作开始时间字符串
+            end_time: 操作结束时间字符串
+            duration_str: 操作耗时字符串
+        """
+        from datetime import datetime
+        from pathlib import Path
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        report_path = Path(logs_root) / f"bug_extraction_report_{timestamp}.md"
+
+        processed = result.get('processed', 0)
+        extracted = result.get('extracted', 0)
+        skipped = result.get('skipped', 0)
+        timeout_count = result.get('timeout', 0)
+        empty_response = result.get('empty_response', 0)
+        error_count = result.get('error', 0)
+        llm_none = result.get('llm_none', 0)
+        details = result.get('details', [])
+
+        lines = [
+            f"# Bug提取报告",
+            f"",
+            f"**生成时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"",
+            f"## 统计摘要",
+            f"",
+            f"| 指标 | 数值 | 说明 |",
+            f"|------|------|------|",
+            f"| 开始时间 | {start_time} | Bug提取操作开始时间 |",
+            f"| 结束时间 | {end_time} | Bug提取操作结束时间 |",
+            f"| 耗时 | {duration_str} | Bug提取操作总耗时 |",
+            f"| 处理 MD 日志 | {processed} 个 | 实际送入 LLM 提取的 MD 文件数 |",
+            f"| 跳过 | {skipped} 个 | 已提取/空内容/读取失败的文件数 |",
+            f"| 新增Bug | {extracted} 条 | LLM 从中提取出的结构化 Bug 记录数 |",
+            f"| LLM判定无Bug | {llm_none} 个 | LLM 返回无 Bug，标记已提取 |",
+            f"| 超时 | {timeout_count} 个 | LLM 调用超过超时阈值 |",
+            f"| 空响应 | {empty_response} 个 | LLM 返回空响应 |",
+            f"| 异常 | {error_count} 个 | LLM 调用过程发生异常 |",
+            f"",
+            f"## 逐条明细",
+            f"",
+        ]
+
+        if details:
+            for d in details:
+                file_name = d.get('file', '')
+                action = d.get('action', '')
+                lines.append(f"### `{file_name}`")
+                lines.append(f"")
+                lines.append(f"- **去向**: {action}")
+                lines.append(f"")
+        else:
+            lines.append("（无明细数据）")
+
+        lines.append(f"---")
+        lines.append(f"")
+        lines.append(f"*本报告由 MyClaude Bug库系统自动生成*")
+
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text("\n".join(lines), encoding="utf-8")
+        return str(report_path)
+
     def handle_command(self, command: str) -> bool:
         """处理命令，返回是否应该继续对话"""
         cmd = command.lower().strip()
@@ -1388,14 +1457,21 @@ class MyClaudeCLI:
 
         elif cmd.startswith('/init'):
             # /init — 创建 MyClaude 项目工程树
+            # /init file — 创建函数级摘要
             from src.cli.tree_visualizer import create_project_tree
-            success = create_project_tree()
+            parts = command.strip().split()
+            mode = "init_file" if len(parts) > 1 and parts[1].lower() in ("file", "f") else "init"
+            success = create_project_tree(mode=mode)
             if success:
-                cli_print.print_info("项目工程树创建完成。")
-                self.query_loop.append_cli_result("项目工程树创建完成。")
+                if mode == "init_file":
+                    cli_print.print_info("函数级摘要创建完成。")
+                    self.query_loop.append_cli_result("函数级摘要创建完成。")
+                else:
+                    cli_print.print_info("项目工程树创建完成。")
+                    self.query_loop.append_cli_result("项目工程树创建完成。")
             else:
-                cli_print.print_error("项目工程树创建失败，请检查目录是否存在。")
-                self.query_loop.append_cli_result("项目工程树创建失败。")
+                cli_print.print_error("创建失败，请检查目录是否存在。")
+                self.query_loop.append_cli_result("创建失败。")
             return True
 
         elif cmd.startswith('/h2m'):
@@ -1716,6 +1792,13 @@ class MyClaudeCLI:
         error_count = result.get("error", 0)
         llm_none = result.get("llm_none", 0)
 
+        # 保存逐条明细到报告文件
+        from src.utility.config_loader import global_cfg
+        logs_root = global_cfg.base_path.logs_root
+        report_path = self._save_bug_extraction_report(
+            result, logs_root, start_time=op_start_str, end_time=op_end_str, duration_str=op_duration_str
+        )
+
         cli_print.print_info(
             f"Bug提取完成:\n"
             f"  开始时间: {op_start_str}\n"
@@ -1727,12 +1810,14 @@ class MyClaudeCLI:
             f"  LLM判定无Bug: {llm_none} 个\n"
             f"  超时: {timeout_count} 个\n"
             f"  空响应: {empty_response} 个\n"
-            f"  异常: {error_count} 个"
+            f"  异常: {error_count} 个\n"
+            f"  逐条明细报告已保存到: {report_path}"
         )
         self.query_loop.append_cli_result(
             f"Bug提取完成: 开始时间 {op_start_str}, 结束时间 {op_end_str}, 耗时: {op_duration_str}, "
             f"处理 {processed} 个MD文件, 跳过 {skipped} 个, "
-            f"新增Bug {extracted} 条 (LLM无Bug {llm_none}, 超时 {timeout_count}, 空响应 {empty_response}, 异常 {error_count})"
+            f"新增Bug {extracted} 条 (LLM无Bug {llm_none}, 超时 {timeout_count}, 空响应 {empty_response}, 异常 {error_count}). "
+            f"报告: {report_path}"
         )
 
     def _handle_bug_retrieve(self, arg: str):
