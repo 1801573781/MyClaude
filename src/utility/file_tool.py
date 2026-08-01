@@ -128,6 +128,10 @@ def file_append(root: str, path: str, content: str):
     """
     full_path = add_root_path(root, path)
 
+    # 防御性创建父目录，避免目录不存在时 open 抛出 FileNotFoundError
+    p = Path(full_path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+
     with open(full_path, "a", encoding="utf-8") as f:
         f.write(content)
         # 每次追加后自动换行

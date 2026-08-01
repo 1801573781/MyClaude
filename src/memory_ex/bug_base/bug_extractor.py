@@ -306,45 +306,56 @@ class BugExtractor:
         return prompt_path.read_text(encoding="utf-8")
 
     def extract_from_md_logs(self) -> dict:
-        """从 MD 会话日志中提取 Bug。
+        """从 MD 会话日志中增量提取 Bug。
 
         扫描 raw_memory/MyClaude_*.md 文件，
-        跳过已提取的文件（记录在 bug_ext_record.md 中），
-        调用 LLM 提取 Bug，存入 Bug库。
+        通过 bug_ext_record.json 记录的字节偏移量进行增量检测，
+        仅对偏移量之后的新增内容调用 LLM 提取 Bug，存入 Bug库。
 
         Returns:
-            统计信息字典
+            统计信息字典，包含 processed, extracted, skipped,
+            llm_none, timeout, empty_response, error, details
         """
         from pathlib import Path
 
-        # 1. 定位 raw_memory 目录
-        raw_memory_dir = self.store.base_dir.parent / "raw_memory"
+        # 1. 定位 raw_session_log 目录
+        raw_memory_dir = self.store.base_dir.parent / "raw_session_log"
         if not raw_memory_dir.exists():
             return {"processed": 0, "extracted": 0, "skipped": 0, "details": [],
-                    "error": "raw_memory目录不存在"}
+                    "error": "raw_session_log目录不存在"}
 
         # 2. 扫描 MD 会话日志
         md_files = sorted(raw_memory_dir.glob("MyClaude_*.md"))
         if not md_files:
             return {"processed": 0, "extracted": 0, "skipped": 0, "details": []}
 
-        # 3. 读取已提取记录
-        extracted_files = self.store.get_extracted_md_files()
-        pending_files = [f for f in md_files if f.name not in extracted_files]
+        # 3. 增量检测：文件当前大小 > 上次提取偏移量 → 有新内容待提取
+        extracted_offsets = self.store.get_extracted_md_files()
+        pending_files = []
+        for f in md_files:
+            last_offset = extracted_offsets.get(f.name, 0)
+            current_size = f.stat().st_size
+            if current_size > last_offset:
+                pending_files.append(f)
         if not pending_files:
             return {"processed": 0, "extracted": 0, "skipped": 0, "details": [],
                     "skipped_reason": "所有MD日志已提取"}
 
-        # 4. 逐文件提取
+        # 4. 逐文件提取（增量读取：仅处理上次偏移量之后的新增内容）
         total_extracted = 0
         total_processed = 0
         total_skipped = 0
+        total_llm_none = 0
+        total_timeout = 0
+        total_empty_response = 0
+        total_error = 0
         details = []
         now_str = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
 
         for md_file in pending_files:
+            last_offset = extracted_offsets.get(md_file.name, 0)
             try:
-                content = md_file.read_text(encoding="utf-8")
+                content = self.store.read_incremental_content(md_file, last_offset)
             except Exception as e:
                 total_skipped += 1
                 details.append({
@@ -356,7 +367,7 @@ class BugExtractor:
                 self.store.mark_md_file_extracted(md_file.name, md_file.stat().st_size)
                 total_skipped += 1
                 details.append({
-                    "file": md_file.name, "action": "空文件跳过",
+                    "file": md_file.name, "action": "增量内容为空，标记已提取",
                 })
                 continue
 
@@ -373,16 +384,29 @@ class BugExtractor:
             # 调用 LLM
             response = self._call_llm(messages)
             if not response:
+                total_empty_response += 1
                 details.append({
-                    "file": md_file.name, "action": "LLM调用失败，保留待下次提取",
+                    "file": md_file.name, "action": "LLM空响应，保留待下次提取",
+                })
+                continue
+
+            # 检查 LLM 是否返回 NONE（无 Bug）
+            if response.strip().upper().startswith("NONE"):
+                self.store.mark_md_file_extracted(md_file.name, md_file.stat().st_size)
+                total_processed += 1
+                total_llm_none += 1
+                details.append({
+                    "file": md_file.name, "action": "LLM判定无Bug，标记已提取",
                 })
                 continue
 
             # 解析 LLM 返回
             raw_records = self._parse_llm_response(response)
             if not raw_records:
+                # 解析失败可能是 LLM 返回了空数组或格式不符
                 self.store.mark_md_file_extracted(md_file.name, md_file.stat().st_size)
                 total_processed += 1
+                total_llm_none += 1
                 details.append({
                     "file": md_file.name, "action": "LLM判定无Bug，标记已提取",
                 })
@@ -435,6 +459,10 @@ class BugExtractor:
             "processed": total_processed,
             "extracted": total_extracted,
             "skipped": total_skipped,
+            "llm_none": total_llm_none,
+            "timeout": total_timeout,
+            "empty_response": total_empty_response,
+            "error": total_error,
             "details": details,
         }
 

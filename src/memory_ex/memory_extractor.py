@@ -134,7 +134,7 @@ class MemoryExtractor:
         """
         import json
 
-        record_path = Path(self._store._base_dir) / "mem_ext_record.json"
+        record_path = Path(self._store._base_dir) / "memory" / "mem_ext_record.json"
         if not record_path.exists():
             return self._migrate_old_record()
         try:
@@ -160,7 +160,7 @@ class MemoryExtractor:
                 for line in old_path.read_text(encoding="utf-8").splitlines()
                 if line.strip()
             )
-            raw_memory_dir = Path(self._store._base_dir) / "raw_memory"
+            raw_memory_dir = Path(self._store._base_dir) / "raw_session_log"
             record: Dict[str, int] = {}
             for name in old_names:
                 fp = raw_memory_dir / name
@@ -178,7 +178,7 @@ class MemoryExtractor:
         """保存已提取记录到 JSON 文件。"""
         import json
 
-        record_path = Path(self._store._base_dir) / "mem_ext_record.json"
+        record_path = Path(self._store._base_dir) / "memory" / "mem_ext_record.json"
         try:
             record_path.write_text(
                 json.dumps(record, ensure_ascii=False, indent=2),
@@ -246,9 +246,9 @@ class MemoryExtractor:
         跳过已提取的文件（记录在 mem_ext_record.md 中），
         调用 LLM 提取记忆，写入 MEMORY.md。
         """
-        raw_memory_dir = Path(self._store._base_dir) / "raw_memory"
+        raw_memory_dir = Path(self._store._base_dir) / "raw_session_log"
         if not raw_memory_dir.exists():
-            return {"skipped": True, "reason": "raw_memory目录不存在", "processed": 0}
+            return {"skipped": True, "reason": "raw_session_log目录不存在", "processed": 0}
 
         md_files = sorted(raw_memory_dir.glob("MyClaude_*.md"))
         if not md_files:

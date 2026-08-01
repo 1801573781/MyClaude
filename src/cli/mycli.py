@@ -65,21 +65,22 @@ class MyClaudeCLI:
             return f"{days}天{hours}时{minutes}分"
 
     @staticmethod
-    def _format_estimated_time(raw_count: int) -> str:
-        """根据 raw 记忆条目数量预估 LLM 处理时间。
+    def _format_estimated_time(raw_count: int, seconds_per_unit: int = 8) -> str:
+        """根据待处理条目数量预估 LLM 处理时间。
 
-        每条 raw 记忆按 query_id 分组后，每组需要一次 LLM 调用，
-        每次 LLM 调用平均约 8 秒（含网络延迟和 LLM 推理）。
-        由于无法预知分组数量，按每条 8 秒估算（上界）。
+        每个待处理单元需要一次 LLM 调用，耗时由 seconds_per_unit 指定。
+        - Memory 提取：按 raw 记忆条目数，每条约 8 秒
+        - Bug 提取：按 MD 文件数，每个约 16 秒（Bug 提取 prompt 更复杂）
 
         Args:
-            raw_count: raw 记忆条目总数
+            raw_count: 待处理条目总数
+            seconds_per_unit: 每个条目的预估耗时（秒），默认 8
 
         Returns:
             格式化后的时间字符串，如 "约15秒"、"约2分30秒"、"约1小时5分30秒"
         """
-        # 估算：每条 raw 记忆约 8 秒（含 LLM 调用，按上界估算）
-        total_seconds = int(raw_count * 8)
+        # 估算：每条记录按 seconds_per_unit 秒估算（含 LLM 调用）
+        total_seconds = int(raw_count * seconds_per_unit)
         if total_seconds < 60:
             return f"约{total_seconds}秒"
         elif total_seconds < 3600:
@@ -1418,16 +1419,15 @@ class MyClaudeCLI:
                     "bug base相关命令，输入 /bug 查看命令列表\n"
                     "\n"
                     "可用命令:\n"
-                    "  /bug show [选项]            — 查看Bug库\n"
+                    "  /bug show                   — 查看Bug库统计\n"
                     "  /bug extract                — 从MD会话日志提取Bug (简写 /bug ext)\n"
                     "  /bug retrieve <模块路径|文件名> — 召回测试 (简写 /bug rt)\n"
-                    "  /bug remove                 — 清除所有Bug (简写 /bug rm)\n"
-                    "  /bug stats                  — 统计信息"
+                    "  /bug remove                 — 清除所有Bug (简写 /bug rm)"
                 )
                 return True
 
             if bug_sub == "show":
-                self._handle_bug_show(bug_arg)
+                self._handle_bug_show()
                 return True
             elif bug_sub in ("ext", "extract"):
                 self._handle_bug_extract(bug_arg)
@@ -1441,17 +1441,13 @@ class MyClaudeCLI:
             elif bug_sub in ("rm", "remove"):
                 self._handle_bug_remove()
                 return True
-            elif bug_sub == "stats":
-                self._handle_bug_stats()
-                return True
             else:
                 cli_print.print_error(
                     "未知的 /bug 子命令。可用:\n"
-                    "  /bug show [选项]            — 查看Bug库\n"
+                    "  /bug show                   — 查看Bug库统计\n"
                     "  /bug extract                — 从MD会话日志提取Bug (简写 /bug ext)\n"
                     "  /bug retrieve <模块路径|文件名> — 召回测试 (简写 /bug rt)\n"
-                    "  /bug remove                 — 清除所有Bug (简写 /bug rm)\n"
-                    "  /bug stats                  — 统计信息"
+                    "  /bug remove                 — 清除所有Bug (简写 /bug rm)"
                 )
                 return True
 
@@ -1606,73 +1602,36 @@ class MyClaudeCLI:
             )
         return self._bug_base
 
-    def _handle_bug_show(self, arg: str):
-        """处理 /bug show 命令。"""
+    def _handle_bug_show(self):
+        """处理 /bug show 命令。显示Bug库统计信息。"""
         bb = self._get_bug_base()
-
-        if arg.startswith("--id"):
-            # 查看指定Bug详情
-            record_id = arg[4:].strip()
-            if not record_id:
-                cli_print.print_error("缺少Bug ID。用法: /bug show --id <ID>")
-                return
-            record = bb.get_record(record_id)
-            if not record:
-                cli_print.print_error(f"未找到Bug: {record_id}")
-                return
-            lines = [
-                f"Bug详情: {record.id}",
-                f"  标题: {record.title}",
-                f"  模块: {record.module}",
-                f"  涉及文件: {', '.join(record.affected_files)}",
-                f"  涉及函数: {', '.join(record.affected_functions) if record.affected_functions else '无'}",
-                f"  根因: {record.root_cause}",
-                f"  症状: {record.symptoms}",
-                f"  修复模式: {record.fix_pattern}",
-                f"  注意事项: {record.caution}",
-                f"  创建时间: {record.created_at}",
-                f"  来源Session: {record.source_session}",
-            ]
-            if record.generalization:
-                lines.append(f"  泛化: {record.generalization}")
-            if record.memory_linked:
-                lines.append(f"  已关联记忆: {record.memory_linked}")
-            cli_print.print_info("\n".join(lines))
-            self.query_loop.append_cli_result(f"查看Bug详情: {record.id}")
+        try:
+            stats = bb.get_stats()
+        except Exception as e:
+            cli_print.print_error(f"获取统计信息失败: {e}")
             return
 
-        if arg.startswith("--module"):
-            module = arg[8:].strip()
-            records = bb.get_by_module(module)
-            if not records:
-                cli_print.print_info(f"模块 '{module}' 没有Bug。")
-                return
-            self._print_bug_list(records, f"模块 '{module}' 的Bug")
-            self.query_loop.append_cli_result(f"查看模块 {module} Bug: {len(records)} 条")
+        if not stats:
+            cli_print.print_info("Bug库为空。")
+            self.query_loop.append_cli_result("Bug统计: 空")
             return
 
-        # 默认：显示所有Bug（分模块展示）
-        records = bb.get_all()
-        if not records:
-            cli_print.print_info("当前Bug库为空。")
-            self.query_loop.append_cli_result("查看Bug库: 0 条")
-            return
-
-        # 按模块分组展示
-        module_groups: dict[str, list] = {}
-        for r in records:
-            module_groups.setdefault(r.module, []).append(r)
-
-        lines = ["Bug库", "=" * 50]
-        for module, recs in sorted(module_groups.items()):
-            lines.append(f"\n[{module}] ({len(recs)} 条)")
-            for r in recs:
-                lines.append(f"  {r.id}  {r.title}")
-        lines.append("=" * 50)
-        lines.append(f"合计: {len(records)} 条")
-        output_text = "\n".join(lines)
-        cli_print.print_info(output_text)
-        self.query_loop.append_cli_result(output_text)
+        # 构建表格输出
+        lines = [
+            "Bug库统计",
+            "─" * 30,
+            f"{'模块':<15} {'Bug数':<8}",
+            "─" * 30,
+        ]
+        total = 0
+        for module in sorted(stats.keys()):
+            count = stats[module]
+            total += count
+            lines.append(f"{module:<15} {count:<8}")
+        lines.append("─" * 30)
+        lines.append(f"{'合计':<15} {total:<8}")
+        cli_print.print_info("\n".join(lines))
+        self.query_loop.append_cli_result(f"Bug统计: {total} 条")
 
     def _handle_bug_extract(self, arg: str):
         """处理 /bug ext 命令。从 MD 会话日志提取 Bug。"""
@@ -1696,7 +1655,7 @@ class MyClaudeCLI:
             chat_llm.set_context()
             return
 
-        est_time = self._format_estimated_time(md_pending)
+        est_time = self._format_estimated_time(md_pending, seconds_per_unit=16)
         cli_print.print_info(
             f"开始从 MD 会话日志中提取 Bug...\n"
             f"  待提取 MD 日志: {md_pending} 个文件（共 {md_total} 个，已提取 {md_total - md_pending} 个）\n"
@@ -1879,37 +1838,6 @@ class MyClaudeCLI:
             f"  注意: MD 会话日志文件未删除（由用户自行管理）"
         )
         self.query_loop.append_cli_result(f"清除Bug库: {total} 条")
-
-    def _handle_bug_stats(self):
-        """处理 /bug stats 命令。"""
-        bb = self._get_bug_base()
-        try:
-            stats = bb.get_stats()
-        except Exception as e:
-            cli_print.print_error(f"获取统计信息失败: {e}")
-            return
-
-        if not stats:
-            cli_print.print_info("Bug库为空。")
-            self.query_loop.append_cli_result("Bug统计: 空")
-            return
-
-        # 构建表格输出
-        lines = [
-            "Bug库统计",
-            "─" * 30,
-            f"{'模块':<15} {'Bug数':<8}",
-            "─" * 30,
-        ]
-        total = 0
-        for module in sorted(stats.keys()):
-            count = stats[module]
-            total += count
-            lines.append(f"{module:<15} {count:<8}")
-        lines.append("─" * 30)
-        lines.append(f"{'合计':<15} {total:<8}")
-        cli_print.print_info("\n".join(lines))
-        self.query_loop.append_cli_result(f"Bug统计: {total} 条")
 
     @staticmethod
     def _print_bug_list(records: list, title: str):

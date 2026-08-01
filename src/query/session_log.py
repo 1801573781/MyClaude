@@ -12,8 +12,8 @@ class SessionLog:
 
     def __init__(self):
         self.log_root = global_cfg.base_path.logs_root
-        # MD 日志输出到 raw_memory 目录（供记忆/Bug 提取使用）
-        self.md_log_root = str(Path(global_cfg.base_path.project_root) / "memory_storage" / "memory_ex" / "raw_memory")
+        # MD 日志输出到 raw_session_log 目录（供记忆/Bug 提取使用）
+        self.md_log_root = str(Path(global_cfg.base_path.project_root) / "memory_storage" / "memory_ex" / "raw_session_log")
         Path(self.md_log_root).mkdir(parents=True, exist_ok=True)
         # 安全读取日志格式配置，默认 md
         log_cfg = getattr(global_cfg, 'log', None)
@@ -59,7 +59,7 @@ class SessionLog:
         self._save_session_log(save_session)
 
         # 并行初始化 MD 日志文件（与 HTML 同名但 .md 扩展名）
-        # MD 日志输出到 raw_memory 目录（供记忆/Bug 提取使用）
+        # MD 日志输出到 raw_session_log 目录（供记忆/Bug 提取使用）
         self.md_session_file_name = f"MyClaude_{now.strftime('%Y-%m-%d_%H-%M-%S')}.md"
         md_header = (
             f"# MyClaude Session Log (MD)\n\n"

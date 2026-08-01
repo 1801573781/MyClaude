@@ -41,7 +41,7 @@ class BugBase:
     def extract_from_md_logs(self) -> dict:
         """从 MD 会话日志中提取 Bug。
 
-        扫描 raw_memory/MyClaude_*.md 文件，
+        扫描 raw_session_log/MyClaude_*.md 文件，
         跳过已提取的文件（记录在 bug_ext_record.md 中），
         调用 LLM 提取 Bug，存入Bug库。
 
@@ -126,7 +126,7 @@ class BugBase:
             包含 md_total, md_extracted, md_pending 的字典
         """
         import os
-        raw_memory_dir = self.store.base_dir.parent / "raw_memory"
+        raw_memory_dir = self.store.base_dir.parent / "raw_session_log"
         if not raw_memory_dir.exists():
             return {"md_total": 0, "md_extracted": 0, "md_pending": 0}
 

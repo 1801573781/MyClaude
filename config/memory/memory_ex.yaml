@@ -1,8 +1,8 @@
 memory_ex:
   storage:
     base_dir: "D:/AI/MyClaude/memory_storage/memory_ex/"
-    layer1_file: "MEMORY.md"
-    metadata_file: "metadata.json"
+    layer1_file: "memory/MEMORY.md"
+    metadata_file: "memory/metadata.json"
 
   watermarks:
     warning: 150

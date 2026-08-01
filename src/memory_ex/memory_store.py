@@ -90,8 +90,8 @@ class MemoryStore:
     """物理存储管理器。
 
     管理以下文件：
-    - Layer 1: {base_dir}/MEMORY.md（索引层 Markdown）
-    - 元数据: {base_dir}/metadata.json
+    - Layer 1: {base_dir}/memory/MEMORY.md（索引层 Markdown）
+    - 元数据: {base_dir}/memory/metadata.json
     """
 
     # metadata.json 的默认结构
@@ -138,6 +138,9 @@ class MemoryStore:
     def _ensure_dirs(self):
         """创建所需目录。"""
         self._base_dir.mkdir(parents=True, exist_ok=True)
+        # 确保 layer1_file 和 metadata_file 的父目录（memory/）存在
+        self._layer1_path.parent.mkdir(parents=True, exist_ok=True)
+        self._metadata_path.parent.mkdir(parents=True, exist_ok=True)
 
     def _ensure_files(self):
         """创建所需文件（如果不存在）。"""

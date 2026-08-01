@@ -76,8 +76,8 @@ def _get_default_config() -> SimpleNamespace:
     return SimpleNamespace(
         storage=SimpleNamespace(
             base_dir="D:/AI/MyClaude/memory_storage/memory_ex/",
-            layer1_file="MEMORY.md",
-            metadata_file="metadata.json",
+            layer1_file="memory/MEMORY.md",
+            metadata_file="memory/metadata.json",
         ),
         watermarks=SimpleNamespace(
             warning=150,
@@ -378,18 +378,22 @@ class MemoryEx(MemoryExInterface):
         """返回记忆统计信息。"""
         result = self._store.get_stats()
 
+        # 用 evolver 的实际计数覆盖 store 的 unevolved，
+        # 确保 CLI 显示的待进化数与 evolve() 实际消费数一致
+        result["unevolved"] = self._evolver.get_unevolved_count()
+
         # MD 会话日志统计（新提取源）
         import os
         import json
 
-        raw_memory_dir = Path(self._store._base_dir) / "raw_memory"
+        raw_memory_dir = Path(self._store._base_dir) / "raw_session_log"
         if raw_memory_dir.exists():
             md_files = list(raw_memory_dir.glob("MyClaude_*.md"))
             result["md_total"] = len(md_files)
 
             # 优先读取 JSON 格式记录，兼容旧 MD 格式
-            json_path = Path(self._store._base_dir) / "mem_ext_record.json"
-            old_md_path = Path(self._store._base_dir) / "mem_ext_record.md"
+            json_path = Path(self._store._base_dir) / "memory" / "mem_ext_record.json"
+            old_md_path = Path(self._store._base_dir) / "memory" / "mem_ext_record.md"
 
             extracted_count = 0
             if json_path.exists():

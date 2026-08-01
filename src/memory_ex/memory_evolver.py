@@ -87,6 +87,14 @@ class MemoryEvolver:
 
     # ===== 公开接口 =====
 
+    def get_unevolved_count(self) -> int:
+        """返回未进化条目数（基于 Layer 1 实际内容）。
+
+        与 _get_unevolved_from_layer1() 使用相同逻辑，
+        确保 stats() 显示的待进化数与 evolve() 实际消费数一致。
+        """
+        return len(self._get_unevolved_from_layer1())
+
     def check_needed(self) -> bool:
         """检查是否需要进化。
 
