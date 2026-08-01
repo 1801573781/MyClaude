@@ -65,16 +65,16 @@ class MyClaudeCLI:
             return f"{days}天{hours}时{minutes}分"
 
     @staticmethod
-    def _format_estimated_time(raw_count: int, seconds_per_unit: int = 8) -> str:
+    def _format_estimated_time(raw_count: int, seconds_per_unit: int = 13) -> str:
         """根据待处理条目数量预估 LLM 处理时间。
 
         每个待处理单元需要一次 LLM 调用，耗时由 seconds_per_unit 指定。
-        - Memory 提取：按 raw 记忆条目数，每条约 8 秒
-        - Bug 提取：按 MD 文件数，每个约 16 秒（Bug 提取 prompt 更复杂）
+        - Memory 提取：按 raw 记忆条目数，每条约 13 秒（prompt 模板较丰富，含实体规范化）
+        - Bug 提取：按 MD 文件数，每个约 18 秒（Bug 提取 prompt 字段更多，输出更长）
 
         Args:
             raw_count: 待处理条目总数
-            seconds_per_unit: 每个条目的预估耗时（秒），默认 8
+            seconds_per_unit: 每个条目的预估耗时（秒），默认 13
 
         Returns:
             格式化后的时间字符串，如 "约15秒"、"约2分30秒"、"约1小时5分30秒"
@@ -1655,7 +1655,7 @@ class MyClaudeCLI:
             chat_llm.set_context()
             return
 
-        est_time = self._format_estimated_time(md_pending, seconds_per_unit=16)
+        est_time = self._format_estimated_time(md_pending, seconds_per_unit=18)
         cli_print.print_info(
             f"开始从 MD 会话日志中提取 Bug...\n"
             f"  待提取 MD 日志: {md_pending} 个文件（共 {md_total} 个，已提取 {md_total - md_pending} 个）\n"
