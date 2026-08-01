@@ -7,13 +7,13 @@ import re
 # ======================== XML 标签集中管理 ========================
 # 所有 XML 工具标签（用于标签泄露清理和识别）。
 # 新增工具时必须同步更新这三个常量，其他地方全部引用它们。
-_ALL_XML_TAGS = {"create", "str_replace", "bash", "done", "file_view", "excel_view", "use_skill", "old", "new", "AskUserQuestion"}
+_ALL_XML_TAGS = {"create", "str_replace", "bash", "done", "file_view", "excel_view", "use_skill", "old", "new", "AskUserQuestion", "get_file_context"}
 
 # 容器标签（需要闭合标签的，如 <create>...</create>）
 _CONTAINER_TAGS = {"create", "str_replace", "bash", "done"}
 
 # 自闭合标签（如 <file_view path="..."/>）
-_SELF_CLOSING_TAGS = {"file_view", "excel_view", "use_skill", "AskUserQuestion"}
+_SELF_CLOSING_TAGS = {"file_view", "excel_view", "use_skill", "AskUserQuestion", "get_file_context"}
 
 
 def _final_clean_xml_tags(content: str) -> str:
@@ -440,6 +440,7 @@ def _parse_tools_strict(response: str):
         "file_view": re.compile(r'<file_view\s+path="([^"]*)"[^>]*/>'),
         "excel_view": re.compile(r'<excel_view\s+path="([^"]*)"[^>]*/>'),
         "use_skill": re.compile(r'<use_skill\s+name="([^"]*)"\s*/>'),
+        "get_file_context": re.compile(r'<get_file_context\s+path="([^"]*)"(?:\s+intent="([^"]*)")?\s*/>'),
         "AskUserQuestion": re.compile(r'<AskUserQuestion\s+question="([^"]*)"(?:\s+choices="([^"]*)")?\s*/?>'),
     }
     for tool_name, pattern in non_container_patterns.items():
@@ -629,6 +630,11 @@ def _build_result(response: str, all_matches: list, _is_inside_container):
         elif tool_name == "use_skill":
             tools.append({"llm_tool": "use_skill", "params": {"name": m.group(1)}})
 
+        elif tool_name == "get_file_context":
+            path = m.group(1)
+            intent = m.group(2) or ""
+            tools.append({"llm_tool": "get_file_context", "params": {"path": path, "intent": intent}})
+
         elif tool_name == "AskUserQuestion":
             question = m.group(1)
             choices_raw = m.group(2)
@@ -716,6 +722,10 @@ def _parse_tools_loose(text: str):
     # 5. use_skill（单引号或双引号）
     for m in re.finditer(r"<use_skill\s+name=['\"]([^'\"]*)['\"][^>]*/>", text):
         tools.append({"llm_tool": "use_skill", "params": {"name": m.group(1)}})
+
+    # 5.5 get_file_context（单引号或双引号）
+    for m in re.finditer(r"<get_file_context\s+path=['\"]([^'\"]*)['\"](?:\s+intent=['\"]([^'\"]*)['\"])?\s*/>", text):
+        tools.append({"llm_tool": "get_file_context", "params": {"path": m.group(1), "intent": m.group(2) or ""}})
 
     # 6. str_replace 容器（单引号或双引号 path / summary）
     for m in re.finditer(
@@ -887,6 +897,12 @@ def execute_code_tool(tool):
     elif name == "bash":
         command = p.get("command", "")
         result = tool_bash(command)
+
+    elif name == "get_file_context":
+        from src.tools.file_context_tool import get_file_context
+        result = get_file_context(p)
+        # get_file_context 已返回标准 dict 格式，直接透传
+        return result
 
     elif name == "AskUserQuestion":
         from src.tools.ask_user_question import ask_user_question
