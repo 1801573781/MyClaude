@@ -345,6 +345,10 @@ class QueryLoop:
 
     # _on_llm_req，表示在发请求信息给LLM之前，做的（部分）事情，可能不是所有事情
     def _on_llm_req(self, turn, user_input):
+        # 先开始新的 Turn 缓冲（必须在 log_dict_info 之前调用，
+        # 否则 log_turn 会重置 _turn_buffer，丢弃记忆召回等内容）
+        self.session.log_turn(turn)
+
         # 第一轮，需要初始化（init_session 内部有守护，只执行一次）
         if turn == 1:
             self.session.init_session()
@@ -381,8 +385,10 @@ class QueryLoop:
                     self._print_info(f"[记忆召回] 已召回 {recall_count} 条相关记忆")
 
                     if mem_context:
+                        # 仅追加到 api_messages，不写入 session 缓冲区，也不更新哈希。
+                        # 让 log_llm_req 的 _deduplicate_msg_list 自然识别为"新消息"并记录，
+                        # 避免更新哈希后导致 log_llm_req 过滤掉所有消息。
                         self.api_messages.append_micro_info("system", mem_context)
-                        self.session.log_dict_info({"role": "system", "content": mem_context})
                         logger.debug(f"记忆上下文已注入，长度: {len(mem_context)}")
                 except Exception as e:
                     chat_llm.set_context()  # 确保异常时也清除上下文
@@ -401,8 +407,9 @@ class QueryLoop:
                 recall_count = self._count_recalled(mem_context)
                 self._print_info(f"[记忆召回] 已召回 {recall_count} 条相关记忆（回退到用户输入）")
                 if mem_context:
+                    # 仅追加到 api_messages，不写入 session 缓冲区，也不更新哈希。
+                    # 让 log_llm_req 的 _deduplicate_msg_list 自然识别为"新消息"并记录。
                     self.api_messages.append_micro_info("system", mem_context)
-                    self.session.log_dict_info({"role": "system", "content": mem_context})
                     logger.debug(f"回退记忆上下文已注入，长度: {len(mem_context)}")
             except Exception as e:
                 chat_llm.set_context()
@@ -419,8 +426,7 @@ class QueryLoop:
             self.api_messages.append_micro_info("system", todo_context)
             self.session.log_dict_info({"role": "system", "content": todo_context})
 
-        # 事前记录轮次及发送给LLM的req
-        self.session.log_turn(turn)
+        # 事前记录发送给LLM的req（log_turn 已在方法开头调用）
         self.session.log_llm_req(self.api_messages.get_msg())
 
         # 这里的thinking，不是LLM的thinking，是LLM的整个应答
@@ -436,9 +442,6 @@ class QueryLoop:
         # 记录推理内容（如果提供商支持）
         self.session.log_reasoning_content(reasoning_content)
 
-        # 记录LLM回应的原始内容（日志保留完整内容）
-        self.session.log_llm_rsp(ai_response)
-
         # 去除thinking部分（针对 Claude 风格，DeepSeek 无此部分）
         ai_response_clean = strip_thinking(ai_response)
 
@@ -447,16 +450,13 @@ class QueryLoop:
         if not ai_response_clean.strip() and reasoning_content:
             ai_response_clean = reasoning_content.strip()
 
-        '''
-        # ---------- 新增：压缩 assistant 消息 ----------
-        compressed_response = self._compress_assistant_message(ai_response_clean)
-        
-        # 将压缩后的响应追加到历史消息中（用于下一轮对话）
-        self.api_messages.append_llm_response(compressed_response)
-        # -----------------------------------------
-        '''
+        # 压缩工具标签用于 MD 日志展示（api_messages 使用原始版本）
+        md_content = self._compress_assistant_message(ai_response_clean)
 
-        # 或者是直接附上原始的LLM的response（去除thinking部分），现在看来，LLM response消息不能压缩后再扔回去
+        # 记录LLM回应（日志保留完整内容，md_content 为压缩后的展示版本）
+        self.session.log_llm_rsp(ai_response, md_content=md_content)
+
+        # 直接附上原始的LLM的response（去除thinking部分），不压缩
         self.api_messages.append_llm_response(ai_response_clean)
 
         # 是否给用户显示LLM的think过程
@@ -714,7 +714,8 @@ class QueryLoop:
                     try:
                         file_content = result_msg.get("content", "")
                         # 用文件内容 + 用户原始输入组合作为查询文本
-                        recall_query = f"{self._current_user_input}\n{file_content[:2000]}"
+                        # 限制文件内容长度为 500 字符，避免大量噪声关键词干扰召回
+                        recall_query = f"{self._current_user_input}\n{file_content[:500]}"
                         current_session_id = getattr(self.session, 'session_file_name', '')
                         chat_llm.set_context(query=self._current_user_input, turn=f"turn-recall-fileview")
                         mem_context = self._memory.get_context_for_query(
@@ -724,8 +725,12 @@ class QueryLoop:
                         recall_count = self._count_recalled(mem_context)
                         self._print_info(f"[记忆召回] 已召回 {recall_count} 条相关记忆（基于文件内容）")
                         if mem_context:
+                            # 仅追加到 api_messages，不写入当前 Turn 的 session 缓冲区。
+                            # 也不调用 update_msg_hashes —— 让下一轮 log_llm_req 的
+                            # _deduplicate_msg_list 自然识别为"新消息"并记录到 Turn 2 中。
+                            # 这样记忆召回会出现在 Turn 2（LLM 基于文件内容生成代码的轮次），
+                            # 而不是 Turn 1（仅调用 file_view 的轮次）。
                             self.api_messages.append_micro_info("system", mem_context)
-                            self.session.log_dict_info({"role": "system", "content": mem_context})
                             logger.debug(f"延迟记忆上下文已注入，长度: {len(mem_context)}")
                     except Exception as e:
                         chat_llm.set_context()

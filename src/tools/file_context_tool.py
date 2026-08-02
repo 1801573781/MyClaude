@@ -67,15 +67,25 @@ def _extract_function_summary(file_path: str) -> str:
         title = lines[0].strip()
         body = lines[1].strip() if len(lines) > 1 else ""
 
-        title_norm = _normalize_path(title)
+        # 剥离 "文件：" 或 "文件:" 前缀（.project_function.md 中的标题格式）
+        title_clean = title
+        if title.startswith("文件："):
+            title_clean = title[3:]
+        elif title.startswith("文件:"):
+            title_clean = title[3:]
+
+        title_norm = _normalize_path(title_clean)
 
         # 匹配策略：精确匹配 + 后缀匹配（双向）
+        # title_norm 通常是相对路径（如 src/query/session_log.py）
+        # target 可能是绝对路径（如 d:/ai/myclaude/src/query/session_log.py）
+        # 后缀匹配可兼容两种情况
         if (
             title_norm == target
             or target.endswith(title_norm)
             or title_norm.endswith(target)
         ):
-            return f"[FILE_SUMMARY]\n## {title}\n{body}"
+            return f"[FILE_SUMMARY]\n{body}"
 
     return "[FILE_SUMMARY] 该文件无摘要信息"
 
@@ -199,16 +209,45 @@ def _format_bug_record(bug: Any) -> str:
     return "\n".join(lines)
 
 
+# intent 关键词中的停用词，这些词过于通用，容易导致误匹配
+_INTENT_STOPWORDS = frozenset({
+    # 中文通用词
+    "分析", "理解", "为什么", "改进", "查看", "修改", "实现", "功能",
+    "问题", "原因", "方式", "方法", "这个", "那个", "什么", "怎么",
+    "如何", "需要", "进行", "通过", "使用", "相关", "系统", "代码",
+    "文件", "模块", "可以", "应该", "当前", "已经", "一些", "主要",
+    "基本", "处理", "操作", "执行", "生成", "创建", "添加", "删除",
+    "更新", "检查", "确认", "判断", "获取", "设置", "加载", "读取",
+    "写入", "返回", "调用", "传入", "接收", "解析", "转换", "格式",
+    "配置", "参数", "数据", "结果", "内容", "信息", "类型", "对象",
+    "中", "的", "了", "在", "和", "与", "或", "被", "将", "给",
+    "从", "到", "为", "对", "基于", "关于",
+    # 英文通用词
+    "the", "a", "an", "is", "are", "was", "to", "of", "in", "on",
+    "at", "by", "for", "with", "from", "as", "and", "or", "if",
+    "it", "its", "this", "that",
+})
+
+# Bug 相关性最低分数阈值：低于此分数的 Bug 视为无关
+_MIN_RELEVANCE_SCORE = 2
+
+# 最多返回的 Bug 条数
+_MAX_BUG_RETURN = 3
+
+
 def _score_bug_by_intent(bug: Any, intent: str) -> float:
     """
     根据 intent 关键词匹配计算 Bug 的相关性得分。
+    自动过滤停用词，避免通用词导致误匹配。
 
     权重：title ×3, affected_functions ×2, root_cause ×1, fix_pattern ×1, caution ×1
     """
     if not intent:
         return 0.0
 
-    keywords = set(re.findall(r"[\w\u4e00-\u9fff]+", intent.lower()))
+    raw_keywords = set(re.findall(r"[\w\u4e00-\u9fff]+", intent.lower()))
+    # 过滤停用词和单字符关键词
+    keywords = {kw for kw in raw_keywords if kw not in _INTENT_STOPWORDS and len(kw) >= 2}
     if not keywords:
         return 0.0
 
@@ -230,6 +269,7 @@ def _retrieve_bugs(file_path: str, intent: str) -> str:
     """
     从 BugStore 检索与文件路径相关的 Bug 记录。
     纯本地路径匹配（BugStore.get_by_file），不调用 LLM。
+    基于 intent 关键词相关性排序，过滤低分项，限制返回数量。
     """
     if not intent or not intent.strip():
         return "[BUG_ALERT] 空（未提供 intent，跳过 Bug 召回）"
@@ -250,7 +290,16 @@ def _retrieve_bugs(file_path: str, intent: str) -> str:
     scored = [(bug, _score_bug_by_intent(bug, intent)) for bug in bugs]
     scored.sort(key=lambda x: x[1], reverse=True)
 
-    bug_texts = [_format_bug_record(bug) for bug, _ in scored]
+    # 过滤低于阈值的 Bug，避免无关召回
+    relevant = [(bug, score) for bug, score in scored if score >= _MIN_RELEVANCE_SCORE]
+
+    if not relevant:
+        return "[BUG_ALERT] 无相关历史问题"
+
+    # 限制返回数量
+    relevant = relevant[:_MAX_BUG_RETURN]
+
+    bug_texts = [_format_bug_record(bug) for bug, _ in relevant]
     return "[BUG_ALERT]\n" + "\n\n".join(bug_texts)
 
 
@@ -282,7 +331,11 @@ def get_file_context(params: Dict[str, Any]) -> Dict[str, str]:
     summary_text = _extract_function_summary(file_path)
     bug_text = _retrieve_bugs(file_path, intent)
 
-    result = f"{summary_text}\n\n{bug_text}"
+    # 缩进输出，使 [FILE_SUMMARY] 和 [BUG_ALERT] 视觉上归属于工具调用
+    def _indent(text: str, prefix: str = "  ") -> str:
+        return "\n".join(prefix + line if line.strip() else line for line in text.split("\n"))
+
+    result = f"{_indent(summary_text)}\n\n{_indent(bug_text)}"
     return {
         "role": "user",
         "content": f"[TOOL_RESULT] get_file_context({file_path}):\n{result}",

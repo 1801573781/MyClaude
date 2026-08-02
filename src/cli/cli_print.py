@@ -54,6 +54,51 @@ os.environ["PYTHONIOENCODING"] = "utf-8"
 console = Console(force_terminal=True, legacy_windows=False)
 
 
+def _init_win_vt():
+    """启用 Windows 虚拟终端处理和自动换行。
+
+    确保终端能正确解释 ANSI 转义序列（颜色等），并保证光标到行尾时自动换行。
+    若未启用 VT 处理，ANSI 码被当作可见字符，导致行宽计算错误，
+    长输入换行时光标回到行首覆盖已有内容。
+    """
+    if os.name != 'nt':
+        return
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+        mode = ctypes.c_ulong()
+        if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            # ENABLE_PROCESSED_OUTPUT(0x1) | ENABLE_WRAP_AT_EOL_OUTPUT(0x2) | ENABLE_VIRTUAL_TERMINAL_PROCESSING(0x4)
+            kernel32.SetConsoleMode(handle, mode.value | 0x7)
+    except Exception:
+        pass
+
+
+_init_win_vt()
+
+# Windows 控制台结构体定义（用于 GetConsoleScreenBufferInfo 读取/恢复文本属性）
+if os.name == 'nt':
+    import ctypes
+
+    class _COORD(ctypes.Structure):
+        _fields_ = [("X", ctypes.c_short), ("Y", ctypes.c_short)]
+
+    class _SMALL_RECT(ctypes.Structure):
+        _fields_ = [("Left", ctypes.c_short), ("Top", ctypes.c_short),
+                    ("Right", ctypes.c_short), ("Bottom", ctypes.c_short)]
+
+    class _CONSOLE_SCREEN_BUFFER_INFO(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", _COORD),
+            ("dwCursorPosition", _COORD),
+            ("wAttributes", ctypes.c_ushort),
+            ("srWindow", _SMALL_RECT),
+            ("dwMaximumWindowSize", _COORD),
+        ]
+
+
 def _append_html(html_fragment: str):
     """将 HTML 片段追加到全局缓冲区。"""
     _html_parts.append(html_fragment)
@@ -630,6 +675,19 @@ def print_tool_result(tool_name: str, content: str, params: dict | None = None):
         _append_html(f'<p style="margin:4px 0 4px 40px; color:#4ade80;">✓ [{tool_name}] 工具执行结果</p>')
         return
 
+    # 对于 get_file_context，解析摘要和Bug召回数量，简洁显示
+    if tool_name == "get_file_context":
+        import re as _re
+        # 统计召回的 Bug 数量（匹配 "## bug_" 开头的行）
+        bug_count = len(_re.findall(r"^## bug_", content, _re.MULTILINE))
+        if "无相关历史问题" in content or bug_count == 0:
+            bug_hint = "无相关 Bug"
+        else:
+            bug_hint = f"召回 {bug_count} 个相关 Bug"
+        console.print(f"    [green]✓[/green] [get_file_context] 函数摘要已获取，{bug_hint}", markup=True)
+        _append_html(f'<p style="margin:4px 0 4px 40px; color:#4ade80;">✓ [get_file_context] 函数摘要已获取，{bug_hint}</p>')
+        return
+
     # 对于 bash openspec 命令，只打印简略提示（输出通常很长，且对用户无直接价值）
     # LLM 仍会收到完整结果，仅 CLI 不打印
     if tool_name == "bash" and params:
@@ -867,21 +925,47 @@ def get_input() -> str:
 
     使用 Python 内置 input() 代替 Rich Prompt.ask()，
     以确保长输入时终端能正确自动滚动，避免文字重叠。
-    Rich Prompt.ask 内部的 ANSI 光标控制逻辑会与终端原生换行滚动冲突。
 
-    注意：提示符也改用 sys.stdout.write 输出，而非 console.print。
-    因为 Rich console.print 在 legacy_windows=False 模式下会输出 ANSI 转义序列
-    并维护内部光标状态，与紧随其后的 input() 的终端原生回显机制冲突。
-    当用户输入长文本触发终端滚动时，Rich 的光标状态与终端实际状态不一致，
-    导致已输入内容被覆盖或错位。改用原生 stdout 彻底避免此问题。
+    关键修复（两重保障）：
+    1. Windows 上禁止使用 ANSI 转义码设置提示符颜色，改用 SetConsoleTextAttribute API，
+       避免 ANSI 码被行输入模式计入光标列位置导致换行计算偏差。
+    2. 每次调用 input() 前，重新启用 ENABLE_WRAP_AT_EOL_OUTPUT (0x2) 标志。
+       Rich Console 在输出时会修改控制台输出模式（仅保留 VT_PROCESSING），
+       可能清除此标志，导致用户长输入时光标回到行首而非换行，覆盖已有内容。
     """
     import sys
 
     try:
-        # 用原生 stdout 输出带颜色的提示符（不换行），避免 Rich 终端状态干扰 input()
-        # ANSI: \033[1;36m = bold cyan, \033[0m = reset
-        sys.stdout.write("\n\033[1;36m➤ You :\033[0m ")
-        sys.stdout.flush()
+        if os.name == 'nt':
+            # Windows: 用 SetConsoleTextAttribute 着色，不向输出流写入 ANSI 码
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            stdout_handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+
+            # 关键修复：Rich Console 在输出时会修改控制台模式，可能禁用
+            # ENABLE_WRAP_AT_EOL_OUTPUT (0x2)，导致用户长输入时光标回到行首
+            # 而非换行，新输入覆盖已有内容。每次读取输入前重新启用此标志。
+            mode = ctypes.c_ulong()
+            if kernel32.GetConsoleMode(stdout_handle, ctypes.byref(mode)):
+                kernel32.SetConsoleMode(stdout_handle, mode.value | 0x2)
+
+            # 读取当前属性，用于事后恢复
+            info = _CONSOLE_SCREEN_BUFFER_INFO()
+            kernel32.GetConsoleScreenBufferInfo(stdout_handle, ctypes.byref(info))
+            original_attr = info.wAttributes
+
+            # 0xB = FOREGROUND_INTENSITY | FOREGROUND_GREEN | FOREGROUND_BLUE = bold cyan
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            kernel32.SetConsoleTextAttribute(stdout_handle, 0xB)
+            sys.stdout.write("➤ You : ")
+            sys.stdout.flush()
+            kernel32.SetConsoleTextAttribute(stdout_handle, original_attr)
+        else:
+            # 非 Windows: 安全使用 ANSI 转义码
+            sys.stdout.write("\n\033[1;36m➤ You :\033[0m ")
+            sys.stdout.flush()
+
         # 使用内置 input() 读取，利用终端原生的换行滚动能力
         user_input = input()
         return user_input.strip()

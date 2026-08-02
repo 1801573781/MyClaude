@@ -1611,25 +1611,46 @@ class MyClaudeCLI:
             cli_print.print_error(f"获取统计信息失败: {e}")
             return
 
+        # 获取 MD 会话日志提取状态
+        try:
+            ext_stats = bb.get_extraction_stats()
+        except Exception:
+            ext_stats = {"md_total": 0, "md_extracted": 0, "md_pending": 0}
+
+        md_total = ext_stats.get("md_total", 0)
+        md_extracted = ext_stats.get("md_extracted", 0)
+        md_pending = ext_stats.get("md_pending", 0)
+
+        total = 0
+        lines = [
+            "=" * 50,
+            "  Bug库统计",
+            "=" * 50,
+            "",
+            "  ── MD 会话日志（提取源） ──",
+            f"    总文件数: {md_total}",
+            f"    已提取: {md_extracted}",
+            f"    待提取: {md_pending}",
+            "",
+            "  ── Bug 统计 ──",
+        ]
+
         if not stats:
-            cli_print.print_info("Bug库为空。")
+            lines.append("    Bug库为空。")
+            lines.append("=" * 50)
+            cli_print.print_info("\n".join(lines))
             self.query_loop.append_cli_result("Bug统计: 空")
             return
 
-        # 构建表格输出
-        lines = [
-            "Bug库统计",
-            "─" * 30,
-            f"{'模块':<15} {'Bug数':<8}",
-            "─" * 30,
-        ]
-        total = 0
+        lines.append(f"    {'模块':<15} {'Bug数':<8}")
+        lines.append(f"    {'─' * 30}")
         for module in sorted(stats.keys()):
             count = stats[module]
             total += count
-            lines.append(f"{module:<15} {count:<8}")
-        lines.append("─" * 30)
-        lines.append(f"{'合计':<15} {total:<8}")
+            lines.append(f"    {module:<15} {count:<8}")
+        lines.append(f"    {'─' * 30}")
+        lines.append(f"    {'合计':<15} {total:<8}")
+        lines.append("=" * 50)
         cli_print.print_info("\n".join(lines))
         self.query_loop.append_cli_result(f"Bug统计: {total} 条")
 

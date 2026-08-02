@@ -274,8 +274,11 @@ class MemoryEx(MemoryExInterface):
     def _build_enhanced_query(self, user_input: str) -> str:
         """构建召回查询，自动展开文件引用。
 
-        检测用户输入中的文件路径，读取内容（截断前 2000 字符）拼入查询，
+        检测用户输入中的文件路径，读取内容（截断前 500 字符）拼入查询，
         使得 LLM 预检索能基于文件内容而非无意义的指令词进行召回。
+        
+        注意：文件内容截断长度限制为 500 字符，避免过长的文件内容
+        引入大量噪声关键词，导致 LLM 基于关键词匹配而非任务意图召回。
 
         Args:
             user_input: 用户原始输入
@@ -291,7 +294,7 @@ class MemoryEx(MemoryExInterface):
         for path in file_paths:
             content = self._safe_read_file(path)
             if content:
-                query += "\n\n" + content[:2000]
+                query += "\n\n" + content[:500]
 
         return query
 

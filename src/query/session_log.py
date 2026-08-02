@@ -40,6 +40,8 @@ class SessionLog:
 
         # 并行 MD 日志文件名（与 HTML 同名但 .md 扩展名，不含 LLM 思考）
         self.md_session_file_name = ""
+        # 记录最近一次 file_view 的 path，供下一轮 tool_result 格式化使用
+        self._last_file_view_path = None
 
 
     def init_session(self):
@@ -91,211 +93,161 @@ class SessionLog:
 
 
     def start_query(self, query_index: int, user_input: str):
-        """开始一个新 Query 节点，记录 Query 序号和用户输入。"""
+        """开始一个新 Query 节点，立即写入 Query 头到日志文件。"""
         # 如果上一个 Query 未关闭，先关闭
         if self._query_buffer:
             self.end_query()
+        # 确保 session 已初始化（防止 Query 1 标题丢失）
+        if not self._session_inited:
+            self.init_session()
         self._query_counter = query_index
         self._current_query = query_index
         self._query_buffer = [
             {"query": query_index, "user_input": user_input}
         ]
+        # 立即写入 Query 头到文件（HTML banner + MD 标题）
+        self._write_query_header(query_index, user_input)
 
 
     def end_query(self):
-        """结束当前 Query 节点，将所有 Turn 刷入文件。"""
+        """结束当前 Query 节点，flush 最后一个 Turn 并写入分隔符。"""
         if not self._query_buffer:
             return
-        # flush 最后一个 Turn
+        # flush 最后一个 Turn（会立即写入文件）
         if self._has_turn_content:
             self.flush_turn()
-        # 将 Query 缓冲写入文件
-        if self._query_buffer:
-            if self.format == "html":
-                self._flush_query_html()
-            else:
-                self._save_session_log(self._query_buffer)
-            # 并行写入 MD 日志
-            self._flush_query_md()
+        # 写入 Query 分隔符
+        if self.md_session_file_name:
+            file_append(self.md_log_root, self.md_session_file_name, "\n***************\n\n")
+        if self.session_file_name and self.format == "html":
+            self._append_html_to_file("<hr/>\n")
         self._query_buffer = []
         self._current_query = None
 
 
-    def _flush_query_html(self):
-        """将当前 Query 缓冲中的所有 Turn 一次性写入 HTML 文件。
-        Query 作为顶层折叠节点，每个 Turn 作为内部子节点。"""
-        buffer = self._query_buffer
+    def _write_query_header(self, query_index: int, user_input: str):
+        """Query 开始时立即写入标题头到 HTML 和 MD 文件。"""
+        query_label = f"📋 Query {query_index}: {user_input}" if user_input else f"📋 Query {query_index}"
+
+        # MD：写入 Query 标题
+        if self.md_session_file_name:
+            file_append(self.md_log_root, self.md_session_file_name, f"\n{query_label}\n\n")
+
+        # HTML：写入 Query 分隔横幅（icon span 已含 📋，label 不再重复）
+        if self.session_file_name and self.format == "html":
+            html_label = f"Query {query_index}: {user_input}" if user_input else f"Query {query_index}"
+            banner_html = (
+                f'<div class="query-banner">\n'
+                f'<span class="query-icon">📋</span>\n'
+                f'<span class="query-label"><strong>{html_label}</strong></span>\n'
+                f'</div>\n'
+            )
+            self._append_html_to_file(banner_html)
+
+
+    def _write_turn_html(self):
+        """将当前 Turn 缓冲立即写入 HTML 文件，Turn 内按内容类型多级折叠。"""
+        buffer = self._turn_buffer
         if not buffer:
             return
 
-        # 防御性检查：确保 session_file_name 已初始化
-        if not self.session_file_name:
-            return
-
-        # 提取 Query 头信息
-        query_idx = 0
-        user_input = ""
-        for item in buffer:
-            if isinstance(item, dict) and "query" in item:
-                query_idx = item["query"]
-                user_input = item.get("user_input", "")
+        # 跳过 turn 标记条目
+        start_idx = 0
+        for i, item in enumerate(buffer):
+            if isinstance(item, dict) and "turn" in item:
+                start_idx = i + 1
                 break
 
-        # 按_turn_标记拆分为多个 Turn 块
-        turn_blocks = []
-        current_block = []
-        for item in buffer[1:]:  # 跳过 query 头
-            if isinstance(item, dict) and "turn" in item:
-                if current_block:
-                    turn_blocks.append(current_block)
-                current_block = [item]
+        # 从缓冲中提取首个时间戳
+        turn_time = ""
+        for item in buffer[start_idx:]:
+            if isinstance(item, dict) and "time" in item:
+                turn_time = item["time"]
+                break
+
+        sections = self._parse_buffer_sections(buffer[start_idx:])
+
+        section_titles = {
+            "system": "⚙️ 系统宪法",
+            "system_notice": "⚙️ 系统提示",
+            "installed_skills": "📦 系统技能",
+            "project_context": "📋 项目章程",
+            "directory_tree": "🗂️ 项目目录",
+            "memory_context": "🧠 记忆召回",
+            "user": "👤 用户输入",
+            "reasoning": "💭 LLM 思考",
+            "assistant": "🤖 LLM 应答",
+            "tool": "🔧 工具调用",
+            "tool_result": "👤 用户输入",
+        }
+
+        html_skip_sections = {"system", "installed_skills", "project_context", "directory_tree", "tool"}
+
+        section_html_parts = []
+        for section_name, items in sections:
+            if section_name in html_skip_sections:
+                continue
+            if section_name == "reasoning":
+                reasoning_text = ""
+                for item in items:
+                    if isinstance(item, dict) and "reasoning" in item:
+                        reasoning_text = item["reasoning"]
+                        break
+                reasoning_escaped = reasoning_text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                section_content = f'<pre>{reasoning_escaped}</pre>'
+            elif section_name == "memory_context":
+                section_content = self._build_memory_section_html(items)
             else:
-                current_block.append(item)
-        if current_block:
-            turn_blocks.append(current_block)
+                md_chunks = []
+                for item in items:
+                    md_chunks.append(self._format_log_item(item))
+                md_content = "\n\n".join(md_chunks)
+                section_content = f'<pre>{self._process_code_blocks(md_content)}</pre>'
 
-        # 为每个 Turn 块生成 HTML
-        turn_html_parts = []
-        for block in turn_blocks:
-            turn_num = 0
-            for i, item in enumerate(block):
-                if isinstance(item, dict) and "turn" in item:
-                    turn_num = item["turn"]
-                    break
-
-            # 跳过 turn 标记条目
-            start_idx = 0
-            for i, item in enumerate(block):
-                if isinstance(item, dict) and "turn" in item:
-                    start_idx = i + 1
-                    break
-
-            sections = self._parse_buffer_sections(block[start_idx:])
-
-            # 记忆召回占位（仅首轮显示，后续 Turn 不添加）
-            is_first_turn = (query_idx == 1 and turn_num == 1)
-            if is_first_turn:
-                has_memory_section = any(sec_name == "memory_context" for sec_name, _ in sections)
-                if not has_memory_section:
-                    insert_idx = next((i for i, (name, _) in enumerate(sections) if name == "user"), -1)
-                    if insert_idx >= 0:
-                        sections.insert(insert_idx + 1, ("memory_context", [{"role": "user", "content": "没有召回到相关记忆"}]))
-                    else:
-                        sections.append(("memory_context", [{"role": "user", "content": "没有召回到相关记忆"}]))
-
-            section_titles = {
-                "system": "⚙️ 系统宪法",
-                "system_notice": "⚙️ 系统提示",
-                "installed_skills": "📦 系统技能",
-                "project_context": "📋 项目章程",
-                "directory_tree": "🗂️ 项目目录",
-                "memory_context": "🧠 记忆召回",
-                "user": "👤 用户输入",
-                "reasoning": "💭 LLM 思考",
-                "assistant": "🤖 LLM 应答",
-                "tool": "🔧 工具调用",
-                "tool_result": "📋 工具执行结果",
-            }
-
-            # HTML 日志跳过的小节（与 MD 保持一致）
-            html_skip_sections = {"system", "installed_skills", "project_context", "directory_tree"}
-
-            section_html_parts = []
-            for section_name, items in sections:
-                # 跳过前置小节（系统宪法、技能、项目上下文、目录树）
-                if section_name in html_skip_sections:
-                    continue
-                if section_name == "reasoning":
-                    reasoning_text = ""
-                    for item in items:
-                        if isinstance(item, dict) and "reasoning" in item:
-                            reasoning_text = item["reasoning"]
-                            break
-                    reasoning_escaped = reasoning_text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-                    section_content = f'<pre>{reasoning_escaped}</pre>'
-                elif section_name == "memory_context":
-                    section_content = self._build_memory_section_html(items)
-                else:
-                    md_chunks = []
-                    for item in items:
-                        md_chunks.append(self._format_log_item(item))
-                    md_content = "\n\n".join(md_chunks)
-                    section_content = f'<pre>{self._process_code_blocks(md_content)}</pre>'
-
-                title = section_titles.get(section_name, section_name)
-                section_html = (
-                    f'<details class="section-fold">\n'
-                    f'<summary class="section-summary">{title}</summary>\n'
-                    + section_content +
-                    f'\n</details>'
-                )
-                section_html_parts.append(section_html)
-
-            all_sections_html = "\n".join(section_html_parts)
-
-            if turn_num < 0:
-                turn_label = f"🔄 追问 {abs(turn_num)}"
-            else:
-                turn_label = f"🔄 Turn {turn_num}"
-            entry_id = f"q{query_idx}-turn-{turn_num}-{datetime.now().strftime('%H%M%S%f')}"
-
-            turn_html = (
-                f'<div class="entry">\n'
-                f'<div class="entry-header" onclick="toggleEntry(\'{entry_id}\')">\n'
-                f'<span class="toggle-icon" id="icon-{entry_id}">&#9662;</span>\n'
-                f'<span><strong>{turn_label}</strong></span>\n'
-                f'</div>\n'
-                f'<div class="entry-content" id="content-{entry_id}">\n'
-                + all_sections_html +
-                f'\n</div>\n'
-                f'</div>'
+            title = section_titles.get(section_name, section_name)
+            section_html = (
+                f'<details class="section-fold">\n'
+                f'<summary class="section-summary">{title}</summary>\n'
+                + section_content +
+                f'\n</details>'
             )
-            turn_html_parts.append(turn_html)
+            section_html_parts.append(section_html)
 
-        all_turns_html = "\n".join(turn_html_parts)
+        all_sections_html = "\n".join(section_html_parts)
 
-        # Query 顶层折叠节点
-        query_label = f"📋 Query {query_idx}: {user_input}" if user_input else f"📋 Query {query_idx}"
-        query_id = f"query-{query_idx}-{datetime.now().strftime('%H%M%S%f')}"
+        if self._current_turn is not None and self._current_turn < 0:
+            turn_label = f"🔄 追问 {abs(self._current_turn)}"
+        else:
+            turn_label = f"🔄 Turn {self._current_turn}" if self._current_turn is not None else "Log Entry"
+        if turn_time:
+            turn_label += f"&nbsp;&nbsp;&nbsp;<span style='font-weight:normal; color:#999; font-size:0.9em;'>🕐 {turn_time}</span>"
+        entry_id = f"turn-{self._current_turn or 0}-{datetime.now().strftime('%H%M%S%f')}"
 
-        query_html = (
-            f'<div class="entry query-entry">\n'
-            f'<div class="entry-header query-header" onclick="toggleEntry(\'{query_id}\')">\n'
-            f'<span class="toggle-icon" id="icon-{query_id}">&#9662;</span>\n'
-            f'<span><strong>{query_label}</strong></span>\n'
+        entry_html = (
+            f'<div class="entry">\n'
+            f'<div class="entry-header" onclick="toggleEntry(\'{entry_id}\')">\n'
+            f'<span class="toggle-icon" id="icon-{entry_id}">&#9662;</span>\n'
+            f'<span><strong>{turn_label}</strong></span>\n'
             f'</div>\n'
-            f'<div class="entry-content" id="content-{query_id}">\n'
-            + all_turns_html +
+            f'<div class="entry-content" id="content-{entry_id}">\n'
+            + all_sections_html +
             f'\n</div>\n'
             f'</div>'
         )
 
-        full_path = Path(self.log_root) / self.session_file_name
-
-        if full_path.exists():
-            old_html = full_path.read_text(encoding="utf-8")
-            body_end = old_html.rfind("</body>")
-            if body_end != -1:
-                old_html = old_html[:body_end]
-            else:
-                old_html = old_html.rstrip() + "\n\n"
-            separator = '<hr/>\n'
-            new_html = old_html + separator + query_html + "\n</body>\n</html>"
-        else:
-            new_html = self._html_template(query_html)
-
-        full_path.write_text(new_html, encoding="utf-8")
+        self._append_html_to_file(entry_html)
 
 
-    def _flush_query_md(self):
-        """将当前 Query 缓冲以纯 Markdown 格式追加写入 MD 文件。
-        按小节分节、添加小节标题、记忆召回占位。
-        query1/turn1 跳过前置小节（系统宪法/系统技能/项目章程/项目目录），从"用户输入"开始。
-        不含 HTML 标签，不记录 LLM 思考（reasoning）。"""
-        if not self.md_session_file_name or not self._query_buffer:
+    def _write_turn_md(self):
+        """将当前 Turn 缓冲立即写入 MD 文件。
+        按小节分节、添加小节标题，不含 LLM 思考（reasoning）。"""
+        if not self.md_session_file_name:
             return
 
-        # 小节标题映射
+        buffer = self._turn_buffer
+        if not buffer:
+            return
+
         section_titles = {
             "system": "⚙️ 系统宪法",
             "system_notice": "⚙️ 系统提示",
@@ -306,88 +258,62 @@ class SessionLog:
             "user": "👤 用户输入",
             "assistant": "🤖 LLM 应答",
             "tool": "🔧 工具调用",
-            "tool_result": "📋 工具执行结果",
+            "tool_result": "👤 用户输入",
         }
 
-        # MD 日志始终跳过的小节（系统宪法、技能、项目上下文、目录树）
-        skip_sections = {"system", "installed_skills", "project_context", "directory_tree"}
+        skip_sections = {"system", "installed_skills", "project_context", "directory_tree", "tool"}
 
-        # 提取 Query 头信息
-        query_idx = 0
-        user_input = ""
-        for item in self._query_buffer:
-            if isinstance(item, dict) and "query" in item:
-                query_idx = item["query"]
-                user_input = item.get("user_input", "")
+        # 跳过 turn 标记条目
+        start_idx = 0
+        for i, item in enumerate(buffer):
+            if isinstance(item, dict) and "turn" in item:
+                start_idx = i + 1
                 break
 
-        # 按 turn 标记拆分为多个 Turn 块
-        turn_blocks = []
-        current_block = []
-        for item in self._query_buffer[1:]:  # 跳过 query 头
-            if isinstance(item, dict) and "turn" in item:
-                if current_block:
-                    turn_blocks.append(current_block)
-                current_block = [item]
-            else:
-                current_block.append(item)
-        if current_block:
-            turn_blocks.append(current_block)
+        turn_num = self._current_turn or 0
+        if turn_num < 0:
+            turn_label = f"### 🔄 追问 {abs(turn_num)}"
+        else:
+            turn_label = f"### 🔄 Turn {turn_num}"
 
-        md_parts = []
+        sections = self._parse_buffer_sections(buffer[start_idx:])
 
-        # Query 标题
-        query_label = f"## 📋 Query {query_idx}: {user_input}" if user_input else f"## 📋 Query {query_idx}"
-        md_parts.append(query_label)
+        md_parts = [turn_label]
+        for section_name, items in sections:
+            if section_name == "reasoning":
+                continue
+            if section_name in skip_sections:
+                continue
 
-        for block in turn_blocks:
-            turn_num = 0
-            for item in block:
-                if isinstance(item, dict) and "turn" in item:
-                    turn_num = item["turn"]
-                    break
+            title = section_titles.get(section_name, section_name)
+            md_parts.append(f"#### {title}")
+            section_content = self._format_md_section_content(items, section_name)
+            if section_content:
+                md_parts.append(section_content)
 
-            # 跳过 turn 标记条目
-            start_idx = 0
-            for i, item in enumerate(block):
-                if isinstance(item, dict) and "turn" in item:
-                    start_idx = i + 1
-                    break
-
-            sections = self._parse_buffer_sections(block[start_idx:])
-
-            # 记忆召回占位
-            has_memory_section = any(sec_name == "memory_context" for sec_name, _ in sections)
-            if not has_memory_section:
-                insert_idx = next((i for i, (name, _) in enumerate(sections) if name == "user"), -1)
-                if insert_idx >= 0:
-                    sections.insert(insert_idx + 1, ("memory_context", [{"role": "user", "content": "没有召回到相关记忆"}]))
-                else:
-                    sections.append(("memory_context", [{"role": "user", "content": "没有召回到相关记忆"}]))
-
-            # Turn 标题
-            if turn_num < 0:
-                turn_label = f"### 🔄 追问 {abs(turn_num)}"
-            else:
-                turn_label = f"### 🔄 Turn {turn_num}"
-            md_parts.append(turn_label)
-
-            for section_name, items in sections:
-                # 跳过 reasoning
-                if section_name == "reasoning":
-                    continue
-                # 所有 Turn 都跳过前置小节（系统宪法、技能、项目上下文、目录树）
-                if section_name in skip_sections:
-                    continue
-
-                title = section_titles.get(section_name, section_name)
-                md_parts.append(f"#### {title}")
-                section_content = self._format_md_section_content(items, section_name)
-                if section_content:
-                    md_parts.append(section_content)
-
-        md_content = "\n\n".join(md_parts) + "\n\n***************\n\n"
+        md_content = "\n\n".join(md_parts) + "\n\n"
         file_append(self.md_log_root, self.md_session_file_name, md_content)
+
+
+    def _append_html_to_file(self, html_content: str):
+        """将 HTML 内容追加到当前 session 的 HTML 日志文件。"""
+        if not self.session_file_name:
+            return
+
+        full_path = Path(self.log_root) / self.session_file_name
+
+        if full_path.exists():
+            old_html = full_path.read_text(encoding="utf-8")
+            body_end = old_html.rfind("</body>")
+            if body_end != -1:
+                old_html = old_html[:body_end]
+            else:
+                old_html = old_html.rstrip() + "\n\n"
+            new_html = old_html + html_content + "\n</body>\n</html>"
+        else:
+            new_html = self._html_template(html_content)
+
+        full_path.write_text(new_html, encoding="utf-8")
 
 
     def _format_md_section_content(self, items, section_name: str) -> str:
@@ -404,9 +330,13 @@ class SessionLog:
             if "role" in item:
                 content = item.get("content", "")
                 role = item["role"]
-                # file_view 工具执行结果截断
+                # file_view 工具执行结果截断，保留 path 参数
                 if role == "system" and isinstance(content, str) and content.startswith("[file_view] 工具执行结果"):
-                    content = "[file_view] 工具执行结果：略。"
+                    path_str = f'\npath = "{self._last_file_view_path}"\n' if self._last_file_view_path else ""
+                    content = f"[file_view] {path_str}工具执行结果：略。"
+                # assistant 消息优先使用 md_content（已压缩的工具标签）
+                if role == "assistant" and "md_content" in item:
+                    content = item["md_content"]
                 parts.append(content)
             elif "tool_name" in item:
                 tool = item["tool_name"]
@@ -477,7 +407,11 @@ class SessionLog:
             role = item["role"]
             content = item.get("content", "")
             if role == "system" and isinstance(content, str) and content.startswith("[file_view] 工具执行结果"):
-                content = "[file_view] 工具执行结果：略。"
+                path_str = f'\npath = "{self._last_file_view_path}"\n' if self._last_file_view_path else ""
+                content = f"[file_view] {path_str}工具执行结果：略。"
+            # assistant 消息优先使用 md_content（已压缩的工具标签）
+            if role == "assistant" and "md_content" in item:
+                content = item["md_content"]
             emoji = {"system": "⚙️", "user": "👤", "assistant": "🤖"}.get(role, "📝")
             lines.append(f"### {emoji} {role.upper()}")
             lines.append("")
@@ -559,8 +493,10 @@ class SessionLog:
         self.req_tokens += byte_size // 2  # 粗略估计, 2个字节，一个token
 
 
-    def log_llm_rsp(self, llm_rsp):
+    def log_llm_rsp(self, llm_rsp, md_content=None):
         dict_info = {"role": "assistant", "content": llm_rsp}
+        if md_content is not None:
+            dict_info["md_content"] = md_content
         self.log_dict_info(dict_info)
 
         # 统计LLM输出的tokens（近似计算）
@@ -578,9 +514,19 @@ class SessionLog:
 
 
     def log_tool_call(self, tool_name, tool_paras):
+        # 记录 file_view 的 path，供下一轮 tool_result 格式化使用
+        if tool_name == "file_view" and isinstance(tool_paras, dict):
+            path = tool_paras.get("path", "")
+            if path:
+                self._last_file_view_path = path
+        # 对 str_replace 工具，只保留 path 和 summary，不记录 old/new 完整内容
+        if tool_name == "str_replace" and isinstance(tool_paras, dict):
+            filtered_paras = {k: v for k, v in tool_paras.items() if k in ("path", "summary")}
+        else:
+            filtered_paras = tool_paras
         dict_info = {
             "tool_name": tool_name,
-            "tool_paras": tool_paras
+            "tool_paras": filtered_paras
         }
         self.log_dict_info(dict_info)
 
@@ -642,10 +588,9 @@ class SessionLog:
         self._cli_command = None
         self._cli_result = None
 
-        # session 尚未初始化时，缓存到 pending 列表，等待 init_session 后补写
+        # session 尚未初始化时，先初始化 session（确保 CLI 命令能立即写入日志文件）
         if not self.session_file_name:
-            self._pending_cli_entries.append((now, command, result))
-            return
+            self.init_session()
 
         if self.format == "html":
             self._flush_cli_html(now, command, result)
@@ -733,10 +678,26 @@ class SessionLog:
 
 
     def flush_turn(self):
-        """将当前 Turn 缓冲的所有条目追加到当前 Query 缓冲。"""
+        """将当前 Turn 缓冲立即写入 HTML 和 MD 文件。"""
         if not self._has_turn_content:
             return
-        # 将 Turn 内容追加到 Query 缓冲
+
+        # 确保文件已初始化
+        if not self.session_file_name:
+            self._turn_buffer = []
+            self._has_turn_content = False
+            self._current_turn = None
+            return
+
+        # HTML 即时写入
+        if self.format == "html":
+            self._write_turn_html()
+
+        # MD 即时写入
+        if self.md_session_file_name:
+            self._write_turn_md()
+
+        # 保留到 Query 缓冲（end_query 时只需写分隔符，不再重新写入内容）
         self._query_buffer.extend(self._turn_buffer)
         self._turn_buffer = []
         self._has_turn_content = False
@@ -772,6 +733,20 @@ class SessionLog:
         self._prev_msg_hashes = current_hashes
         return new_items
 
+    def update_msg_hashes(self, api_messages: list):
+        """外部更新哈希集合（在 query_loop 中追加记忆消息后调用）。
+
+        防止下轮 log_llm_req 时，已注入的记忆消息因哈希不匹配而重复记录。
+        """
+        current_hashes = set()
+        for msg in api_messages:
+            msg_copy = dict(msg)
+            msg_hash = hashlib.md5(
+                json.dumps(msg_copy, ensure_ascii=False, sort_keys=True).encode("utf-8")
+            ).hexdigest()
+            current_hashes.add(msg_hash)
+        self._prev_msg_hashes = current_hashes
+
 
     """持久化 session 会话的历史"""
 
@@ -792,138 +767,6 @@ class SessionLog:
             self._save_html(save_session)
         else:
             self._save_md(save_session)
-
-
-    def _flush_turn_html(self):
-        """将当前 Turn 缓冲一次性写入 HTML 文件，Turn 内按内容类型进行多级折叠。"""
-        buffer = self._turn_buffer
-        if not buffer:
-            return
-
-        # 防御性检查：确保 session_file_name 已初始化
-        if not self.session_file_name:
-            return
-
-        # 跳过 turn 标记条目
-        start_idx = 0
-        for i, item in enumerate(buffer):
-            if isinstance(item, dict) and "turn" in item:
-                start_idx = i + 1
-                break
-
-        # 从缓冲中提取首个时间戳，用于 Turn 标题后缀
-        turn_time = ""
-        for item in buffer[start_idx:]:
-            if isinstance(item, dict) and "time" in item:
-                turn_time = item["time"]
-                break
-
-        # 将缓冲条目按类型分组为逻辑节
-        sections = self._parse_buffer_sections(buffer[start_idx:])
-
-        # 为每个节构建子折叠 HTML
-        section_html_parts = []
-        section_titles = {
-            "system": "⚙️ 系统宪法",
-            "system_notice": "⚙️ 系统提示",
-            "installed_skills": "📦 系统技能",
-            "project_context": "📋 项目章程",
-            "directory_tree": "🗂️ 项目目录",
-            "memory_context": "🧠 记忆召回",
-            "user": "👤 用户输入",
-            "reasoning": "💭 LLM 思考",
-            "assistant": "🤖 LLM 应答",
-            "tool": "🔧 工具调用",
-            "tool_result": "📋 工具执行结果",
-        }
-
-        # 记忆召回占位（仅首轮显示，后续 Turn 不添加）
-        is_first_turn = (self._query_counter == 1 and self._current_turn == 1)
-        if is_first_turn:
-            has_memory_section = any(sec_name == "memory_context" for sec_name, _ in sections)
-            if not has_memory_section:
-                # 找到"用户输入" section 的位置，插在它后面
-                insert_idx = next((i for i, (name, _) in enumerate(sections) if name == "user"), -1)
-                if insert_idx >= 0:
-                    sections.insert(insert_idx + 1, ("memory_context", [{"role": "user", "content": "没有召回到相关记忆"}]))
-                else:
-                    sections.append(("memory_context", [{"role": "user", "content": "没有召回到相关记忆"}]))
-
-        # HTML 日志跳过的小节（与 MD/新 HTML 保持一致）
-        html_skip_sections = {"system", "installed_skills", "project_context", "directory_tree"}
-
-        for section_name, items in sections:
-            # 跳过前置小节（系统宪法、技能、项目上下文、目录树）
-            if section_name in html_skip_sections:
-                continue
-            if section_name == "reasoning":
-                reasoning_text = ""
-                for item in items:
-                    if isinstance(item, dict) and "reasoning" in item:
-                        reasoning_text = item["reasoning"]
-                        break
-                reasoning_escaped = reasoning_text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-                section_content = f'<pre>{reasoning_escaped}</pre>'
-            elif section_name == "memory_context":
-                # 对记忆召唤小节特殊处理：如果有多条记忆，拆分为子折叠块
-                section_content = self._build_memory_section_html(items)
-            else:
-                md_chunks = []
-                for item in items:
-                    md_chunks.append(self._format_log_item(item))
-                md_content = "\n\n".join(md_chunks)
-                section_content = f'<pre>{self._process_code_blocks(md_content)}</pre>'
-
-            title = section_titles.get(section_name, section_name)
-            # 所有子节默认折叠
-            open_attr = ""
-            section_html = (
-                f'<details class="section-fold"{open_attr}>\n'
-                f'<summary class="section-summary">{title}</summary>\n'
-                + section_content +
-                f'\n</details>'
-            )
-            section_html_parts.append(section_html)
-
-        all_sections_html = "\n".join(section_html_parts)
-
-        # Turn 层折叠：标题包含轮次和时间戳
-        if self._current_turn is not None and self._current_turn < 0:
-            turn_label = f"🔄 追问 {abs(self._current_turn)}"
-        else:
-            turn_label = f"🔄 Turn {self._current_turn}" if self._current_turn is not None else "Log Entry"
-        if turn_time:
-            turn_label += f"&nbsp;&nbsp;&nbsp;<span style='font-weight:normal; color:#999; font-size:0.9em;'>🕐 {turn_time}</span>"
-        entry_id = f"turn-{self._current_turn or 0}-{datetime.now().strftime('%H%M%S%f')}"
-
-        entry_html = (
-            f'<div class="entry">\n'
-            f'<div class="entry-header" onclick="toggleEntry(\'{entry_id}\')">\n'
-            f'<span class="toggle-icon" id="icon-{entry_id}">&#9662;</span>\n'
-            f'<span><strong>{turn_label}</strong></span>\n'
-            f'</div>\n'
-            f'<div class="entry-content" id="content-{entry_id}">\n'
-            + all_sections_html +
-            f'\n</div>\n'
-            f'</div>'
-        )
-
-        full_path = Path(self.log_root) / self.session_file_name
-
-        if full_path.exists():
-            old_html = full_path.read_text(encoding="utf-8")
-            body_end = old_html.rfind("</body>")
-            if body_end != -1:
-                old_html = old_html[:body_end]
-            else:
-                old_html = old_html.rstrip() + "\n\n"
-
-            separator = '<hr/>\n'
-            new_html = old_html + separator + entry_html + "\n</body>\n</html>"
-        else:
-            new_html = self._html_template(entry_html)
-
-        full_path.write_text(new_html, encoding="utf-8")
 
 
     def _parse_buffer_sections(self, items):
@@ -1516,6 +1359,23 @@ class SessionLog:
             '    color: #8b8ba7;\n'
             '    font-weight: 400;\n'
             '}\n'
+            '.query-banner {\n'
+            '    padding: 12px 16px;\n'
+            '    background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%);\n'
+            '    border-radius: 8px;\n'
+            '    margin: 12px 0;\n'
+            '    border: 1px solid #bbf7d0;\n'
+            '    display: flex;\n'
+            '    align-items: center;\n'
+            '    gap: 8px;\n'
+            '    font-size: 18px;\n'
+            '}\n'
+            '.query-icon {\n'
+            '    font-size: 20px;\n'
+            '}\n'
+            '.query-label {\n'
+            '    color: #166534;\n'
+            '}\n'
             '.memory-fold {\n'
             '    margin: 4px 0 4px 16px;\n'
             '    border: 1px solid #e8e8e8;\n'
@@ -1622,9 +1482,13 @@ class SessionLog:
         if "role" in item:
             role = item["role"]
             content = item.get("content", "")
-            # 对 file_view 工具执行结果进行截断，避免日志过大
+            # 对 file_view 工具执行结果进行截断，避免日志过大，保留 path 参数
             if role == "system" and isinstance(content, str) and content.startswith("[file_view] 工具执行结果"):
-                content = "[file_view] 工具执行结果：略。"
+                path_str = f'\npath = "{self._last_file_view_path}"\n' if self._last_file_view_path else ""
+                content = f"[file_view] {path_str}工具执行结果：略。"
+            # assistant 消息优先使用 md_content（已压缩的工具标签）
+            if role == "assistant" and "md_content" in item:
+                content = item["md_content"]
             emoji = {"system": "⚙️", "user": "👤", "assistant": "🤖"}.get(role, "📝")
             lines.append(f"### {emoji} {role.upper()}")
             lines.append("")

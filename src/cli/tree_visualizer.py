@@ -963,6 +963,168 @@ def _format_duration_s(seconds: float) -> str:
         return f"{int(seconds // 3600)}时{int((seconds % 3600) // 60)}分{int(seconds % 60)}秒"
 
 
+def _format_estimated_time(seconds: int) -> str:
+    """格式化预估时间。"""
+    if seconds < 60:
+        return f"约{seconds}秒"
+    elif seconds < 3600:
+        return f"约{seconds // 60}分{seconds % 60}秒"
+    else:
+        return f"约{seconds // 3600}小时{(seconds % 3600) // 60}分"
+
+
+def _prescan_project_files(
+    root_path: Path,
+    gitignore_rules: list[dict],
+    cache: dict[str, tuple[int, str]],
+    record: dict[str, float],
+) -> dict:
+    """
+    预扫描项目文件，统计需要处理的文件数量（模拟 build_tree 的文件收集逻辑）。
+    返回 {"total": N, "new": N, "cached": N}
+    """
+    result = {"total": 0, "new": 0, "cached": 0}
+    _prescan_recursive(root_path, root_path, gitignore_rules, cache, record, result)
+    return result
+
+
+def _prescan_recursive(
+    root_path: Path,
+    current_path: Path,
+    gitignore_rules: list[dict],
+    cache: dict[str, tuple[int, str]],
+    record: dict[str, float],
+    result: dict,
+):
+    """递归预扫描目录，统计文件数量。"""
+    try:
+        entries = sorted(
+            current_path.iterdir(),
+            key=lambda p: (not p.is_dir(), p.name.lower()),
+        )
+    except (PermissionError, OSError):
+        return
+
+    try:
+        rel_path = str(current_path.relative_to(root_path))
+        if rel_path == ".":
+            rel_path = ""
+    except ValueError:
+        rel_path = str(current_path)
+
+    for entry in entries:
+        entry_name = entry.name
+
+        # 同 build_tree 的过滤逻辑
+        if entry_name.startswith('.'):
+            continue
+        if entry_name.endswith('.docx'):
+            continue
+        if entry_name == '__init__.py':
+            continue
+
+        if rel_path:
+            entry_rel = f"{rel_path}/{entry_name}"
+        else:
+            entry_rel = entry_name
+
+        if entry.is_dir():
+            entry_rel_dir = entry_rel + "/"
+            if is_ignored_by_gitignore(entry_rel_dir, True, gitignore_rules):
+                continue
+            _prescan_recursive(root_path, entry, gitignore_rules, cache, record, result)
+        else:
+            if is_binary_extension(entry):
+                continue
+            if is_ignored_by_gitignore(entry_rel, False, gitignore_rules):
+                continue
+
+            # 检查缓存状态
+            abs_path = str(entry.resolve())
+            try:
+                mtime = int(entry.stat().st_mtime)
+            except OSError:
+                mtime = 0
+
+            result["total"] += 1
+
+            is_cached = False
+            if abs_path in cache:
+                cached_mtime, _ = cache[abs_path]
+                if cached_mtime == mtime:
+                    try:
+                        rel = str(entry.relative_to(root_path)).replace("\\", "/")
+                    except ValueError:
+                        rel = entry.name
+                    if rel in record and mtime <= int(record[rel]):
+                        is_cached = True
+
+            if is_cached:
+                result["cached"] += 1
+            else:
+                result["new"] += 1
+
+
+def _prescan_python_files(
+    root_path: Path,
+    gitignore_rules: list[dict],
+    record: dict[str, float],
+    summary_file_exists: bool,
+    old_summaries: dict[str, str],
+) -> dict:
+    """
+    预扫描 Python 文件，统计需要生成摘要的文件数量和函数数量。
+    统计逻辑与实际执行逻辑严格对齐：
+      - not need_gen and rel_path in old_summaries → cached（复用旧摘要）
+      - 否则若 file_info is None → skipped（空文件）
+      - 否则 → new（需调用 LLM 生成）
+    返回 {"total_files": N, "total_funcs": N, "new": N, "cached": N, "skipped": N}
+    """
+    py_files: list[Path] = []
+    for entry in root_path.rglob("*.py"):
+        entry_rel = str(entry.relative_to(root_path)).replace("\\", "/")
+        if any(part.startswith('.') for part in entry.parts):
+            continue
+        if "__pycache__" in entry.parts:
+            continue
+        if any(part in SKIP_DIR_NAMES for part in entry.parts):
+            continue
+        if _is_under_ignored_dir(entry, root_path, gitignore_rules):
+            continue
+        if is_ignored_by_gitignore(entry_rel, False, gitignore_rules):
+            continue
+        py_files.append(entry)
+
+    py_files.sort()
+
+    result = {"total_files": len(py_files), "total_funcs": 0, "new": 0, "cached": 0, "skipped": 0}
+
+    for py_file in py_files:
+        need_gen, rel_path, current_mtime = should_generate(
+            py_file, root_path, record, summary_file_exists
+        )
+
+        # 与实际执行逻辑对齐：not need_gen and rel_path in old_summaries → cached
+        if not need_gen and rel_path in old_summaries:
+            result["cached"] += 1
+            # 从旧摘要中统计函数/方法数（与实际执行一致）
+            old_section = old_summaries[rel_path]
+            result["total_funcs"] += old_section.count("| `")
+        else:
+            # 需要生成新摘要
+            file_info = extract_ast_info(str(py_file))
+            if file_info is None:
+                result["skipped"] += 1
+                continue
+            result["new"] += 1
+            func_count = len(file_info.functions)
+            for cls in file_info.classes:
+                func_count += len(cls.methods)
+            result["total_funcs"] += func_count
+
+    return result
+
+
 def create_project_tree(root_path: Path | None = None, mode: str = "init") -> bool:
     """
     创建 MyClaude 项目工程树。
@@ -1011,6 +1173,18 @@ def create_project_tree(root_path: Path | None = None, mode: str = "init") -> bo
     # 如果摘要文件不存在，清空缓存强制全量生成
     if not tree_cache_exists:
         cache = {}
+
+    # 预扫描：统计文件数量和缓存状态
+    prescan = _prescan_project_files(root_path, gitignore_rules, cache, record)
+    est_seconds = prescan["new"] * 3  # 文件概述 prompt 简短，约 3 秒/文件
+    est_time_str = _format_estimated_time(est_seconds)
+
+    console.print(
+        f"[bold]📊 任务概述[/bold]\n"
+        f"  总共处理文件: {prescan['total']} 个\n"
+        f"  新增/更新: {prescan['new']} 个, 缓存复用: {prescan['cached']} 个\n"
+        f"  预计耗时: {est_time_str}\n"
+    )
 
     stats: dict = {"total_files": 0, "reused": 0, "generated": 0}
     start_time = datetime.now()
@@ -1091,6 +1265,20 @@ def create_project_tree(root_path: Path | None = None, mode: str = "init") -> bo
 
         py_files.sort()
 
+        # 预扫描：统计函数级摘要的文件和函数数量
+        summary_file_exists = summary_output_path.is_file() and summary_output_path.stat().st_size > 0
+        prescan = _prescan_python_files(root_path, gitignore_rules, record, summary_file_exists, old_summaries)
+        est_seconds = prescan["new"] * 5  # 函数级摘要 prompt 更复杂，约 5 秒/文件
+        est_time_str = _format_estimated_time(est_seconds)
+
+        console.print(
+            f"\n[bold]📊 任务概述[/bold]\n"
+            f"  总共处理文件: {prescan['total_files']} 个\n"
+            f"  总共处理函数: {prescan['total_funcs']} 个\n"
+            f"  新增/更新: {prescan['new']} 个文件, 缓存复用: {prescan['cached']} 个文件, 跳过: {prescan['skipped']} 个文件（空文件）\n"
+            f"  预计耗时: {est_time_str}\n"
+        )
+
         new_record: dict[str, float] = dict(record)  # 保留旧记录（来自 .init_file_record.json）
         generated_count = 0
         reused_count = 0
@@ -1099,9 +1287,6 @@ def create_project_tree(root_path: Path | None = None, mode: str = "init") -> bo
         file_start_time = datetime.now()
 
         console.print(f"\n[bold]📝 正在生成函数级摘要（共 {len(py_files)} 个 Python 文件）...[/bold]\n")
-
-        # 在写入 header 之前记录摘要文件是否存在（非空）
-        summary_file_exists = summary_output_path.is_file() and summary_output_path.stat().st_size > 0
 
         # 先写入文件头部，后续逐文件追加
         header_lines = [

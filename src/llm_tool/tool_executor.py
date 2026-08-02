@@ -791,10 +791,10 @@ def execute_code_tool(tool):
             if len(lines) > 30 and all(line.startswith("[DIR]") or line.startswith("[FILE]") for line in lines):
                 result = "\n".join(
                     lines[:30]) + f"\n...（共 {len(lines)} 项，已截断前 30 项。请使用更精确的路径或 limit 参数缩小范围）"
-            # 文件内容截断：超过 1000 行时截断，防止大文件耗尽 token
-            elif len(lines) > 1000:
+            # 文件内容截断：超过 10000 行时截断，防止大文件耗尽 token
+            elif len(lines) > 10000:
                 result = "\n".join(
-                    lines[:1000]) + f"\n...（文件共 {len(lines)} 行，已截断前 1000 行。请使用 limit/offset 参数分段读取剩余内容）"
+                    lines[:10000]) + f"\n...（文件共 {len(lines)} 行，已截断前 10000 行。请使用 limit/offset 参数分段读取剩余内容）"
 
     elif name == "create":
         # 写入前最终清理：确保内容中不含任何 XML 工具标签泄露

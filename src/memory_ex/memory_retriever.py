@@ -211,14 +211,14 @@ class MemoryRetriever:
         return prompt
 
     def _parse_retrieval_response(self, response: str, total: int) -> List[int]:
-        """解析 LLM 预检索响应。
+        """解析 LLM 预检索响应，支持 SCORED 和旧版 RELATED 格式。
 
         Args:
             response: LLM 响应文本
             total: 总条目数（用于边界检查）
 
         Returns:
-            选中的条目编号列表（0-based 索引）
+            选中的条目编号列表（0-based 索引），按分数降序排列
         """
         if not response:
             return []
@@ -229,20 +229,37 @@ class MemoryRetriever:
         if response.upper().startswith("NONE"):
             return []
 
-        # 匹配 RELATED: 1,3,5
-        match = re.match(r"RELATED:\s*([\d,\s]+)", response, re.IGNORECASE)
-        if not match:
-            logger.warning(f"无法解析预检索响应: {response[:100]}")
-            return []
+        # 匹配 SCORED: 1:9, 3:8, 5:7（新格式）
+        scored_match = re.match(r"SCORED:\s*([\d:,\s]+)", response, re.IGNORECASE)
+        if scored_match:
+            scored_str = scored_match.group(1)
+            scored_entries = []
+            for part in scored_str.split(","):
+                part = part.strip()
+                if ":" in part:
+                    num_str, score_str = part.split(":", 1)
+                    try:
+                        num = int(num_str.strip())
+                        score = int(score_str.strip())
+                        if 1 <= num <= total and score >= 7:
+                            scored_entries.append((num - 1, score))
+                    except ValueError:
+                        continue
 
-        # 解析编号
-        numbers_str = match.group(1)
-        numbers = [int(n.strip()) for n in numbers_str.split(",") if n.strip().isdigit()]
+            # 按分数降序排序，最多取 5 条
+            scored_entries.sort(key=lambda x: x[1], reverse=True)
+            return [idx for idx, _ in scored_entries[:5]]
 
-        # 转为 0-based 索引，并做边界检查
-        indices = [n - 1 for n in numbers if 1 <= n <= total]
+        # 兼容旧格式 RELATED: 1,3,5
+        related_match = re.match(r"RELATED:\s*([\d,\s]+)", response, re.IGNORECASE)
+        if related_match:
+            numbers_str = related_match.group(1)
+            numbers = [int(n.strip()) for n in numbers_str.split(",") if n.strip().isdigit()]
+            indices = [n - 1 for n in numbers if 1 <= n <= total]
+            return indices[:5]
 
-        return indices
+        logger.warning(f"无法解析预检索响应: {response[:100]}")
+        return []
 
     def _call_llm_with_timeout(self, prompt: str, timeout: int = 30) -> Optional[str]:
         """调用 LLM，带超时保护。
