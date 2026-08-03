@@ -10,8 +10,9 @@
 
 import logging
 import re
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -120,14 +121,23 @@ class MemoryRetriever:
                 logger.warning("LLM 预检索超时，跳过召回")
                 return []
 
-            selected_indices = self._parse_retrieval_response(response, len(entries))
+            scored = self._parse_retrieval_response(response, len(entries))
 
-            if not selected_indices:
+            if not scored:
                 # LLM 返回 NONE 或解析失败，不召回
                 logger.info("LLM 预检索无匹配，不召回")
                 return []
 
-            selected = [entries[i] for i in selected_indices if i < len(entries)]
+            # 时间衰减：对陈旧的代码架构类记忆降分
+            scored = self._apply_time_decay(entries, scored)
+
+            # 衰减后重新过滤 ≥8 分
+            scored = [(idx, score) for idx, score in scored if score >= 8]
+            if not scored:
+                logger.info("时间衰减后无 ≥8 分记忆，不召回")
+                return []
+
+            selected = [entries[idx] for idx, _ in scored if idx < len(entries)]
             logger.info(f"LLM 预检索命中 {len(selected)}/{len(entries)} 条记忆")
             return selected
 
@@ -210,27 +220,31 @@ class MemoryRetriever:
 
         return prompt
 
-    def _parse_retrieval_response(self, response: str, total: int) -> List[int]:
-        """解析 LLM 预检索响应，支持 SCORED 和旧版 RELATED 格式。
+    def _parse_retrieval_response(self, response: str, total: int) -> List[Tuple[int, int]]:
+        """解析 LLM 预检索响应，支持含分析摘要的多行格式。
+
+        响应可能包含结构化分析摘要（分析 + 评估 + SCORED/NONE），
+        SCORED 或 NONE 通常在最后一行，需用 search 而非 match 匹配。
 
         Args:
             response: LLM 响应文本
             total: 总条目数（用于边界检查）
 
         Returns:
-            选中的条目编号列表（0-based 索引），按分数降序排列
+            (0-based 索引, 分数) 元组列表，按分数降序排列
         """
         if not response:
             return []
 
         response = response.strip()
 
-        # 检查 NONE
-        if response.upper().startswith("NONE"):
+        # 检查 NONE（可能在最后一行，前面有分析摘要）
+        last_line = response.split("\n")[-1].strip()
+        if last_line.upper().startswith("NONE"):
             return []
 
-        # 匹配 SCORED: 1:9, 3:8, 5:7（新格式）
-        scored_match = re.match(r"SCORED:\s*([\d:,\s]+)", response, re.IGNORECASE)
+        # 匹配 SCORED: 1:9, 3:8, 5:7（可能出现在分析摘要之后的任意位置）
+        scored_match = re.search(r"SCORED:\s*([\d:,\s]+)", response, re.IGNORECASE)
         if scored_match:
             scored_str = scored_match.group(1)
             scored_entries = []
@@ -248,18 +262,92 @@ class MemoryRetriever:
 
             # 按分数降序排序，最多取 3 条
             scored_entries.sort(key=lambda x: x[1], reverse=True)
-            return [idx for idx, _ in scored_entries[:3]]
+            return scored_entries[:3]
 
-        # 兼容旧格式 RELATED: 1,3,5
-        related_match = re.match(r"RELATED:\s*([\d,\s]+)", response, re.IGNORECASE)
+        # 兼容旧格式 RELATED: 1,3,5（无分数信息，默认 8 分）
+        related_match = re.search(r"RELATED:\s*([\d,\s]+)", response, re.IGNORECASE)
         if related_match:
             numbers_str = related_match.group(1)
             numbers = [int(n.strip()) for n in numbers_str.split(",") if n.strip().isdigit()]
-            indices = [n - 1 for n in numbers if 1 <= n <= total]
+            indices = [(n - 1, 8) for n in numbers if 1 <= n <= total]
             return indices[:3]
 
         logger.warning(f"无法解析预检索响应: {response[:100]}")
         return []
+
+    def _apply_time_decay(
+        self, entries: List[Dict[str, Any]], scored: List[Tuple[int, int]]
+    ) -> List[Tuple[int, int]]:
+        """对 LLM 打分结果应用时间衰减。
+
+        仅对 [代码架构] 标签的记忆应用衰减：
+        - created_at 超过 30 天且 access_count == 0 → 分数 -1
+        - created_at 超过 60 天且 access_count == 0 → 分数 -2
+
+        其他标签（caution、架构决策、性能基准等）不受时间影响，
+        因为它们描述的是通用规则或长期约束，不随代码变更而过时。
+
+        Args:
+            entries: Layer 1 解析后的条目列表
+            scored: (索引, 分数) 元组列表
+
+        Returns:
+            调整后的 (索引, 分数) 元组列表，按分数降序排列
+        """
+        DECAY_TAGS = {"代码架构"}
+        now = datetime.now()
+        adjusted = []
+
+        for idx, score in scored:
+            entry = entries[idx] if idx < len(entries) else None
+            if not entry:
+                adjusted.append((idx, score))
+                continue
+
+            tags = set(entry.get("tags", []))
+            if not tags & DECAY_TAGS:
+                adjusted.append((idx, score))
+                continue
+
+            entry_id = entry.get("id", "")
+            if not entry_id:
+                adjusted.append((idx, score))
+                continue
+
+            meta = self._store.get_metadata_entry(entry_id)
+            if not meta:
+                adjusted.append((idx, score))
+                continue
+
+            # 被访问过的记忆不衰减（说明仍然有用）
+            access_count = meta.get("access_count", 0)
+            if access_count > 0:
+                adjusted.append((idx, score))
+                continue
+
+            created_at_str = meta.get("created_at", "")
+            try:
+                created_at = datetime.fromisoformat(created_at_str)
+                age_days = (now - created_at).days
+
+                if age_days >= 60:
+                    score = max(1, score - 2)
+                    logger.info(
+                        f"时间衰减：记忆 {entry_id} 年龄 {age_days}天，分数 -2 → {score}"
+                    )
+                elif age_days >= 30:
+                    score = max(1, score - 1)
+                    logger.info(
+                        f"时间衰减：记忆 {entry_id} 年龄 {age_days}天，分数 -1 → {score}"
+                    )
+            except (ValueError, TypeError):
+                pass
+
+            adjusted.append((idx, score))
+
+        # 重新按分数降序排序
+        adjusted.sort(key=lambda x: x[1], reverse=True)
+        return adjusted
 
     def _call_llm_with_timeout(self, prompt: str, timeout: int = 30) -> Optional[str]:
         """调用 LLM，带超时保护。
