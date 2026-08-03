@@ -323,9 +323,12 @@ class MemoryCompactor:
                 if entry.get("is_evolved") or other.get("is_evolved"):
                     continue
 
-                # 同标签合并
+                # 同标签合并 — 需同时满足内容相关性，防止仅因标签相似而拼接不相关内容
                 if self._same_tags(entry["tags"], other["tags"]):
-                    merge_candidates.append((j, other, "same_tags"))
+                    content_sim = self._jaccard_similarity(entry["content"], other["content"])
+                    if content_sim > 0.3:
+                        merge_candidates.append((j, other, "same_tags"))
+                    # else: 标签相似但内容不相关，不进行规则合并，留给 LLM 判断
                 # 重复去重
                 elif self._jaccard_similarity(entry["content"], other["content"]) > 0.8:
                     merge_candidates.append((j, other, "duplicate"))
