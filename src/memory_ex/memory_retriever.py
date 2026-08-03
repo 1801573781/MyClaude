@@ -241,14 +241,14 @@ class MemoryRetriever:
                     try:
                         num = int(num_str.strip())
                         score = int(score_str.strip())
-                        if 1 <= num <= total and score >= 7:
+                        if 1 <= num <= total and score >= 8:
                             scored_entries.append((num - 1, score))
                     except ValueError:
                         continue
 
-            # 按分数降序排序，最多取 5 条
+            # 按分数降序排序，最多取 3 条
             scored_entries.sort(key=lambda x: x[1], reverse=True)
-            return [idx for idx, _ in scored_entries[:5]]
+            return [idx for idx, _ in scored_entries[:3]]
 
         # 兼容旧格式 RELATED: 1,3,5
         related_match = re.match(r"RELATED:\s*([\d,\s]+)", response, re.IGNORECASE)
@@ -256,7 +256,7 @@ class MemoryRetriever:
             numbers_str = related_match.group(1)
             numbers = [int(n.strip()) for n in numbers_str.split(",") if n.strip().isdigit()]
             indices = [n - 1 for n in numbers if 1 <= n <= total]
-            return indices[:5]
+            return indices[:3]
 
         logger.warning(f"无法解析预检索响应: {response[:100]}")
         return []

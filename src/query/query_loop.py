@@ -714,8 +714,8 @@ class QueryLoop:
                     try:
                         file_content = result_msg.get("content", "")
                         # 用文件内容 + 用户原始输入组合作为查询文本
-                        # 限制文件内容长度为 500 字符，避免大量噪声关键词干扰召回
-                        recall_query = f"{self._current_user_input}\n{file_content[:500]}"
+                        # 不截断，由 memory_ex 的意图压缩统一处理
+                        recall_query = f"{self._current_user_input}\n{file_content}"
                         current_session_id = getattr(self.session, 'session_file_name', '')
                         chat_llm.set_context(query=self._current_user_input, turn=f"turn-recall-fileview")
                         mem_context = self._memory.get_context_for_query(

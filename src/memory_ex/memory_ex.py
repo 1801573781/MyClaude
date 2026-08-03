@@ -241,14 +241,14 @@ class MemoryEx(MemoryExInterface):
         """返回格式化的记忆上下文，供注入 api_messages。
 
         流程：
-        1. 检测用户输入中的文件路径，读取内容拼入查询（召回增强）
+        1. 评估查询长度，超过300字时调用 LLM 压缩为意图摘要
         2. 调用 retriever.retrieve_for_query() 做 LLM 预检索筛选
         3. 调用 injector.format_for_injection() 格式化注入文本
 
         如果 Layer 1 为空（冷启动），返回空字符串。
 
         Args:
-            query: 当前用户查询文本
+            query: 当前用户查询文本（可能含文件内容）
             exclude_session_id: 需要排除的 session_id（当前会话），
                                 确保不召回本 session 产生的记忆
 
@@ -259,96 +259,74 @@ class MemoryEx(MemoryExInterface):
         if not layer1_content:
             return ""
 
-        # 召回增强：展开文件引用
-        enhanced_query = self._build_enhanced_query(query)
+        # 意图压缩：超过300字时调用 LLM 压缩，消除噪声
+        recall_query = self._compress_intent(query)
 
         # LLM 预检索筛选（排除当前 session 的记忆）
         entries = self._retriever.retrieve_for_query(
-            enhanced_query, exclude_session_id=exclude_session_id
+            recall_query, exclude_session_id=exclude_session_id
         )
         if not entries:
             return ""
 
         return self._injector.format_for_injection(entries, query)
 
-    def _build_enhanced_query(self, user_input: str) -> str:
-        """构建召回查询，自动展开文件引用。
+    def _compress_intent(self, query: str) -> str:
+        """压缩用户意图到300字以内，消除CLI输出示例等噪声。
 
-        检测用户输入中的文件路径，读取内容（截断前 500 字符）拼入查询，
-        使得 LLM 预检索能基于文件内容而非无意义的指令词进行召回。
-        
-        注意：文件内容截断长度限制为 500 字符，避免过长的文件内容
-        引入大量噪声关键词，导致 LLM 基于关键词匹配而非任务意图召回。
+        仅用于记忆召回查询，不影响其他环节的上下文。
 
         Args:
-            user_input: 用户原始输入
+            query: 用户查询文本（可能含文件内容）
 
         Returns:
-            增强后的查询字符串
+            压缩后的意图文本；≤300字时直接返回原文；
+            压缩失败时降级返回原文。
         """
-        query = user_input
+        # ≤300字，不需要压缩
+        if len(query) <= 300:
+            return query
 
-        # 检测文件路径
-        file_paths = self._extract_file_paths(user_input)
+        # 无 LLM 调用函数，降级返回原文
+        if not self._llm_chat_fn:
+            logger.warning("LLM 调用函数未注入，跳过意图压缩")
+            return query
 
-        for path in file_paths:
-            content = self._safe_read_file(path)
-            if content:
-                query += "\n\n" + content[:500]
+        # 加载压缩 prompt 模板
+        prompt_template = self._load_compress_prompt()
+        if not prompt_template:
+            logger.warning("意图压缩 prompt 模板未找到，跳过压缩")
+            return query
 
-        return query
+        prompt = prompt_template.replace("{intent}", query)
 
-    def _extract_file_paths(self, text: str) -> List[str]:
-        """从用户输入中提取文件路径。
-
-        支持两种格式：
-        - Windows 绝对路径：D:\\xxx\\xxx.md 或 D:/AI/MyClaude/xxx.md
-        - 相对文件名：spider_spec.md
-
-        Args:
-            text: 用户输入文本
-
-        Returns:
-            文件路径列表
-        """
-        paths = []
-        seen = set()
-
-        # 匹配 Windows 绝对路径
-        for m in re.finditer(r'[A-Za-z]:[\\/][^\s，。、]+\.md', text):
-            p = m.group()
-            if p not in seen:
-                paths.append(p)
-                seen.add(p)
-
-        # 匹配 spec/ 目录下的相对文件名
-        for m in re.finditer(r'[\w/\\]+\.md', text):
-            p = m.group()
-            if p not in seen:
-                paths.append(p)
-                seen.add(p)
-
-        return paths
-
-    def _safe_read_file(self, path: str) -> str:
-        """安全读取文件，失败返回空字符串。
-
-        仅读取 .md 和 .txt 文件。
-
-        Args:
-            path: 文件路径
-
-        Returns:
-            文件内容字符串，失败返回空字符串
-        """
+        # 调用 LLM 压缩
         try:
-            p = Path(path)
-            if p.exists() and p.suffix in ('.md', '.txt'):
-                return p.read_text(encoding='utf-8')
+            response = self._llm_chat_fn(
+                prompt,
+                temperature=0.1,
+                max_tokens=1024,
+                timeout=30.0,
+            )
+            if response and response.strip():
+                compressed = response.strip()
+                logger.info(f"意图压缩成功：{len(query)}字 → {len(compressed)}字")
+                return compressed
+            else:
+                logger.warning("意图压缩返回空响应，降级为原文")
+                return query
         except Exception as e:
-            logger.debug(f"读取文件失败 {path}: {e}")
+            logger.warning(f"意图压缩失败: {e}，降级为原文")
+            return query
 
-        return ""
+    def _load_compress_prompt(self) -> str:
+        """加载意图压缩 prompt 模板。"""
+        try:
+            prompt_path = Path(__file__).parent / "prompts" / "intent_compress_prompt.txt"
+            return prompt_path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            logger.warning("intent_compress_prompt.txt 未找到")
+            return ""
 
     def update(self, memory_id: str, **fields) -> bool:
         """更新元数据层中指定记忆的字段。"""
