@@ -923,52 +923,85 @@ def print_todo_list(todo_list):
 def get_input() -> str:
     """获取用户输入
 
-    使用 Python 内置 input() 代替 Rich Prompt.ask()，
-    以确保长输入时终端能正确自动滚动，避免文字重叠。
+    使用 Python 内置 input() 读取用户输入。
 
-    关键修复（两重保障）：
-    1. Windows 上禁止使用 ANSI 转义码设置提示符颜色，改用 SetConsoleTextAttribute API，
-       避免 ANSI 码被行输入模式计入光标列位置导致换行计算偏差。
-    2. 每次调用 input() 前，重新启用 ENABLE_WRAP_AT_EOL_OUTPUT (0x2) 标志。
-       Rich Console 在输出时会修改控制台输出模式（仅保留 VT_PROCESSING），
-       可能清除此标志，导致用户长输入时光标回到行首而非换行，覆盖已有内容。
+    关键修复（三重保障），解决长输入时文字覆盖 bug：
+
+    1. 输出模式确保 PROCESSED(0x1) | WRAP(0x2) | VT(0x4) 全部开启：
+       不再仅 OR 入 0x2，而是确保 0x1/0x2/0x4 三个标志同时存在。
+       Rich Console 在输出时可能清除 WRAP 和 PROCESSED 标志：
+       - WRAP(0x2) 缺失 → 光标到行尾不换行，回到行首覆盖已有内容
+       - PROCESSED(0x1) 缺失 → \\n 不做 CRLF 转换，光标下移但不回到列 0
+
+    2. 输入模式禁用 VT_INPUT(0x200)，确保 LINE_INPUT(0x2) | ECHO_INPUT(0x4)：
+       VT 输入模式下控制台不负责行编辑和自动换行，是长输入覆盖的另一个诱因。
+       Rich 或系统可能启用了 VT_INPUT，需在每次 input() 前显式禁用。
+
+    3. 使用 \\r\\n 替代 \\n：
+       VT 模式下 \\n 仅做 LF（光标下移同列），\\r 才做 CR（回到列 0）。
+       \\r\\n 确保光标回到行首再换行，避免提示符起始列偏移。
     """
     import sys
 
     try:
         if os.name == 'nt':
-            # Windows: 用 SetConsoleTextAttribute 着色，不向输出流写入 ANSI 码
             import ctypes
             kernel32 = ctypes.windll.kernel32
             stdout_handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+            stdin_handle = kernel32.GetStdHandle(-10)   # STD_INPUT_HANDLE
 
-            # 关键修复：Rich Console 在输出时会修改控制台模式，可能禁用
-            # ENABLE_WRAP_AT_EOL_OUTPUT (0x2)，导致用户长输入时光标回到行首
-            # 而非换行，新输入覆盖已有内容。每次读取输入前重新启用此标志。
-            mode = ctypes.c_ulong()
-            if kernel32.GetConsoleMode(stdout_handle, ctypes.byref(mode)):
-                kernel32.SetConsoleMode(stdout_handle, mode.value | 0x2)
+            # 保存原始模式（input() 结束后恢复，避免影响其他组件）
+            out_mode_orig = ctypes.c_ulong()
+            in_mode_orig = ctypes.c_ulong()
+            has_out_mode = kernel32.GetConsoleMode(stdout_handle, ctypes.byref(out_mode_orig))
+            has_in_mode = kernel32.GetConsoleMode(stdin_handle, ctypes.byref(in_mode_orig))
 
-            # 读取当前属性，用于事后恢复
-            info = _CONSOLE_SCREEN_BUFFER_INFO()
-            kernel32.GetConsoleScreenBufferInfo(stdout_handle, ctypes.byref(info))
-            original_attr = info.wAttributes
+            # 1. 输出模式：禁用 VT(0x4)，仅保留 PROCESSED(0x1) | WRAP(0x2)
+            #    Rich 的 Live/status 等组件在 VT 模式下会修改终端状态（DECAWM
+            #    自动换行、DECSTBM 滚动区域），退出后可能未完全重置。input()
+            #    的逐字符回显依赖这些状态，一旦被篡改就导致光标到行尾时不换行
+            #    而是回到行首覆盖已有内容。禁用 VT 处理可彻底回避此问题。
+            #    粘贴（paste）不受影响是因为控制台对粘贴做批量写入，绕过逐字符回显。
+            if has_out_mode:
+                kernel32.SetConsoleMode(stdout_handle, (out_mode_orig.value | 0x3) & ~0x4)
 
-            # 0xB = FOREGROUND_INTENSITY | FOREGROUND_GREEN | FOREGROUND_BLUE = bold cyan
-            sys.stdout.write("\n")
-            sys.stdout.flush()
-            kernel32.SetConsoleTextAttribute(stdout_handle, 0xB)
-            sys.stdout.write("➤ You : ")
-            sys.stdout.flush()
-            kernel32.SetConsoleTextAttribute(stdout_handle, original_attr)
+            # 2. 输入模式：禁用 VT_INPUT(0x200)，确保 LINE_INPUT(0x2) | ECHO_INPUT(0x4)
+            if has_in_mode:
+                kernel32.SetConsoleMode(stdin_handle, (in_mode_orig.value & ~0x200) | 0x6)
+
+            try:
+                # 3. 读取当前文本属性，用于着色
+                info = _CONSOLE_SCREEN_BUFFER_INFO()
+                kernel32.GetConsoleScreenBufferInfo(stdout_handle, ctypes.byref(info))
+                original_attr = info.wAttributes
+
+                # 4. 写入提示符：\r\n 确保光标回到行首再换行
+                sys.stdout.write("\r\n")
+                sys.stdout.flush()
+                kernel32.SetConsoleTextAttribute(stdout_handle, 0xB)  # bold cyan
+                sys.stdout.write("➤ You : ")
+                sys.stdout.flush()
+                kernel32.SetConsoleTextAttribute(stdout_handle, original_attr)
+
+                # 5. 读取用户输入
+                user_input = input()
+            finally:
+                # 恢复原始模式，避免影响 Rich Console 后续输出
+                try:
+                    if has_out_mode:
+                        kernel32.SetConsoleMode(stdout_handle, out_mode_orig.value)
+                    if has_in_mode:
+                        kernel32.SetConsoleMode(stdin_handle, in_mode_orig.value)
+                except Exception:
+                    pass
+
+            return user_input.strip()
         else:
             # 非 Windows: 安全使用 ANSI 转义码
             sys.stdout.write("\n\033[1;36m➤ You :\033[0m ")
             sys.stdout.flush()
-
-        # 使用内置 input() 读取，利用终端原生的换行滚动能力
-        user_input = input()
-        return user_input.strip()
+            user_input = input()
+            return user_input.strip()
     except (KeyboardInterrupt, EOFError):
         return "/quit"
 

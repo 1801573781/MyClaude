@@ -1268,7 +1268,7 @@ def create_project_tree(root_path: Path | None = None, mode: str = "init") -> bo
         # 预扫描：统计函数级摘要的文件和函数数量
         summary_file_exists = summary_output_path.is_file() and summary_output_path.stat().st_size > 0
         prescan = _prescan_python_files(root_path, gitignore_rules, record, summary_file_exists, old_summaries)
-        est_seconds = prescan["new"] * 5  # 函数级摘要 prompt 更复杂，约 5 秒/文件
+        est_seconds = prescan["new"] * 35  # 函数级摘要 prompt 含完整源码，LLM调用约35秒/新文件
         est_time_str = _format_estimated_time(est_seconds)
 
         console.print(
