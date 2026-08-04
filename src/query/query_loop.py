@@ -390,6 +390,10 @@ class QueryLoop:
                         # 避免更新哈希后导致 log_llm_req 过滤掉所有消息。
                         self.api_messages.append_micro_info("system", mem_context)
                         logger.debug(f"记忆上下文已注入，长度: {len(mem_context)}")
+                    else:
+                        # 召回为空也追加到 api_messages（与非空召回保持一致），
+                        # 由 log_llm_req 的 _deduplicate_msg_list 统一记录到当前 Turn。
+                        self.api_messages.append_micro_info("system", "[MEMORY_INJECTION_v1]\n没有召回到相关记忆\n[召回数: 0]")
                 except Exception as e:
                     chat_llm.set_context()  # 确保异常时也清除上下文
                     logger.warning(f"记忆上下文注入失败: {e}")
@@ -411,6 +415,10 @@ class QueryLoop:
                     # 让 log_llm_req 的 _deduplicate_msg_list 自然识别为"新消息"并记录。
                     self.api_messages.append_micro_info("system", mem_context)
                     logger.debug(f"回退记忆上下文已注入，长度: {len(mem_context)}")
+                else:
+                    # 召回为空也追加到 api_messages（与非空召回保持一致），
+                    # 由 log_llm_req 的 _deduplicate_msg_list 统一记录到当前 Turn。
+                    self.api_messages.append_micro_info("system", "[MEMORY_INJECTION_v1]\n没有召回到相关记忆\n[召回数: 0]")
             except Exception as e:
                 chat_llm.set_context()
                 logger.warning(f"回退记忆上下文注入失败: {e}")
@@ -732,6 +740,11 @@ class QueryLoop:
                             # 而不是 Turn 1（仅调用 file_view 的轮次）。
                             self.api_messages.append_micro_info("system", mem_context)
                             logger.debug(f"延迟记忆上下文已注入，长度: {len(mem_context)}")
+                        else:
+                            # 召回为空也追加到 api_messages（与非空召回保持一致），
+                            # 让下一轮 log_llm_req 的 _deduplicate_msg_list 自然记录到 Turn 2，
+                            # 而不是直接写入当前 Turn 1 的 session 缓冲区导致日志位置错误。
+                            self.api_messages.append_micro_info("system", "[MEMORY_INJECTION_v1]\n没有召回到相关记忆\n[召回数: 0]")
                     except Exception as e:
                         chat_llm.set_context()
                         logger.warning(f"延迟记忆召回失败: {e}")

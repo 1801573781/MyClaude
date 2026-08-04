@@ -57,6 +57,7 @@ client = OpenAI(
     api_key=api_key,
     base_url=base_url,
     http_client=httpx.Client(verify=False),
+    max_retries=0,  # 禁用SDK自动重试，避免超时后3倍等待（记忆检索等场景重试无意义）
 )
 
 # 模块级上下文变量：供记忆系统等间接调用 simple_chat 时标注 query/turn

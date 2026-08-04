@@ -1,6 +1,7 @@
 import hashlib
 import json
 import re
+from collections import Counter
 from pathlib import Path
 from datetime import datetime
 
@@ -24,8 +25,9 @@ class SessionLog:
         self._turn_buffer = []
         self._current_turn = None
         self._has_turn_content = False
-        # 用于去重：记录上一轮 api_messages 中各消息内容的哈希值
-        self._prev_msg_hashes = set()
+        # 用于去重：记录上一轮 api_messages 中各消息内容的哈希值计数
+        # 使用 Counter 而非 set，以正确处理内容相同但为不同消息的情况
+        self._prev_msg_hashes = Counter()
         # Session 初始化守护（只执行一次）
         self._session_inited = False
         # Query 级日志缓冲
@@ -166,6 +168,7 @@ class SessionLog:
                 break
 
         sections = self._parse_buffer_sections(buffer[start_idx:])
+        sections = self._reorder_sections(sections)
 
         section_titles = {
             "system": "⚙️ 系统宪法",
@@ -277,6 +280,7 @@ class SessionLog:
             turn_label = f"### 🔄 Turn {turn_num}"
 
         sections = self._parse_buffer_sections(buffer[start_idx:])
+        sections = self._reorder_sections(sections)
 
         md_parts = [turn_label]
         for section_name, items in sections:
@@ -334,6 +338,9 @@ class SessionLog:
                 if role == "system" and isinstance(content, str) and content.startswith("[file_view] 工具执行结果"):
                     path_str = f'\npath = "{self._last_file_view_path}"\n' if self._last_file_view_path else ""
                     content = f"[file_view] {path_str}工具执行结果：略。"
+                # 记忆注入内容：清理标记，保留正文
+                if role == "system" and isinstance(content, str) and content.startswith("[MEMORY_INJECTION_v1]"):
+                    content = re.sub(r'^\[MEMORY_INJECTION_v1\]\n?', '', content).strip()
                 # assistant 消息优先使用 md_content（已压缩的工具标签）
                 if role == "assistant" and "md_content" in item:
                     content = item["md_content"]
@@ -706,45 +713,46 @@ class SessionLog:
 
     def _deduplicate_msg_list(self, req_dict):
         """对 api_messages 列表去重，仅保留本次新增的消息条目。
-        通过比较每条消息的序列化哈希值来判断是否已在上次 log_llm_req 中出现过。
+        通过比较每条消息的哈希值计数来判断是否已在上次 log_llm_req 中出现过。
+        使用 Counter 而非 set，正确处理同一内容出现多次的情况（如多次空召回）。
         系统宪法/项目宪法/目录树等固定内容只会在第一个 Turn 完整记录。"""
         if not isinstance(req_dict, list):
             return req_dict
 
         new_items = []
-        current_hashes = set()
+        current_hashes = Counter()
         for msg in req_dict:
             # 计算该消息的哈希值
             msg_copy = dict(msg)
-            # 移除截断前缀（如 "[系统提醒] 以下仅展示与当前任务最相关的历史记忆"），
-            # 因为同一段记忆内容前缀可能变化，导致哈希误判为新消息
             content = msg_copy.get("content", "")
             if isinstance(content, str) and content.startswith("[系统提醒] 以下仅展示与当前任务最相关的历史记忆"):
-                msg_copy["content"] = content  # 保留原文不截断，确保与上一轮的同一消息哈希一致
+                msg_copy["content"] = content
             msg_hash = hashlib.md5(
                 json.dumps(msg_copy, ensure_ascii=False, sort_keys=True).encode("utf-8")
             ).hexdigest()
-            current_hashes.add(msg_hash)
+            current_hashes[msg_hash] += 1
 
-            if msg_hash not in self._prev_msg_hashes:
+            # Counter 比较：当前累计出现次数 > 上一轮出现次数 → 是新增的
+            if current_hashes[msg_hash] > self._prev_msg_hashes.get(msg_hash, 0):
                 new_items.append(msg)
 
-        # 更新上一轮哈希集合
+        # 更新上一轮哈希计数
         self._prev_msg_hashes = current_hashes
         return new_items
 
     def update_msg_hashes(self, api_messages: list):
-        """外部更新哈希集合（在 query_loop 中追加记忆消息后调用）。
+        """外部更新哈希计数（在 query_loop 中追加记忆消息后调用）。
 
         防止下轮 log_llm_req 时，已注入的记忆消息因哈希不匹配而重复记录。
+        使用 Counter 而非 set，与 _deduplicate_msg_list 保持一致。
         """
-        current_hashes = set()
+        current_hashes = Counter()
         for msg in api_messages:
             msg_copy = dict(msg)
             msg_hash = hashlib.md5(
                 json.dumps(msg_copy, ensure_ascii=False, sort_keys=True).encode("utf-8")
             ).hexdigest()
-            current_hashes.add(msg_hash)
+            current_hashes[msg_hash] += 1
         self._prev_msg_hashes = current_hashes
 
 
@@ -768,6 +776,25 @@ class SessionLog:
         else:
             self._save_md(save_session)
 
+
+    def _reorder_sections(self, sections):
+        """确保用户输入在记忆召回之前展示。
+        
+        记忆召回是基于用户输入触发的，逻辑上应先展示用户输入，再展示记忆召回。
+        """
+        user_idx = None
+        memory_idx = None
+        for i, (name, _) in enumerate(sections):
+            if name == "user" and user_idx is None:
+                user_idx = i
+            if name == "memory_context" and memory_idx is None:
+                memory_idx = i
+        
+        if user_idx is not None and memory_idx is not None and memory_idx < user_idx:
+            memory_section = sections.pop(memory_idx)
+            sections.insert(user_idx, memory_section)
+        
+        return sections
 
     def _parse_buffer_sections(self, items):
         """将 Turn 缓冲条目按内容类型分组为逻辑节，用于多级折叠。
@@ -975,11 +1002,14 @@ class SessionLog:
         if not content:
             return "<pre>（无记忆内容）</pre>"
 
+        # 移除 [MEMORY_INJECTION_v1] 标记行
+        content = re.sub(r'^\[MEMORY_INJECTION_v1\]\n?', '', content).strip()
+
         # 移除 "[记忆上下文 - 由 Memory 模块自动生成]" 行
         content = re.sub(r'\n?\[记忆上下文 - 由 Memory 模块自动生成\]\n?', '\n', content).strip()
 
         # 占位文本：明确的"没有记忆"标记
-        if content.strip() == "没有召回到相关记忆":
+        if "没有召回到相关记忆" in content:
             escaped = content.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
             return f'<pre style="color:#75715E; font-style:italic;">{escaped}</pre>'
 

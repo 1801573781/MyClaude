@@ -52,7 +52,7 @@ memory_ex:
   retrieval:
     default_top_k: 5
     max_top_k: 20
-    timeout: 30               # LLM 预检索超时秒数（非流式调用，建议 15~60）
+    timeout: 180              # LLM 预检索超时秒数（非流式调用，需覆盖80+条记忆的评估耗时）
 
   injection:
     max_tokens: 2000
