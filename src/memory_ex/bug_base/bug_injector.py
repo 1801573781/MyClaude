@@ -47,7 +47,7 @@ class BugInjector:
             sections.append(section)
             total_tokens += section_tokens
 
-        return header + "\n".join(sections)
+        return header + "\n\n".join(sections)
 
     def _format_record(self, record: BugRecord, index: int) -> str:
         """格式化单条记录为警示文本。"""

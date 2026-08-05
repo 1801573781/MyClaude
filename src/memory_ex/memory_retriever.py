@@ -1,8 +1,10 @@
 """记忆召回模块。
 
-召回策略：Layer 1 按需注入 + 倒排索引搜索。
+召回策略：两阶段召回（向量粗排 + LLM 精排）+ 倒排索引搜索。
 
 职责：
+- 向量粗排：通过 FAISS 向量检索从全量记忆中筛选 top_k 候选
+- LLM 精排：在候选集上用 LLM 评分，选出最终注入的记忆
 - 读取 Layer 1（MEMORY.md）内容供注入
 - 利用倒排索引搜索 Layer 1 数据
 - 提供搜索接口供 CLI /mem search 命令调用
@@ -13,6 +15,8 @@ import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+from .embedding.memory_retrieval import retrieve_by_vector
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +59,18 @@ class MemoryRetriever:
         self._max_top_k = int(getattr(retrieval_config, "max_top_k", 20))
         self._timeout = int(getattr(retrieval_config, "timeout", 30))
 
+        # 向量粗排参数
+        self._vector_top_k = int(getattr(retrieval_config, "vector_top_k", 10))
+        self._vector_score_threshold = float(
+            getattr(retrieval_config, "vector_score_threshold", 0.3)
+        )
+        # LLM 精排参数
+        self._llm_max_results = int(getattr(retrieval_config, "llm_max_results", 3))
+        # 降级策略
+        self._fallback_to_full = bool(
+            getattr(retrieval_config, "fallback_to_full", True)
+        )
+
         injection_config = mem_config.injection
         self._max_injection_tokens = int(
             getattr(injection_config, "max_tokens", 2000)
@@ -68,14 +84,16 @@ class MemoryRetriever:
         self._llm_chat_fn = fn
 
     def retrieve_for_query(self, query: str, exclude_session_id: str = "") -> List[Dict[str, Any]]:
-        """根据查询相关性筛选 Layer 1 记忆（LLM 预检索）。
+        """两阶段记忆召回：向量粗排 + LLM 精排。
 
-        将 Layer 1 条目和用户查询发给 LLM，由 LLM 判断相关性并返回编号列表。
-        原则：宁可不召回也不瞎召回。LLM 不可用、超时、返回 NONE 时一律返回空列表。
+        阶段一（向量粗排）：通过 FAISS 向量检索从全量记忆中筛选 top_k 候选。
+        阶段二（LLM 精排）：在候选集上用 LLM 评分，选出最终注入的记忆。
+
+        降级策略：索引不存在或向量化失败时，降级为全量记忆送入 LLM 精排。
 
         Args:
             query: 增强后的用户查询（可能含文件内容）
-            exclude_session_id: 需要排除的 session_id（当前会话），
+            exclude_session_id: 需要排除的 session_id（当前会话）
 
         Returns:
             筛选后的记忆条目列表，每个元素含 id, session_id, tags, content, raw_line。
@@ -89,7 +107,7 @@ class MemoryRetriever:
         if not all_entries:
             return []
 
-        # 显式过滤：排除当前 session 的记忆，确保不会召回本 session 产生的记忆
+        # 显式过滤：排除当前 session 的记忆
         if exclude_session_id:
             entries = [
                 e for e in all_entries
@@ -109,27 +127,137 @@ class MemoryRetriever:
             logger.info("LLM 调用函数未注入，跳过召回")
             return []
 
-        # 构建预检索 Prompt
-        prompt = self._build_retrieval_prompt(query, entries)
+        # ===== 阶段一：向量粗排 =====
+        candidates = self._vector_coarse_rank(query, entries)
+
+        # ===== 阶段二：LLM 精排 =====
+        return self._llm_fine_rank(query, candidates, entries)
+
+    def _vector_coarse_rank(
+        self, query: str, entries: List[Dict[str, Any]]
+    ) -> Optional[List[Dict[str, Any]]]:
+        """向量粗排阶段：通过 FAISS 向量检索筛选候选记忆。
+
+        Args:
+            query: 粗排输入文本（用户查询或查询+文件内容组合）
+            entries: 全量 Layer 1 条目列表（用于降级和匹配）
+
+        Returns:
+            候选记忆条目列表（≤ vector_top_k 条）；
+            None 表示降级为全量记忆（索引不存在或向量化失败）；
+            空列表表示索引存在但无匹配结果。
+        """
+        try:
+            results = retrieve_by_vector(
+                query,
+                top_k=self._vector_top_k,
+                score_threshold=self._vector_score_threshold,
+            )
+        except Exception as e:
+            logger.error(f"向量粗排异常: {e}，降级为全量记忆")
+            results = None
+
+        # 索引不存在或向量化失败 → 降级为全量记忆
+        if results is None:
+            if self._fallback_to_full:
+                logger.info("向量粗排降级：全量记忆送入 LLM 精排")
+                return entries
+            else:
+                logger.info("向量粗排降级已禁用，不召回")
+                return []
+
+        if not results:
+            logger.info("向量粗排无匹配候选")
+            return []
+
+        # 用 ID 直接查表，将向量检索结果映射回结构化条目
+        matched = self._match_vector_to_entries_by_id(results, entries)
+
+        # 如果匹配率过低（如索引过期），降级为全量记忆
+        if len(matched) < len(results) * 0.5:
+            logger.warning(
+                f"向量粗排 ID 匹配率低 ({len(matched)}/{len(results)})，"
+                f"索引可能过期，降级为全量记忆"
+            )
+            return entries if self._fallback_to_full else matched
+
+        logger.info(f"向量粗排匹配 {len(matched)} 条候选记忆")
+        return matched
+
+    def _match_vector_to_entries_by_id(
+        self,
+        vector_results: List[Dict[str, Any]],
+        entries: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """用记忆 ID 直接查表，将向量检索结果映射回结构化条目。
+
+        替代旧的文本逐字比对方式，通过 ID 唯一标识一步到位，不会因文本变动而失配。
+
+        Args:
+            vector_results: 向量检索返回的结果列表（含 id 字段）
+            entries: 全量结构化条目列表
+
+        Returns:
+            匹配到的条目列表（保持向量检索的排序顺序）
+        """
+        # 构建 id → entry 的查表字典
+        id_to_entry = {}
+        for entry in entries:
+            entry_id = entry.get("id", "")
+            if entry_id:
+                id_to_entry[entry_id] = entry
+
+        matched = []
+        for vr in vector_results:
+            mem_id = vr.get("id", "")
+            if mem_id and mem_id in id_to_entry:
+                matched.append(id_to_entry[mem_id])
+            else:
+                # ID 缺失或未命中（索引与 MEMORY.md 不同步），跳过该条
+                logger.debug(f"向量粗排 ID 未命中: {mem_id}")
+
+        return matched
+
+    def _llm_fine_rank(
+        self,
+        query: str,
+        candidates: Optional[List[Dict[str, Any]]],
+        all_entries: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """LLM 精排阶段：在候选集上用 LLM 评分选出最终记忆。
+
+        Args:
+            query: 精排输入文本（用户查询或查询+文件内容组合）
+            candidates: 粗排返回的候选条目列表，None 或空列表表示无候选
+            all_entries: 全量条目（仅用于日志统计）
+
+        Returns:
+            最终筛选后的记忆条目列表（≤ llm_max_results 条）
+        """
+        if not candidates:
+            logger.info("粗排无候选，跳过 LLM 精排")
+            return []
+
+        # 构建精排 Prompt
+        prompt = self._build_retrieval_prompt(query, candidates)
         if not prompt:
             return []
 
-        # 调用 LLM 筛选
+        # 调用 LLM 精排
         try:
             response = self._call_llm_with_timeout(prompt, timeout=self._timeout)
             if response is None:
-                logger.warning("LLM 预检索超时，跳过召回")
+                logger.warning("LLM 精排超时，跳过召回")
                 return []
 
-            scored = self._parse_retrieval_response(response, len(entries))
+            scored = self._parse_retrieval_response(response, len(candidates))
 
             if not scored:
-                # LLM 返回 NONE 或解析失败，不召回
-                logger.info("LLM 预检索无匹配，不召回")
+                logger.info("LLM 精排无匹配，不召回")
                 return []
 
             # 时间衰减：对陈旧的代码架构类记忆降分
-            scored = self._apply_time_decay(entries, scored)
+            scored = self._apply_time_decay(candidates, scored)
 
             # 衰减后重新过滤 ≥8 分
             scored = [(idx, score) for idx, score in scored if score >= 8]
@@ -137,12 +265,17 @@ class MemoryRetriever:
                 logger.info("时间衰减后无 ≥8 分记忆，不召回")
                 return []
 
-            selected = [entries[idx] for idx, _ in scored if idx < len(entries)]
-            logger.info(f"LLM 预检索命中 {len(selected)}/{len(entries)} 条记忆")
+            # 最多返回 llm_max_results 条
+            scored = scored[: self._llm_max_results]
+            selected = [candidates[idx] for idx, _ in scored if idx < len(candidates)]
+            logger.info(
+                f"LLM 精排命中 {len(selected)}/{len(candidates)} 条候选 "
+                f"(全量 {len(all_entries)} 条)"
+            )
             return selected
 
         except Exception as e:
-            logger.error(f"LLM 预检索失败: {e}，跳过召回")
+            logger.error(f"LLM 精排失败: {e}，跳过召回")
             return []
 
     def _parse_layer1_entries(self, layer1_content: str) -> List[Dict[str, Any]]:
@@ -226,12 +359,17 @@ class MemoryRetriever:
         响应可能包含结构化分析摘要（分析 + 评估 + SCORED/NONE），
         SCORED 或 NONE 通常在最后一行，需用 search 而非 match 匹配。
 
+        注意：本方法仅解析和过滤 ≥8 分的条目，不做数量截取。
+        最终截取由 _llm_fine_rank() 在时间衰减后统一执行，
+        避免过早截取导致时间衰减后可用候选不足。
+
         Args:
             response: LLM 响应文本
             total: 总条目数（用于边界检查）
 
         Returns:
-            (0-based 索引, 分数) 元组列表，按分数降序排列
+            (0-based 索引, 分数) 元组列表，按分数降序排列。
+            包含所有 ≥8 分的条目，不截取数量。
         """
         if not response:
             return []
@@ -260,9 +398,9 @@ class MemoryRetriever:
                     except ValueError:
                         continue
 
-            # 按分数降序排序，最多取 3 条
+            # 按分数降序排序，不截取数量（由 _llm_fine_rank 在时间衰减后截取）
             scored_entries.sort(key=lambda x: x[1], reverse=True)
-            return scored_entries[:3]
+            return scored_entries
 
         # 兼容旧格式 RELATED: 1,3,5（无分数信息，默认 8 分）
         related_match = re.search(r"RELATED:\s*([\d,\s]+)", response, re.IGNORECASE)
@@ -270,7 +408,7 @@ class MemoryRetriever:
             numbers_str = related_match.group(1)
             numbers = [int(n.strip()) for n in numbers_str.split(",") if n.strip().isdigit()]
             indices = [(n - 1, 8) for n in numbers if 1 <= n <= total]
-            return indices[:3]
+            return indices
 
         logger.warning(f"无法解析预检索响应: {response[:100]}")
         return []
@@ -355,6 +493,10 @@ class MemoryRetriever:
         直接将 timeout 传递给 simple_chat，由 httpx 在 HTTP 层处理超时，
         确保超时后连接被正确关闭，避免线程泄漏和僵尸连接。
 
+        精排输出仅需分析摘要 + 逐条评估 + SCORED 行，
+        2048 tokens 足够（10 条候选 × ~150 token/条 + 分析 ~300 token）。
+        过大的 max_tokens 会导致 LLM 生成冗长分析，严重拖慢召回速度。
+
         Args:
             prompt: 完整 Prompt
             timeout: 超时秒数
@@ -369,7 +511,7 @@ class MemoryRetriever:
             response = self._llm_chat_fn(
                 prompt,
                 temperature=0.1,
-                max_tokens=10240,
+                max_tokens=20480,
                 timeout=float(timeout),
             )
             elapsed = time.time() - start

@@ -80,7 +80,7 @@ class MemoryInjector:
         if not layer1_lines:
             return ""
 
-        layer1_content = "\n".join(layer1_lines)
+        layer1_content = "\n\n".join(layer1_lines)
         recall_count = len(layer1_lines)
 
         # 构建注入文本
@@ -129,7 +129,7 @@ class MemoryInjector:
             截断后的注入文本
         """
         lines = layer1_content.split("\n")
-        kept_lines = []
+        kept_entries = []
         current_tokens = 0
 
         # 预留 header + footer 的 token
@@ -155,9 +155,7 @@ class MemoryInjector:
                 evolved_lines.append(block)
             elif stripped.startswith("- "):
                 normal_lines.append([line])
-            else:
-                # 非条目行（如标题、空行），保留
-                kept_lines.append(line)
+            # 空行和非条目行跳过，不保留
 
             i += 1
 
@@ -166,7 +164,7 @@ class MemoryInjector:
             block_text = "\n".join(block)
             block_tokens = _estimate_tokens(block_text)
             if current_tokens + block_tokens <= budget:
-                kept_lines.append(block_text)
+                kept_entries.append(block_text)
                 current_tokens += block_tokens
 
         # 再添加普通条目
@@ -174,24 +172,19 @@ class MemoryInjector:
             block_text = "\n".join(block)
             block_tokens = _estimate_tokens(block_text)
             if current_tokens + block_tokens <= budget:
-                kept_lines.append(block_text)
+                kept_entries.append(block_text)
                 current_tokens += block_tokens
             else:
                 break
 
         # 统计实际保留的条目数
-        actual_count = sum(
-            1
-            for line in kept_lines
-            if isinstance(line, str)
-            and line.strip().startswith("- ")
-        )
+        actual_count = len(kept_entries)
 
-        # 重新构建
+        # 重新构建（条目间用空行分隔，与 format_for_injection 主路径一致）
         header = f"{INJECTION_MARKER}\n## 记忆索引\n"
         footer = f"\n[召回数: {actual_count}]"
 
-        body = "\n".join(kept_lines)
+        body = "\n\n".join(kept_entries)
 
         return header + body + footer
 

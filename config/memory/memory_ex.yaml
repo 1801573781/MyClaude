@@ -52,7 +52,14 @@ memory_ex:
   retrieval:
     default_top_k: 5
     max_top_k: 20
-    timeout: 180              # LLM 预检索超时秒数（非流式调用，需覆盖80+条记忆的评估耗时）
+    timeout: 30               # LLM 精排超时秒数（精排输入≤10条候选，30秒足够）
+    # 向量粗排参数
+    vector_top_k: 1              # 粗排返回候选数
+    vector_score_threshold: 0.3   # 向量相似度最低阈值
+    # LLM 精排参数
+    llm_max_results: 3            # 精排最终返回最多条数
+    # 降级策略
+    fallback_to_full: true        # 索引不存在时是否降级为全量 LLM 召回
 
   injection:
     max_tokens: 2000

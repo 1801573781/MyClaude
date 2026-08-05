@@ -798,8 +798,46 @@ class MyClaudeCLI:
                     "  /mem compaction — 整理记忆 (简写 /mem com)\n"
                     "  /mem evolution  — 进化记忆 (简写 /mem evo)\n"
                     "  /mem retrieve <信息>  — 记忆召回测试 (简写 /mem rt)\n"
+                    "  /mem embedding  — 记忆向量化 (简写 /mem emb)\n"
+                    "  /mem emb rt <信息>    — 向量召回测试\n"
                     "  /mem remove     — 清除所有记忆 (简写 /mem rm)"
                 )
+                return True
+
+            if sub_cmd in ("embedding", "emb"):
+                # 检查是否有 rt 子命令
+                emb_parts = sub_cmd_full.split(maxsplit=1)
+                emb_sub = emb_parts[0].lower() if emb_parts else ""
+                emb_query = emb_parts[1].strip() if len(emb_parts) > 1 else ""
+
+                if emb_sub == "rt":
+                    # /mem emb rt <信息> — 基于向量相似度召回 top_k 条记忆
+                    if not emb_query:
+                        cli_print.print_error("缺少参数。用法: /mem emb rt <信息>")
+                        return True
+
+                    from src.memory_ex.embedding.memory_retrieval import run_retrieval
+                    try:
+                        result_summary = run_retrieval(emb_query)
+                        if result_summary:
+                            self.query_loop.append_cli_result(result_summary)
+                    except FileNotFoundError as e:
+                        cli_print.print_error(str(e))
+                        self.query_loop.append_cli_result(f"向量召回失败: {str(e)}")
+                    except Exception as e:
+                        cli_print.print_error(f"向量召回失败: {e}")
+                        self.query_loop.append_cli_result(f"向量召回失败: {e}")
+                    return True
+
+                # /mem embedding | /mem emb — 将 MEMORY.md 全量向量化，生成 FAISS 索引
+                from src.memory_ex.embedding.memory_embedding import run_embedding
+                try:
+                    result_summary = run_embedding()
+                    if result_summary:
+                        self.query_loop.append_cli_result(result_summary)
+                except Exception as e:
+                    cli_print.print_error(f"记忆向量化失败: {e}")
+                    self.query_loop.append_cli_result(f"记忆向量化失败: {e}")
                 return True
 
             if sub_cmd in ("compaction", "com"):
@@ -949,6 +987,8 @@ class MyClaudeCLI:
                     )
                 # 清除 token 统计上下文
                 chat_llm.set_context()
+                # 记忆已变更，自动同步向量化
+                self._auto_embedding()
                 return True
 
             elif sub_cmd in ("evolution", "evo"):
@@ -1126,6 +1166,8 @@ class MyClaudeCLI:
                     )
                 # 清除 token 统计上下文
                 chat_llm.set_context()
+                # 记忆已变更，自动同步向量化
+                self._auto_embedding()
                 return True
 
             elif sub_cmd in ("extract", "ext"):
@@ -1291,6 +1333,8 @@ class MyClaudeCLI:
                 )
                 # 清除 token 统计上下文
                 chat_llm.set_context()
+                # 记忆已变更，自动同步向量化
+                self._auto_embedding()
                 return True
 
             elif sub_cmd == "show":
@@ -1375,21 +1419,42 @@ class MyClaudeCLI:
                 return True
 
             elif sub_cmd in ("remove", "rm"):
-                # /mem remove | /mem rm — 清除所有持久化记忆（Layer 1 + 元数据）
+                # /mem remove | /mem rm — 清除所有持久化记忆（Layer 1 + 元数据 + 向量索引）
                 # 注意：不删除 raw_memory/ 目录下的 MD 会话日志文件（由用户自行管理）
+                from pathlib import Path as _P
                 stats = self.query_loop.clear_memory()
+
+                # 删除向量化索引文件及 ID 映射 sidecar
+                _index_path = _P("D:/AI/MyClaude/memory_storage/memory_ex/memory/memory.index")
+                _index_ids_path = _P("D:/AI/MyClaude/memory_storage/memory_ex/memory/memory.index.ids.json")
+                _index_deleted = False
+                for _p in (_index_path, _index_ids_path):
+                    if _p.exists():
+                        try:
+                            _p.unlink()
+                            _index_deleted = True
+                        except Exception:
+                            pass
+
                 if not stats:
-                    cli_print.print_info("当前没有记忆。")
-                    self.query_loop.append_cli_result("清除记忆：当前没有记忆。")
+                    _msg = "当前没有记忆。"
+                    if _index_deleted:
+                        _msg += " 向量索引已清除。"
+                    cli_print.print_info(_msg)
+                    self.query_loop.append_cli_result(f"清除记忆：当前没有记忆。向量索引已清除: {_index_deleted}")
                 elif "total" in stats and len(stats) == 1:
-                    cli_print.print_info(f"已清除所有记忆（共 {stats['total']} 条）。")
-                    self.query_loop.append_cli_result(f"已清除所有记忆（共 {stats['total']} 条）。")
+                    _msg = f"已清除所有记忆（共 {stats['total']} 条）。"
+                    if _index_deleted:
+                        _msg += " 向量索引已清除。"
+                    cli_print.print_info(_msg)
+                    self.query_loop.append_cli_result(f"已清除所有记忆（共 {stats['total']} 条）。向量索引已清除: {_index_deleted}")
                 else:
                     layer1_entries = stats.get("layer1_entries", 0)
 
                     lines = [
                         "已清除所有记忆，详细统计如下：",
                         f"  正式记忆（Layer 1）: {layer1_entries} 条",
+                        f"  向量索引: {'已清除' if _index_deleted else '无索引文件'}",
                         "  注意: MD 会话日志文件未删除（由用户自行管理）",
                     ]
                     cli_print.print_info("\n".join(lines))
@@ -1404,6 +1469,8 @@ class MyClaudeCLI:
                     "  /mem compaction — 整理记忆 (简写 /mem com)\n"
                     "  /mem evolution  — 进化记忆 (简写 /mem evo)\n"
                     "  /mem retrieve <信息>  — 记忆召回测试 (简写 /mem rt)\n"
+                    "  /mem embedding  — 记忆向量化 (简写 /mem emb)\n"
+                    "  /mem emb rt <信息>    — 向量召回测试\n"
                     "  /mem remove     — 清除所有记忆 (简写 /mem rm)"
                 )
                 return True
@@ -1583,6 +1650,25 @@ class MyClaudeCLI:
 
         return True
 
+
+    def _auto_embedding(self):
+        """在记忆变更操作（extract/compaction/evolution）完成后自动执行向量化同步。
+
+        将当前 MEMORY.md 全量重新向量化，重建 FAISS 索引，
+        确保向量索引与记忆内容保持一致。
+        """
+        try:
+            from src.memory_ex.embedding.memory_embedding import run_embedding
+            from src.memory_ex.embedding.memory_retrieval import reset_store
+            cli_print.print_info("自动同步记忆向量化...")
+            emb_result = run_embedding()
+            # 重置模块级缓存，确保下次检索时从磁盘重新加载新索引
+            reset_store()
+            if emb_result:
+                self.query_loop.append_cli_result(emb_result)
+        except Exception as e:
+            cli_print.print_error(f"自动向量化失败: {e}")
+            self.query_loop.append_cli_result(f"自动向量化失败: {e}")
 
     def _get_bug_base(self):
         """获取或初始化 BugBase 实例。"""
