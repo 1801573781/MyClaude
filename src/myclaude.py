@@ -20,13 +20,68 @@ logging.basicConfig(
 )
 
 
-from src.cli.mycli import MyClaudeCLI  # noqa 402
+import time
+import threading
+
+# MyClaudeCLI 的导入延迟到 main() 内部，以便在导入前显示欢迎页面和启动动画
+
+
+def _print_welcome():
+    """打印欢迎页面（纯 print，不依赖任何业务模块）。"""
+    title = "MyClaude Code - AI 编程助手"
+    # 计算标题的终端显示宽度：ASCII=1列，中文字符=2列
+    title_width = sum(2 if ord(c) > 127 else 1 for c in title)
+    inner_width = max(46, title_width + 20)  # 两侧各10空格
+    print()
+    print(f"  ╔{'═' * inner_width}╗")
+    print(f"  ║{' ' * inner_width}║")
+    print(f"  ║{' ' * 10}{title}{' ' * (inner_width - 10 - title_width)}║")
+    print(f"  ║{' ' * inner_width}║")
+    print(f"  ╚{'═' * inner_width}╝")
+    print()
+
+
+def _start_spinner(message="正在启动中，请等待几秒..."):
+    """启动一个 spinner 线程，返回 (停止事件, 线程对象, 输出锁)。"""
+    is_tty = sys.stdout.isatty()
+    spinner_chars = ('⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏')
+    all_done = threading.Event()
+    output_lock = threading.Lock()
+    start_time = time.time()
+
+    def _spin():
+        i = 0
+        while not all_done.is_set():
+            char = spinner_chars[i % len(spinner_chars)]
+            with output_lock:
+                if all_done.is_set():
+                    break
+                if is_tty:
+                    elapsed = int(time.time() - start_time)
+                    msg = f"  {char} {message} ({elapsed}s)"
+                    sys.stdout.write(f"\r{msg.ljust(70)}")
+                    sys.stdout.flush()
+            time.sleep(0.15)
+            i += 1
+
+    thread = threading.Thread(target=_spin, daemon=True)
+    thread.start()
+    return all_done, thread, output_lock
+
+
+def _stop_spinner(all_done, thread, output_lock):
+    """停止 spinner 线程并清除行。"""
+    all_done.set()
+    thread.join(timeout=1.0)
+    if sys.stdout.isatty():
+        with output_lock:
+            sys.stdout.write(f"\r{' ' * 70}\r")
+            sys.stdout.flush()
 
 
 def main():
     """主函数"""
     import argparse
-    import sys
 
     parser = argparse.ArgumentParser(description="MyClaude Code CLI")
 
@@ -71,12 +126,28 @@ def main():
         print("暂时不支持此类角色，程序退出。")
         sys.exit(1)
 
-    cli = MyClaudeCLI(role=args.role)
-
+    # 测试模式：跳过欢迎页面和 spinner，直接初始化
     if args.test_mode:
+        from src.cli.mycli import MyClaudeCLI
+        cli = MyClaudeCLI(role=args.role)
         cli.run_test_mode(args.prompt, test_output_path=args.test_output)
-    else:
-        cli.run()
+        return
+
+    # 交互模式：先显示欢迎页面，再在 spinner 动画下加载模块
+    _print_welcome()
+
+    spinner_done, spinner_thread, spinner_lock = _start_spinner()
+
+    try:
+        from src.cli.mycli import MyClaudeCLI
+        cli = MyClaudeCLI(role=args.role)
+    finally:
+        _stop_spinner(spinner_done, spinner_thread, spinner_lock)
+
+    print("  ✅ 启动完毕，欢迎使用 MyClaude")
+    print()
+
+    cli.run()
 
 
 if __name__ == "__main__":
