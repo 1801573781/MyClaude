@@ -259,6 +259,10 @@ class MemoryExtractor:
         if not pending_files:
             return {"skipped": True, "reason": "所有MD日志已提取", "processed": 0}
 
+        # 每轮提取开始时重置雪崩计数器和错误状态
+        self._consecutive_timeout_count = 0
+        self._last_error_reason = None
+
         total_extracted = 0
         total_processed = 0
         total_filtered = 0
@@ -266,6 +270,7 @@ class MemoryExtractor:
         total_empty_response = 0
         total_error = 0
         total_llm_none = 0
+        total_skipped = 0
         details: List[Dict[str, Any]] = []
 
         total_files = len(pending_files)
@@ -301,14 +306,14 @@ class MemoryExtractor:
             # 原始内容完整送 LLM 提取（CLI 段中也可能包含有价值信息）
             content = raw_content
 
-            if self._consecutive_timeout_count >= 2:
-                logger.warning("连续 2 次提取超时，跳过本轮提取")
+            if self._consecutive_timeout_count >= 3:
+                logger.warning("连续 3 次提取超时，跳过本轮剩余文件")
                 details.append({
                     "id": md_file.name, "query_id": 0, "turn": 0,
                     "user_input": user_input, "content_preview": content_preview,
-                    "action": "超时跳过", "reason": "连续 2 次 LLM 提取超时，雪崩防护",
+                    "action": "雪崩跳过", "reason": "连续 3 次 LLM 提取超时，雪崩防护",
                 })
-                total_timeout += 1
+                total_skipped += 1
                 continue
 
             session_id = md_file.name
@@ -392,6 +397,7 @@ class MemoryExtractor:
             "empty_response": total_empty_response,
             "error": total_error,
             "llm_none": total_llm_none,
+            "skipped": total_skipped,
             "details": details,
         }
 
@@ -490,15 +496,15 @@ class MemoryExtractor:
         try:
             response = self._call_llm_with_timeout(prompt, timeout=self._timeout)
             if response is None:
-                # 超时
-                self._consecutive_timeout_count += 1
+                # 仅超时才递增雪崩计数器，空响应/异常不触发雪崩
+                if self._last_error_reason == "timeout":
+                    self._consecutive_timeout_count += 1
                 return None
 
             self._consecutive_timeout_count = 0
             return self._parse_extraction_response(response)
         except Exception as e:
             logger.error(f"LLM 提取失败: {e}")
-            self._consecutive_timeout_count += 1
             return None
 
     def _call_llm_with_timeout(self, prompt: str, timeout: int = 120) -> Optional[str]:

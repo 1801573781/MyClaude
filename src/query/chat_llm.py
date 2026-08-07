@@ -232,7 +232,10 @@ def simple_chat(prompt: str, temperature: float = 0.3, max_tokens: int = 1024,
             stream=False,
             timeout=timeout,
         )
-        # 刻意不传 extra_body，避免 thinking 模式消耗 token 导致 content 为空
+        # 显式禁用 thinking 模式：GLM coding 端点默认启用 thinking，
+        # 非流式调用中 thinking 会消耗全部 max_tokens 导致 content 为空
+        if extra_body and hasattr(extra_body, 'thinking'):
+            api_kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
 
         response = client.chat.completions.create(**api_kwargs)
         choice = response.choices[0]
@@ -356,9 +359,31 @@ def rerank_simple_chat(prompt: str, temperature: float = 0.1,
             stream=False,
             timeout=timeout,
         )
-        # 刻意不传 extra_body，与 simple_chat 保持一致（避免 thinking 模式消耗 token）
+        # 显式禁用 thinking 模式：GLM coding 端点默认启用 thinking，
+        # 非流式调用中 thinking 会消耗全部 max_tokens 导致 content 为空
+        if extra_body and hasattr(extra_body, 'thinking'):
+            api_kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
 
         response = rerank_client.chat.completions.create(**api_kwargs)
+
+        # 记录 token 统计：精排模型消耗的 token 也需统计
+        # 使用模块级上下文（由 query_loop 或 CLI 在调用前通过 set_context 设置）
+        # turn 追加 -rerank 后缀以区分精排调用与普通调用
+        if response.usage:
+            from src.utility.token_statistics import record_token_usage
+            effective_turn = f"{_context_turn}-rerank" if _context_turn else "rerank"
+            record_token_usage(
+                model_name=rerank_model,
+                prompt_tokens=response.usage.prompt_tokens or 0,
+                cached_tokens=getattr(
+                    getattr(response.usage, 'prompt_tokens_details', None),
+                    'cached_tokens', 0
+                ) or 0,
+                completion_tokens=response.usage.completion_tokens or 0,
+                query=_context_query,
+                turn=effective_turn,
+            )
+
         return response.choices[0].message.content or ""
     except Exception as e:
         logger.error(f"精排调用失败: {e}")

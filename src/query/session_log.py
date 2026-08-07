@@ -375,6 +375,10 @@ class SessionLog:
                 parts.append("\n".join(tool_parts))
             elif "todo_snapshot" in item:
                 parts.append(item["todo_snapshot"])
+            elif "memory_retrieval" in item:
+                retrieval_result = item["memory_retrieval"]
+                if hasattr(retrieval_result, "to_log_text"):
+                    parts.append(retrieval_result.to_log_text())
 
         return "\n\n".join(parts)
 
@@ -457,6 +461,13 @@ class SessionLog:
             lines.append("### 📋 Todo 快照")
             lines.append("")
             lines.append(item["todo_snapshot"])
+
+        if "memory_retrieval" in item:
+            retrieval_result = item["memory_retrieval"]
+            if hasattr(retrieval_result, "to_log_text"):
+                lines.append("### 🧠 记忆召回")
+                lines.append("")
+                lines.append(retrieval_result.to_log_text())
 
         return "\n".join(lines)
 
@@ -543,6 +554,15 @@ class SessionLog:
             "tool_name": tool_name,
             "exec_result": result
         }
+        self.log_dict_info(dict_info)
+
+    def log_memory_retrieval(self, retrieval_result):
+        """记录记忆召回的完整过程（含策略和各阶段）到 Turn 缓冲。
+
+        Args:
+            retrieval_result: RetrievalResult 对象，包含策略信息、各阶段记录和最终结果
+        """
+        dict_info = {"memory_retrieval": retrieval_result}
         self.log_dict_info(dict_info)
 
     def log_todo_snapshot(self, todo_list):
@@ -778,14 +798,15 @@ class SessionLog:
 
 
     def _reorder_sections(self, sections):
-        """确保用户输入在记忆召回之前展示。
+        """确保用户输入（含工具结果）在记忆召回之前展示。
         
         记忆召回是基于用户输入触发的，逻辑上应先展示用户输入，再展示记忆召回。
+        tool_result 在日志中显示为"👤 用户输入"，也作为用户输入参与排序。
         """
         user_idx = None
         memory_idx = None
         for i, (name, _) in enumerate(sections):
-            if name == "user" and user_idx is None:
+            if name in ("user", "tool_result") and user_idx is None:
                 user_idx = i
             if name == "memory_context" and memory_idx is None:
                 memory_idx = i
@@ -801,6 +822,18 @@ class SessionLog:
         细分 user 消息为：项目上下文、项目目录树、用户输入。
         将 system 消息中的 Installed Skills 拆分为独立 section。
         忽略纯时间戳条目（None section），合并连续同类型 section。"""
+        # 预扫描：检测是否存在 memory_retrieval 对象（含嵌套列表）
+        def _has_memory_retrieval(item_list):
+            for item in item_list:
+                if isinstance(item, list):
+                    if _has_memory_retrieval(item):
+                        return True
+                elif isinstance(item, dict) and "memory_retrieval" in item:
+                    return True
+            return False
+
+        has_memory_retrieval = _has_memory_retrieval(items)
+
         sections = []
         current_section = None
         current_items = []
@@ -870,6 +903,9 @@ class SessionLog:
                     # CLI 命令/结果已独立记录，跳过不创建 section
                     if new_section == "cli_command":
                         return
+                    # 如果已有 memory_retrieval 对象，跳过 user 类型的记忆注入消息
+                    if new_section == "memory_context" and has_memory_retrieval:
+                        return
                 elif role == "assistant":
                     new_section = "assistant"
                 elif role == "system":
@@ -902,7 +938,11 @@ class SessionLog:
                         current_items.append(item)
                         return
                     # 记忆注入内容（role="system" 的 MEMORY_INJECTION）→ memory_context
+                    # 但如果已有 memory_retrieval 对象（结构化召回日志），则跳过注入文本，
+                    # 避免同一 Turn 中出现重复的"记忆召回"小节
                     if isinstance(content, str) and content.startswith("[MEMORY_INJECTION_v1]"):
+                        if has_memory_retrieval:
+                            return  # 跳过，由 memory_retrieval 对象统一展示
                         new_section = "memory_context"
                         if current_section != new_section:
                             _flush_section()
@@ -980,6 +1020,12 @@ class SessionLog:
                     current_section = "todo"
                     current_items = []
                 current_items.append(item)
+            elif "memory_retrieval" in item:
+                if current_section != "memory_context":
+                    _flush_section()
+                    current_section = "memory_context"
+                    current_items = []
+                current_items.append(item)
 
         for item in items:
             process_item(item)
@@ -991,7 +1037,20 @@ class SessionLog:
 
     def _build_memory_section_html(self, items) -> str:
         """为记忆召唤小节构建 HTML。
-        将系统提醒前缀与各条记忆拆分，每条记忆生成带 📌 父节点的独立折叠块。"""
+        将系统提醒前缀与各条记忆拆分，每条记忆生成带 📌 父节点的独立折叠块。
+        若存在 memory_retrieval 对象，优先使用其结构化日志文本。"""
+        # 优先检查 memory_retrieval 对象
+        retrieval_result = None
+        for item in items:
+            if isinstance(item, dict) and "memory_retrieval" in item:
+                retrieval_result = item["memory_retrieval"]
+                break
+
+        if retrieval_result is not None and hasattr(retrieval_result, "to_log_text"):
+            log_text = retrieval_result.to_log_text()
+            escaped = log_text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+            return f'<pre>{escaped}</pre>'
+
         # 提取记忆内容
         content = ""
         for item in items:
@@ -1565,6 +1624,14 @@ class SessionLog:
             lines.append(f"### 📋 Todo 快照")
             lines.append("")
             lines.append(item["todo_snapshot"])
+
+        # 记忆召回完整过程
+        if "memory_retrieval" in item:
+            retrieval_result = item["memory_retrieval"]
+            if hasattr(retrieval_result, "to_log_text"):
+                lines.append("### 🧠 记忆召回")
+                lines.append("")
+                lines.append(retrieval_result.to_log_text())
 
         return "\n".join(lines)
 

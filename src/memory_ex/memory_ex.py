@@ -161,6 +161,9 @@ class MemoryEx(MemoryExInterface):
         # LLM 调用函数（延迟注入）
         self._llm_chat_fn = None
 
+        # 最近一次召回结果（供 query_loop 获取策略信息用于日志和 CLI 显示）
+        self._last_retrieval_result = None
+
         logger.info("MemoryEx 初始化完成")
 
     def set_llm_chat_fn(self, fn):
@@ -174,6 +177,17 @@ class MemoryEx(MemoryExInterface):
         self._compactor.set_llm_chat_fn(fn)
         self._evolver.set_llm_chat_fn(fn)
         self._retriever.set_llm_chat_fn(fn)
+
+    def get_last_retrieval_result(self):
+        """返回最近一次召回的 RetrievalResult 对象。
+
+        供 query_loop 在 get_context_for_query 后获取策略信息和各阶段记录，
+        用于日志记录和 CLI 显示。
+
+        Returns:
+            RetrievalResult 对象，初始为 None
+        """
+        return self._last_retrieval_result
 
     def set_progress_callback(self, callback):
         """注入进化进度回调函数。"""
@@ -263,19 +277,22 @@ class MemoryEx(MemoryExInterface):
         recall_query = self._compress_intent(query)
 
         # LLM 预检索筛选（排除当前 session 的记忆）
-        entries = self._retriever.retrieve_for_query(
+        retrieval_result = self._retriever.retrieve_for_query_with_scores(
             recall_query, exclude_session_id=exclude_session_id
         )
+        self._last_retrieval_result = retrieval_result
+
+        entries = retrieval_result.final_items if retrieval_result else []
         if not entries:
             return ""
 
         return self._injector.format_for_injection(entries, query)
 
-    def retrieve_detailed(self, query: str, exclude_session_id: str = "") -> List[Dict]:
+    def retrieve_detailed(self, query: str, exclude_session_id: str = "") -> "RetrievalResult":
         """执行带分数的记忆召回，供 CLI /mem rt 展示和记录日志。
 
-        与 get_context_for_query() 使用相同的召回链路（意图压缩 + 两阶段召回），
-        但返回每条记忆的完整信息和 LLM 评分，便于 CLI 打印分数
+        与 get_context_for_query() 使用相同的召回链路（意图压缩 + 策略召回），
+        但返回包含各阶段记录的 RetrievalResult 对象，便于 CLI 打印完整召回过程
         并将召回内容完整记录到日志（md 和 html）。
 
         Args:
@@ -283,34 +300,24 @@ class MemoryEx(MemoryExInterface):
             exclude_session_id: 需要排除的 session_id（当前会话）
 
         Returns:
-            召回结果列表，每个元素含 id, score, tags, content, session_id。
-            空列表表示无相关记忆或召回失败。
+            RetrievalResult 对象，包含策略信息、各阶段记录和最终结果。
         """
         layer1_content = self._store.read_layer1()
         if not layer1_content:
-            return []
+            from src.memory_ex.memory_retriever import RetrievalResult
+            return RetrievalResult(
+                strategy=self._retriever._strategy,
+                strategy_desc="",
+            )
 
         # 意图压缩：超过300字时调用 LLM 压缩，消除噪声
         recall_query = self._compress_intent(query)
 
-        # 带分数的两阶段召回（排除当前 session 的记忆）
-        ranked = self._retriever.retrieve_for_query_with_scores(
+        # 带完整阶段记录的策略召回（排除当前 session 的记忆）
+        result = self._retriever.retrieve_for_query_with_scores(
             recall_query, exclude_session_id=exclude_session_id
         )
-        if not ranked:
-            return []
-
-        results = []
-        for entry, score in ranked:
-            results.append({
-                "id": entry.get("id", ""),
-                "score": score,
-                "tags": entry.get("tags", []),
-                "content": entry.get("content", ""),
-                "raw_line": entry.get("raw_line", ""),
-                "session_id": entry.get("session_id", ""),
-            })
-        return results
+        return result
 
     def _compress_intent(self, query: str) -> str:
         """压缩用户意图到300字以内，消除CLI输出示例等噪声。

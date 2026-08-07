@@ -667,12 +667,14 @@ def print_tool_result(tool_name: str, content: str, params: dict | None = None):
     if not content:
         console.print("    [yellow]⚠ 无输出[/yellow]")
         _append_html('<p style="margin:4px 0 4px 40px; color:#f59e0b;">⚠ 无输出</p>')
+        console.print()
         return
 
     # 对于 file_view、use_skill、excel_view，不打印详细内容，只输出简洁提示
     if tool_name in ("file_view", "use_skill", "excel_view"):
         console.print(f"    [green]✓[/green] [{tool_name}]工具执行结果：详细内容略", markup=True)
         _append_html(f'<p style="margin:4px 0 4px 40px; color:#4ade80;">✓ [{tool_name}] 工具执行结果</p>')
+        console.print()
         return
 
     # 对于 get_file_context，解析摘要和Bug召回数量，简洁显示
@@ -686,6 +688,7 @@ def print_tool_result(tool_name: str, content: str, params: dict | None = None):
             bug_hint = f"召回 {bug_count} 个相关 Bug"
         console.print(f"    [green]✓[/green] [get_file_context] 函数摘要已获取，{bug_hint}", markup=True)
         _append_html(f'<p style="margin:4px 0 4px 40px; color:#4ade80;">✓ [get_file_context] 函数摘要已获取，{bug_hint}</p>')
+        console.print()
         return
 
     # 对于 bash openspec 命令，只打印简略提示（输出通常很长，且对用户无直接价值）
@@ -695,6 +698,7 @@ def print_tool_result(tool_name: str, content: str, params: dict | None = None):
         if cmd_str.startswith("openspec"):
             console.print(f"    [green]✓[/green] [bash]工具执行结果：略", markup=True)
             _append_html(f'<p style="margin:4px 0 4px 40px; color:#4ade80;">✓ [bash] 工具执行结果（openspec 命令，已折叠）</p>')
+            console.print()
             return
 
     # 其他工具正常打印
@@ -705,6 +709,7 @@ def print_tool_result(tool_name: str, content: str, params: dict | None = None):
                      f'<pre style="background:#2D2D3F; margin:4px 0 4px 40px; padding:8px; '
                      f'border-radius:4px; color:#e2e8f0; white-space:pre-wrap; font-family:inherit; '
                      f'font-size:13px;">{html_escape(content)}</pre>')
+        console.print()
     else:
         lines = content.count("\n") + 1
         console.print(f"    [green]✓[/green] [dim]({lines} 行，共 {len(content)} 字符)[/dim]", markup=True)
@@ -715,6 +720,7 @@ def print_tool_result(tool_name: str, content: str, params: dict | None = None):
                      f'<pre style="background:#2D2D3F; margin:4px 0 4px 40px; padding:8px; '
                      f'border-radius:4px; color:#e2e8f0; white-space:pre-wrap; font-family:inherit; '
                      f'font-size:13px;">{html_escape(content)}</pre>')
+        console.print()
 
 
 # 存储所有轮次的推理过程内容，供展开/折叠命令循环访问
@@ -918,6 +924,152 @@ def print_todo_list(todo_list):
         f'{"".join(todo_html_lines)}'
         f'</div>'
     )
+
+
+def print_memory_recall(retrieval_result):
+    """打印日常交流的记忆召回结果（简洁格式，仅显示策略和最终结果）。
+
+    Args:
+        retrieval_result: RetrievalResult 对象
+    """
+    if retrieval_result is None:
+        return
+
+    strategy = getattr(retrieval_result, "strategy", "unknown")
+    strategy_desc = getattr(retrieval_result, "strategy_desc", "")
+    final_items = getattr(retrieval_result, "final_items", [])
+    final_count = getattr(retrieval_result, "final_count", 0)
+
+    if final_count == 0:
+        console.print(f"  [dim]🧠 记忆召回: 无相关记忆 (策略: {strategy_desc})[/dim]")
+        console.print()
+        _append_html(f'<p style="color:#94a3b8;">🧠 记忆召回: 无相关记忆 (策略: {html_escape(strategy_desc)})</p>')
+        return
+
+    # 简洁格式：仅打印策略行，不打印具体记忆条目
+    console.print(f"  [dim]🧠 记忆召回 策略: {strategy_desc} ({strategy}) | 召回: {final_count} 条[/dim]")
+    console.print()
+
+    _append_html(
+        f'<div style="margin:8px 0; padding:8px; border-left:3px solid #7c3aed;">'
+        f'<div style="color:#7c3aed; font-weight:bold;">🧠 记忆召回 策略: {html_escape(strategy_desc)} ({html_escape(strategy)}) | 召回: {final_count} 条</div>'
+        f'</div>'
+    )
+
+
+def print_memory_recall_detailed(retrieval_result, query: str = ""):
+    """打印 /mem rt 命令的记忆召回完整过程（含所有阶段）。
+
+    Args:
+        retrieval_result: RetrievalResult 对象
+        query: 查询文本（可选，用于显示）
+    """
+    if retrieval_result is None:
+        console.print("[yellow]无召回结果[/yellow]")
+        return
+
+    strategy = getattr(retrieval_result, "strategy", "unknown")
+    strategy_desc = getattr(retrieval_result, "strategy_desc", "")
+    stages = getattr(retrieval_result, "stages", [])
+    final_items = getattr(retrieval_result, "final_items", [])
+    final_count = getattr(retrieval_result, "final_count", 0)
+
+    # 头部
+    sep = "=" * 50
+    console.print(f"\n[bold cyan]{sep}[/bold cyan]")
+    console.print(f"  [bold]记忆召回测试[/bold]")
+    console.print(f"  [bold]策略: {strategy_desc} ({strategy})[/bold]")
+    if query:
+        console.print(f"  查询: \"{escape(query)}\"")
+    console.print(f"[bold cyan]{sep}[/bold cyan]")
+
+    # 各阶段
+    for i, stage in enumerate(stages, 1):
+        stage_name = getattr(stage, "stage_name", "")
+        stage_items = getattr(stage, "items", [])
+        stage_count = getattr(stage, "count", 0)
+
+        console.print(f"\n  [bold]── [{i}] {stage_name} ({stage_count}条) ──[/bold]")
+        for j, item in enumerate(stage_items, 1):
+            score = item.get("score", "N/A")
+            content = item.get("content", "")
+            entry_id = item.get("id", "")
+            session_id = item.get("session_id", "")
+            if isinstance(score, float):
+                score_str = f"{score:.4f}"
+            else:
+                score_str = str(score)
+            console.print(f"  [{j}] 分数: {score_str}")
+            if entry_id:
+                console.print(f"  (id={entry_id})")
+            console.print(f"  - {escape(content)}")
+            if session_id:
+                console.print(f"  (session={session_id})")
+            console.print()
+
+    # 最终返回
+    console.print(f"\n  [bold green]── 最终返回 ({final_count}条) ──[/bold green]")
+    for j, item in enumerate(final_items, 1):
+        score = item.get("score", "N/A")
+        content = item.get("content", "")
+        entry_id = item.get("id", "")
+        session_id = item.get("session_id", "")
+        if isinstance(score, float):
+            score_str = f"{score:.4f}"
+        else:
+            score_str = str(score)
+        console.print(f"  [{j}] 分数: {score_str}")
+        if entry_id:
+            console.print(f"  (id={entry_id})")
+        console.print(f"  - {escape(content)}")
+        if session_id:
+            console.print(f"  (session={session_id})")
+        console.print()
+
+    console.print(f"[bold cyan]{sep}[/bold cyan]\n")
+
+    # HTML 缓冲区
+    html_parts = [f'<div style="margin:12px 0; border:1px solid #7c3aed; border-radius:8px; padding:12px;">']
+    html_parts.append(f'<div style="color:#7c3aed; font-weight:bold; margin-bottom:8px;">记忆召回测试</div>')
+    html_parts.append(f'<div style="color:#e2e8f0;">策略: {html_escape(strategy_desc)} ({html_escape(strategy)})</div>')
+    if query:
+        html_parts.append(f'<div style="color:#94a3b8;">查询: "{html_escape(query)}"</div>')
+    html_parts.append('<hr style="border:none; border-top:1px solid #e0e0e0; margin:8px 0;">')
+
+    for i, stage in enumerate(stages, 1):
+        stage_name = getattr(stage, "stage_name", "")
+        stage_items = getattr(stage, "items", [])
+        stage_count = getattr(stage, "count", 0)
+        html_parts.append(f'<div style="color:#f59e0b; font-weight:bold; margin-top:8px;">── [{i}] {html_escape(stage_name)} ({stage_count}条) ──</div>')
+        for j, item in enumerate(stage_items, 1):
+            score = item.get("score", "N/A")
+            content = item.get("content", "")
+            entry_id = item.get("id", "")
+            session_id = item.get("session_id", "")
+            score_str = f"{score:.4f}" if isinstance(score, float) else str(score)
+            html_parts.append(f'<div style="margin:4px 0 4px 16px;">[{j}] 分数: {score_str}</div>')
+            if entry_id:
+                html_parts.append(f'<div style="margin:0 0 0 16px; color:#94a3b8; font-size:0.9em;">(id={html_escape(entry_id)})</div>')
+            html_parts.append(f'<div style="margin:0 0 4px 16px;">- {html_escape(content)}</div>')
+            if session_id:
+                html_parts.append(f'<div style="margin:0 0 4px 16px; color:#94a3b8; font-size:0.9em;">(session={html_escape(session_id)})</div>')
+
+    html_parts.append(f'<div style="color:#4ade80; font-weight:bold; margin-top:8px;">── 最终返回 ({final_count}条) ──</div>')
+    for j, item in enumerate(final_items, 1):
+        score = item.get("score", "N/A")
+        content = item.get("content", "")
+        entry_id = item.get("id", "")
+        session_id = item.get("session_id", "")
+        score_str = f"{score:.4f}" if isinstance(score, float) else str(score)
+        html_parts.append(f'<div style="margin:4px 0 4px 16px;">[{j}] 分数: {score_str}</div>')
+        if entry_id:
+            html_parts.append(f'<div style="margin:0 0 0 16px; color:#94a3b8; font-size:0.9em;">(id={html_escape(entry_id)})</div>')
+        html_parts.append(f'<div style="margin:0 0 4px 16px;">- {html_escape(content)}</div>')
+        if session_id:
+            html_parts.append(f'<div style="margin:0 0 4px 16px; color:#94a3b8; font-size:0.9em;">(session={html_escape(session_id)})</div>')
+
+    html_parts.append('</div>')
+    _append_html(''.join(html_parts))
 
 
 def get_input() -> str:

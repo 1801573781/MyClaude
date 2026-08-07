@@ -120,13 +120,20 @@ def run_retrieval(query: str, top_k: int = None):
         query: 用户输入的检索信息
         top_k: 返回的候选条数上限，None 时从配置文件读取 vector_top_k
     """
-    # 从配置文件读取向量粗排参数
+    # 从配置文件读取向量粗排参数（支持嵌套 vector 配置和扁平配置）
     if top_k is None:
         try:
             from src.utility.config_loader import global_cfg
             retrieval_cfg = global_cfg.memory_ex.retrieval
-            top_k = getattr(retrieval_cfg, 'vector_top_k', 10)
-            score_threshold = getattr(retrieval_cfg, 'vector_score_threshold', 0.0)
+            # 优先读取嵌套配置 vector.top_k / vector.score_threshold
+            vector_cfg = getattr(retrieval_cfg, 'vector', None)
+            if vector_cfg is not None:
+                top_k = int(getattr(vector_cfg, 'top_k', 10))
+                score_threshold = float(getattr(vector_cfg, 'score_threshold', 0.0))
+            else:
+                # 回退到扁平配置（兼容旧版）
+                top_k = int(getattr(retrieval_cfg, 'vector_top_k', 10))
+                score_threshold = float(getattr(retrieval_cfg, 'vector_score_threshold', 0.0))
         except Exception:
             top_k = 10
             score_threshold = 0.0
@@ -156,16 +163,37 @@ def run_retrieval(query: str, top_k: int = None):
             lines.append("")
         score = r['score']
         rid = r.get("id", "")
-        # Strip trailing (id=xxx) from text to avoid duplicate display
+        # Strip trailing (id=xxx) and (session=xxx) from text to avoid duplicate display
         text = re.sub(r'\s*\(id=[^)]+\)\s*$', '', r['text'])
+        # Extract session from trailing (session=xxx) before stripping it
+        session_match = re.search(r'\(session=([^)]+)\)\s*$', text)
+        session_id = session_match.group(1) if session_match else ""
+        text = re.sub(r'\s*\(session=[^)]+\)\s*$', '', text)
 
         lines.append(f"  [{i + 1}] 分数: {score:.4f}")
         if rid:
             lines.append(f"  (id={rid})")
         lines.append(f"  {text}")
+        if session_id:
+            lines.append(f"  (session={session_id})")
 
     if actual_count < top_k:
-        lines.append(f"注意：期望召回 {top_k} 条，实际召回 {actual_count} 条（索引中记忆总数不足或相似度较低）。")
+        try:
+            store = _get_store()
+            total_memories = store.ntotal
+        except Exception:
+            total_memories = -1
+
+        if total_memories == 0:
+            reason = "记忆库为空"
+        elif 0 < total_memories < top_k:
+            reason = f"记忆库中记忆总数 {total_memories} 条，少于期望召回数 {top_k} 条"
+        elif score_threshold > 0:
+            reason = f"部分结果相似度低于阈值 {score_threshold} 已被过滤"
+        else:
+            reason = "部分结果相似度较低"
+
+        lines.append(f"注意：期望召回 {top_k} 条，实际召回 {actual_count} 条（{reason}）。")
 
     lines.append(separator)
 

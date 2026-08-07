@@ -76,6 +76,9 @@ class QueryLoop:
         self._pending_memory_recall = False
         self._current_user_input = ""
 
+        # 延迟记忆召回日志：file_view 后触发的召回结果，推迟到下一 Turn 记录
+        self._pending_retrieval_result = None
+
         # file_view 重复查看检测：同一文件在同一 Query 中被查看超过 2 次时提醒 LLM
         self._file_view_counts = {}  # {文件路径: 查看次数}
 
@@ -209,6 +212,7 @@ class QueryLoop:
         self._todo_manager.reset()  # 每次新 Turn 重置 todo 列表
         self._pending_memory_recall = False  # 重置延迟召回标志
         self._current_user_input = ""  # 清空缓存的用户输入
+        self._pending_retrieval_result = None  # 清空延迟召回日志缓存
         self._file_view_counts = {}  # 重置 file_view 重复查看计数器
 
         # 如果有斜杠命令上下文，用命令内容重置 api_messages
@@ -276,6 +280,16 @@ class QueryLoop:
         if turn >= self.max_turns and quit_chat == ChatOrNot.Continue:  # 这种情况表明，实际上LLM并没有找到正确答案，但是，强制退出了
             self._print_info(f"达到最大轮次限制 ({self.max_turns})，强制结束")
         # 否则的话，就是正常退出，这里不用打印任何信息
+
+        # 兜底：如果延迟召回日志还未被消费（如 LLM 在 file_view 后直接输出 done），
+        # 先 flush 当前 Turn，再在新 Turn 中记录召回日志，避免记忆召回出现在触发它的 Turn 中
+        if self._pending_retrieval_result is not None:
+            # 先 flush 当前 Turn，确保当前 Turn 内容被持久化（不含记忆召回）
+            self.session.flush_turn()
+            # 创建新 Turn 来记录延迟召回，确保记忆召回出现在下一 Turn 而非当前 Turn
+            self.session.log_turn(turn + 1)
+            self.session.log_memory_retrieval(self._pending_retrieval_result)
+            self._pending_retrieval_result = None
 
         # 确保最后一个 Turn 的内容被持久化，并关闭当前 Query
         self.session.end_query()
@@ -349,6 +363,12 @@ class QueryLoop:
         # 否则 log_turn 会重置 _turn_buffer，丢弃记忆召回等内容）
         self.session.log_turn(turn)
 
+        # 消费上一 Turn 延迟存储的召回日志（file_view 后触发的召回）
+        # 推迟到当前新 Turn 记录，避免在触发召回的 Turn 中产生重复的"记忆召回"小节
+        if self._pending_retrieval_result is not None:
+            self.session.log_memory_retrieval(self._pending_retrieval_result)
+            self._pending_retrieval_result = None
+
         # 第一轮，需要初始化（init_session 内部有守护，只执行一次）
         if turn == 1:
             self.session.init_session()
@@ -380,23 +400,38 @@ class QueryLoop:
                     chat_llm.set_context()  # 清除上下文
                     self._memory_used = True
 
-                    # 解析检索结果数量，打印 [记忆召回] 信息（即使0条也打印）
-                    recall_count = self._count_recalled(mem_context)
-                    self._print_info(f"[记忆召回] 已召回 {recall_count} 条相关记忆")
+                    # 获取 RetrievalResult 用于日志和 CLI 显示
+                    retrieval_result = None
+                    if hasattr(self._memory, 'get_last_retrieval_result'):
+                        retrieval_result = self._memory.get_last_retrieval_result()
+
+                    # CLI 打印：策略 + 最终结果（简洁格式）
+                    if retrieval_result:
+                        try:
+                            from src.cli import cli_print
+                            cli_print.print_memory_recall(retrieval_result)
+                        except Exception as e:
+                            logger.warning(f"CLI打印记忆召回失败: {e}")
+
+                    # 日志记录：完整召回过程（含各阶段）
+                    if retrieval_result:
+                        self.session.log_memory_retrieval(retrieval_result)
+
+                    # 解析检索结果数量
+                    recall_count = self._count_recalled(mem_context) if mem_context else 0
+                    if not retrieval_result:
+                        self._print_info(f"[记忆召回] 已召回 {recall_count} 条相关记忆")
 
                     if mem_context:
-                        # 仅追加到 api_messages，不写入 session 缓冲区，也不更新哈希。
-                        # 让 log_llm_req 的 _deduplicate_msg_list 自然识别为"新消息"并记录，
-                        # 避免更新哈希后导致 log_llm_req 过滤掉所有消息。
                         self.api_messages.append_micro_info("system", mem_context)
                         logger.debug(f"记忆上下文已注入，长度: {len(mem_context)}")
-                    else:
-                        # 召回为空也追加到 api_messages（与非空召回保持一致），
-                        # 由 log_llm_req 的 _deduplicate_msg_list 统一记录到当前 Turn。
+                    elif not retrieval_result:
+                        # retrieval_result 已通过 log_memory_retrieval 记录，不重复注入
                         self.api_messages.append_micro_info("system", "[MEMORY_INJECTION_v1]\n没有召回到相关记忆\n[召回数: 0]")
                 except Exception as e:
                     chat_llm.set_context()  # 确保异常时也清除上下文
                     logger.warning(f"记忆上下文注入失败: {e}")
+                    self.api_messages.append_micro_info("system", "[MEMORY_INJECTION_v1]\n记忆召回异常，跳过注入\n[召回数: 0]")
 
         # 回退：如果延迟召回仍未触发（LLM 未调用 file_view），用原始用户输入执行召回
         if turn > 1 and self._pending_memory_recall:
@@ -408,20 +443,34 @@ class QueryLoop:
                     self._current_user_input, exclude_session_id=current_session_id
                 )
                 chat_llm.set_context()
-                recall_count = self._count_recalled(mem_context)
-                self._print_info(f"[记忆召回] 已召回 {recall_count} 条相关记忆（回退到用户输入）")
+
+                # 获取 RetrievalResult 用于日志和 CLI 显示
+                retrieval_result = None
+                if hasattr(self._memory, 'get_last_retrieval_result'):
+                    retrieval_result = self._memory.get_last_retrieval_result()
+                if retrieval_result:
+                    try:
+                        from src.cli import cli_print
+                        cli_print.print_memory_recall(retrieval_result)
+                    except Exception as e:
+                        logger.warning(f"CLI打印回退记忆召回失败: {e}")
+                # 延迟到下一 Turn 记录召回日志，避免在当前 Turn 产生重复的"记忆召回"小节
+                if retrieval_result:
+                    self._pending_retrieval_result = retrieval_result
+
+                recall_count = self._count_recalled(mem_context) if mem_context else 0
+                if not retrieval_result:
+                    self._print_info(f"[记忆召回] 已召回 {recall_count} 条相关记忆（回退到用户输入）")
                 if mem_context:
-                    # 仅追加到 api_messages，不写入 session 缓冲区，也不更新哈希。
-                    # 让 log_llm_req 的 _deduplicate_msg_list 自然识别为"新消息"并记录。
                     self.api_messages.append_micro_info("system", mem_context)
                     logger.debug(f"回退记忆上下文已注入，长度: {len(mem_context)}")
-                else:
-                    # 召回为空也追加到 api_messages（与非空召回保持一致），
-                    # 由 log_llm_req 的 _deduplicate_msg_list 统一记录到当前 Turn。
+                elif not retrieval_result:
+                    # retrieval_result 已通过 log_memory_retrieval 记录，不重复注入
                     self.api_messages.append_micro_info("system", "[MEMORY_INJECTION_v1]\n没有召回到相关记忆\n[召回数: 0]")
             except Exception as e:
                 chat_llm.set_context()
                 logger.warning(f"回退记忆上下文注入失败: {e}")
+                self.api_messages.append_micro_info("system", "[MEMORY_INJECTION_v1]\n记忆召回异常，跳过注入\n[召回数: 0]")
 
         # 倒数最后一轮，命令式提醒
         if turn == self.max_turns and self.is_multi_turns:
@@ -730,24 +779,34 @@ class QueryLoop:
                             recall_query, exclude_session_id=current_session_id
                         )
                         chat_llm.set_context()
-                        recall_count = self._count_recalled(mem_context)
-                        self._print_info(f"[记忆召回] 已召回 {recall_count} 条相关记忆（基于文件内容）")
+
+                        # 获取 RetrievalResult 用于日志和 CLI 显示
+                        retrieval_result = None
+                        if hasattr(self._memory, 'get_last_retrieval_result'):
+                            retrieval_result = self._memory.get_last_retrieval_result()
+                        if retrieval_result:
+                            try:
+                                from src.cli import cli_print
+                                cli_print.print_memory_recall(retrieval_result)
+                            except Exception as e:
+                                logger.warning(f"CLI打印延迟记忆召回失败: {e}")
+                        # 延迟到下一 Turn 记录召回日志，避免在当前 Turn 产生重复的"记忆召回"小节
+                        if retrieval_result:
+                            self._pending_retrieval_result = retrieval_result
+
+                        recall_count = self._count_recalled(mem_context) if mem_context else 0
+                        if not retrieval_result:
+                            self._print_info(f"[记忆召回] 已召回 {recall_count} 条相关记忆（基于文件内容）")
                         if mem_context:
-                            # 仅追加到 api_messages，不写入当前 Turn 的 session 缓冲区。
-                            # 也不调用 update_msg_hashes —— 让下一轮 log_llm_req 的
-                            # _deduplicate_msg_list 自然识别为"新消息"并记录到 Turn 2 中。
-                            # 这样记忆召回会出现在 Turn 2（LLM 基于文件内容生成代码的轮次），
-                            # 而不是 Turn 1（仅调用 file_view 的轮次）。
                             self.api_messages.append_micro_info("system", mem_context)
                             logger.debug(f"延迟记忆上下文已注入，长度: {len(mem_context)}")
-                        else:
-                            # 召回为空也追加到 api_messages（与非空召回保持一致），
-                            # 让下一轮 log_llm_req 的 _deduplicate_msg_list 自然记录到 Turn 2，
-                            # 而不是直接写入当前 Turn 1 的 session 缓冲区导致日志位置错误。
+                        elif not retrieval_result:
+                            # retrieval_result 已通过 log_memory_retrieval 记录，不重复注入
                             self.api_messages.append_micro_info("system", "[MEMORY_INJECTION_v1]\n没有召回到相关记忆\n[召回数: 0]")
                     except Exception as e:
                         chat_llm.set_context()
                         logger.warning(f"延迟记忆召回失败: {e}")
+                        self.api_messages.append_micro_info("system", "[MEMORY_INJECTION_v1]\n记忆召回异常，跳过注入\n[召回数: 0]")
 
                 # 收集工具执行信息（用于记忆存储）
                 tool_exec_info.append({

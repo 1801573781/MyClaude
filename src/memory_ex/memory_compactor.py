@@ -273,8 +273,13 @@ class MemoryCompactor:
             id_match = re.search(r"\(id=([^)]+)\)", line)
             entry_id = id_match.group(1) if id_match else ""
 
-            # 移除 id 部分
+            # 提取 session_id
+            session_match = re.search(r"\(session=([^)]+)\)", line)
+            session_id = session_match.group(1) if session_match else ""
+
+            # 移除 id 和 session 部分
             clean_line = re.sub(r"\s*\(id=[^)]+\)", "", line)
+            clean_line = re.sub(r"\s*\(session=[^)]+\)", "", clean_line)
 
             # 提取标签
             tags = re.findall(r"\[([^\]]+)\]", clean_line)
@@ -285,6 +290,7 @@ class MemoryCompactor:
 
             entries.append({
                 "id": entry_id,
+                "session_id": session_id,
                 "tags": tags,
                 "content": content_text,
                 "raw_line": line,
@@ -366,6 +372,39 @@ class MemoryCompactor:
                 # 统计参与合并的总条目数（原始条目 + 候选条目）
                 merged_count += len(merged_from)
 
+                # 为合并后的条目生成新 ID
+                import uuid as _uuid
+                new_id = f"m_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:6]}"
+
+                # 保留第一个有 session_id 的条目的 session_id
+                merged_session_id = entry.get("session_id", "")
+                for _, candidate, _ in merge_candidates:
+                    if not merged_session_id and candidate.get("session_id"):
+                        merged_session_id = candidate["session_id"]
+                        break
+
+                # 标记被合并的旧条目为 merged 状态
+                old_ids = [entry.get("id", "")] + [c.get("id", "") for _, c, _ in merge_candidates]
+                for old_id in old_ids:
+                    if old_id:
+                        self._store.update_metadata_entry(old_id, status="merged")
+
+                # 注册合并后条目的元数据和倒排索引
+                self._store.update_metadata_entry(
+                    new_id,
+                    tags=merged_tags,
+                    status="unprocessed",
+                    is_consumed=False,
+                    is_evolved=False,
+                    created_at=datetime.now().isoformat(),
+                    last_accessed=datetime.now().isoformat(),
+                    access_count=0,
+                    importance_score=None,
+                )
+                self._store.update_inverted_index(new_id, merged_tags, merged_content)
+
+                entry["id"] = new_id
+                entry["session_id"] = merged_session_id
                 entry["content"] = merged_content
                 entry["tags"] = merged_tags
                 entry["raw_line"] = self._format_entry_line(entry)
@@ -422,6 +461,40 @@ class MemoryCompactor:
                     if tag not in all_tags:
                         all_tags.append(tag)
             merged_entry["tags"] = all_tags
+
+            # 为 LLM 合并后的条目生成新 ID
+            import uuid as _uuid
+            new_id = f"m_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:6]}"
+
+            # 保留第一个有 session_id 的条目的 session_id
+            merged_session_id = ""
+            for idx in merged_indices:
+                if entries[idx].get("session_id"):
+                    merged_session_id = entries[idx]["session_id"]
+                    break
+
+            # 标记被合并的旧条目为 merged 状态
+            for idx in merged_indices:
+                old_id = entries[idx].get("id", "")
+                if old_id:
+                    self._store.update_metadata_entry(old_id, status="merged")
+
+            # 注册合并后条目的元数据和倒排索引
+            self._store.update_metadata_entry(
+                new_id,
+                tags=all_tags,
+                status="unprocessed",
+                is_consumed=False,
+                is_evolved=False,
+                created_at=datetime.now().isoformat(),
+                last_accessed=datetime.now().isoformat(),
+                access_count=0,
+                importance_score=None,
+            )
+            self._store.update_inverted_index(new_id, all_tags, merged_content)
+
+            merged_entry["id"] = new_id
+            merged_entry["session_id"] = merged_session_id
             merged_entry["raw_line"] = self._format_entry_line(merged_entry)
 
             # 记录合并详情
@@ -549,6 +622,8 @@ class MemoryCompactor:
         line = f"- {tags_str} {content}".strip()
         if entry.get("id"):
             line += f" (id={entry['id']})"
+        if entry.get("session_id"):
+            line += f" (session={entry['session_id']})"
         return line
 
     def _same_tags(self, tags_a: List[str], tags_b: List[str]) -> bool:

@@ -641,9 +641,20 @@ TREND:
     # ===== 持久化 =====
 
     def _write_evolutions(self, evolutions: List[Dict]) -> None:
-        """将进化结果追加到 Layer 1。"""
+        """将进化结果追加到 Layer 1。
+
+        为每条进化结果生成唯一 ID，写入 Layer 1，并同步更新元数据和倒排索引。
+        进化条目不带 session_id（不属于特定会话）。
+        """
+        import uuid
+
         layer1_content = self._store.read_layer1()
         new_lines = []
+
+        now = datetime.now()
+        timestamp_str = now.strftime("%Y%m%d_%H%M%S")
+        iso_timestamp = now.isoformat()
+        date_str = now.strftime("%Y-%m-%d")
 
         for evo in evolutions:
             evo_type = evo.get("type", "")
@@ -651,16 +662,41 @@ TREND:
             confidence = evo.get("confidence", 0.0)
             sources = evo.get("sources", [])
 
-            # 格式: - [EVOLVED][TYPE] 结论
-            #        来源: Query X, Y | 置信度: 0.XX | 进化时间: YYYY-MM-DD
-            date_str = datetime.now().strftime("%Y-%m-%d")
+            # 生成唯一 ID
+            entry_id = f"evo_{timestamp_str}_{uuid.uuid4().hex[:6]}"
+
             is_hypothesis = confidence < 0.6
             hypothesis_tag = " [HYPOTHESIS]" if is_hypothesis else ""
 
-            line = f"- [EVOLVED][{evo_type}]{hypothesis_tag} {conclusion}"
+            # 格式: - [EVOLVED][TYPE] 结论 (id=xxx)
+            #        来源: ... | 置信度: ... | 进化时间: ...
+            line = f"- [EVOLVED][{evo_type}]{hypothesis_tag} {conclusion} (id={entry_id})"
             line += f"\n  来源: {', '.join(sources[:5])} | 置信度: {confidence:.2f} | 进化时间: {date_str}"
 
             new_lines.append(line)
+
+            # 注册元数据
+            tags = ["EVOLVED", evo_type]
+            if is_hypothesis:
+                tags.append("HYPOTHESIS")
+            self._store.update_metadata_entry(
+                entry_id,
+                tags=tags,
+                status="unprocessed",
+                is_consumed=True,
+                is_evolved=True,
+                created_at=iso_timestamp,
+                last_accessed=iso_timestamp,
+                access_count=0,
+                importance_score=None,
+            )
+
+            # 更新倒排索引
+            self._store.update_inverted_index(
+                entry_id,
+                tags,
+                conclusion,
+            )
 
         if new_lines:
             if layer1_content and layer1_content.strip():

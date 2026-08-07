@@ -118,6 +118,7 @@ class MyClaudeCLI:
         empty_response = result.get('empty_response', 0)
         error = result.get('error', 0)
         llm_none = result.get('llm_none', 0)
+        skipped = result.get('skipped', 0)
         llm_processed = marked_processed - filtered
         llm_extracted = llm_processed - llm_none
         details = result.get('details', [])
@@ -143,6 +144,7 @@ class MyClaudeCLI:
             f"| 提取超时 | {timeout} | LLM 调用超过超时阈值，保留 raw 状态待下次提取 |",
             f"| 空响应 | {empty_response} | LLM 返回空响应（可能因输入过长或内部异常），保留待下次提取 |",
             f"| 调用异常 | {error} | LLM 调用过程发生异常，保留待下次提取 |",
+            f"| 雪崩跳过 | {skipped} | 连续多次超时触发雪崩防护，剩余文件跳过待下次提取 |",
             f"",
             f"## 逐条明细",
             f"",
@@ -811,16 +813,30 @@ class MyClaudeCLI:
                 emb_query = emb_parts[1].strip() if len(emb_parts) > 1 else ""
 
                 if emb_sub == "rt":
-                    # /mem emb rt <信息> — 基于向量相似度召回 top_k 条记忆
+                    # /mem emb rt <信息> — 基于向量相似度召回 top_k 条记忆（仅展示粗排结果）
                     if not emb_query:
                         cli_print.print_error("缺少参数。用法: /mem emb rt <信息>")
                         return True
+
+                    # 显示当前召回策略提示
+                    try:
+                        memory = self.query_loop._memory
+                        retriever = getattr(memory, '_retriever', None)
+                        if retriever:
+                            current_strategy = getattr(retriever, '_strategy', 'unknown')
+                            if current_strategy not in ('coarse_only',):
+                                cli_print.print_blank()
+                                cli_print.print_detail(
+                                    f"[当前策略: {current_strategy}, 此命令仅展示粗排结果]"
+                                )
+                    except Exception:
+                        pass
 
                     from src.memory_ex.embedding.memory_retrieval import run_retrieval
                     try:
                         result_summary = run_retrieval(emb_query)
                         if result_summary:
-                            cli_print.print_info(f"\n{result_summary}")
+                            cli_print.print_info(result_summary)
                             self.query_loop.append_cli_result(result_summary)
                     except FileNotFoundError as e:
                         cli_print.print_error(str(e))
@@ -1129,6 +1145,7 @@ class MyClaudeCLI:
                     reason = result.get('reason', '未知原因')
                     cli_print.print_info(f"记忆进化已跳过: {reason}")
                     self.query_loop.append_cli_result(f"记忆进化已跳过: {reason}")
+                    chat_llm.set_context()
                 else:
                     # 统计信息在 stats 子字典中
                     stats_inner = result.get('stats', {})
@@ -1159,16 +1176,25 @@ class MyClaudeCLI:
                         f"  趋势洞察: {trends} 个\n"
                         f"  详细报告已保存到: {report_path}"
                     )
+                    # 清除 token 统计上下文
+                    chat_llm.set_context()
+                    # 记忆已变更，自动同步向量化
+                    emb_result = self._auto_embedding()
+                    # 合并进化结果和向量化结果为一条日志（多行格式，与 CLI 打印一致）
                     self.query_loop.append_cli_result(
-                        f"记忆进化完成: 开始时间 {op_start_str}, 结束时间 {op_end_str}, 耗时: {duration_str}, "
-                        f"消费记录 {consumed} 条, 生成认知 {evo_gen} 条, "
-                        f"模式识别 {patterns} 个, 矛盾解决 {conflicts} 个, "
-                        f"归纳规则 {gen_rules} 条, 趋势洞察 {trends} 个. 报告: {report_path}"
+                        f"记忆进化完成:\n"
+                        f"  开始时间: {op_start_str}\n"
+                        f"  结束时间: {op_end_str}\n"
+                        f"  耗时: {duration_str}\n"
+                        f"  消费记录: {consumed} 条\n"
+                        f"  生成认知: {evo_gen} 条\n"
+                        f"  模式识别: {patterns} 个\n"
+                        f"  矛盾解决: {conflicts} 个\n"
+                        f"  归纳规则: {gen_rules} 条\n"
+                        f"  趋势洞察: {trends} 个\n"
+                        f"  详细报告已保存到: {report_path}"
+                        + (f"\n\n{emb_result}" if emb_result else "")
                     )
-                # 清除 token 统计上下文
-                chat_llm.set_context()
-                # 记忆已变更，自动同步向量化
-                self._auto_embedding()
                 return True
 
             elif sub_cmd in ("extract", "ext"):
@@ -1302,6 +1328,7 @@ class MyClaudeCLI:
                 empty_response = result.get('empty_response', 0)
                 error = result.get('error', 0)
                 llm_none = result.get('llm_none', 0)
+                skipped = result.get('skipped', 0)
                 llm_archived = archived - filtered
                 llm_extracted = llm_archived - llm_none
 
@@ -1324,18 +1351,32 @@ class MyClaudeCLI:
                     f"  提取超时: {timeout} 条（LLM 调用超过超时阈值，保留 raw 状态待下次提取）\n"
                     f"  空响应: {empty_response} 条（LLM 返回空响应，可能因输入过长或内部异常）\n"
                     f"  调用异常: {error} 条（LLM 调用过程发生异常，保留待下次提取）\n"
+                    f"  雪崩跳过: {skipped} 条（连续多次超时触发雪崩防护，剩余文件跳过待下次提取）\n"
                     f"  逐条明细报告已保存到: {report_path}"
-                )
-                self.query_loop.append_cli_result(
-                    f"记忆提取完成: 开始时间 {op_start_str}, 结束时间 {op_end_str}, 耗时: {op_duration_str}, "
-                    f"处理 {processed} 条, 提取 {extracted} 条, "
-                    f"标记已处理 {archived} 条(前置过滤 {filtered}, LLM无价值 {llm_none}, LLM成功提取 {llm_extracted}), "
-                    f"超时 {timeout} 条, 空响应 {empty_response} 条, 异常 {error} 条。报告: {report_path}"
                 )
                 # 清除 token 统计上下文
                 chat_llm.set_context()
                 # 记忆已变更，自动同步向量化
-                self._auto_embedding()
+                emb_result = self._auto_embedding()
+                # 合并提取结果和向量化结果为一条日志（多行格式，与 CLI 打印一致）
+                self.query_loop.append_cli_result(
+                    f"记忆提取完成:\n"
+                    f"  开始时间: {op_start_str}\n"
+                    f"  结束时间: {op_end_str}\n"
+                    f"  耗时: {op_duration_str}\n"
+                    f"  处理条目: {processed} 条（原始 raw 记录总数）\n"
+                    f"  提取记忆: {extracted} 条（LLM 从中提炼出的结构化记忆，已写入 Layer 1）\n"
+                    f"  标记已处理: {archived} 条（原始 raw 记录被标记为 processed，不再参与后续提取）\n"
+                    f"    其中前置过滤: {filtered} 条（对话过短/无技术关键词，未调用 LLM 直接标记）\n"
+                    f"    其中LLM判定无价值: {llm_none} 条（LLM 返回 NONE，认为无可提取的长期记忆）\n"
+                    f"    其中LLM成功提取: {llm_extracted} 条（LLM 成功提取后，原始条目标记已处理）\n"
+                    f"  提取超时: {timeout} 条（LLM 调用超过超时阈值，保留 raw 状态待下次提取）\n"
+                    f"  空响应: {empty_response} 条（LLM 返回空响应，可能因输入过长或内部异常）\n"
+                    f"  调用异常: {error} 条（LLM 调用过程发生异常，保留待下次提取）\n"
+                    f"  雪崩跳过: {skipped} 条（连续多次超时触发雪崩防护，剩余文件跳过待下次提取）\n"
+                    f"  逐条明细报告已保存到: {report_path}"
+                    + (f"\n\n{emb_result}" if emb_result else "")
+                )
                 return True
 
             elif sub_cmd == "show":
@@ -1394,95 +1435,37 @@ class MyClaudeCLI:
                     cli_print.print_error("缺少参数。用法: /mem rt <信息>")
                     return True
                 memory = self.query_loop._memory
-                recall_items = []
-                mem_context = None
                 try:
                     current_session_id = getattr(self.query_loop.session, 'session_file_name', '')
                     chat_llm.set_context(query=sub_cmd_full, turn="CLI_COMMAND")
-                    # 优先使用带分数的详细召回接口（若后端支持）
+                    # 使用 retrieve_detailed 返回 RetrievalResult 对象
                     if hasattr(memory, "retrieve_detailed"):
-                        recall_items = memory.retrieve_detailed(
+                        retrieval_result = memory.retrieve_detailed(
                             sub_cmd_full, exclude_session_id=current_session_id
                         )
                     else:
-                        mem_context = memory.get_context_for_query(
-                            sub_cmd_full, exclude_session_id=current_session_id
-                        )
+                        retrieval_result = None
                     chat_llm.set_context()
                 except Exception as e:
                     chat_llm.set_context()
                     cli_print.print_error(f"记忆召回失败: {e}")
                     return True
 
-                if recall_items:
-                    recall_count = len(recall_items)
+                if retrieval_result is not None:
+                    # 使用新的详细打印函数（含策略和各阶段）
+                    cli_print.print_memory_recall_detailed(retrieval_result, query=sub_cmd_full)
 
-                    # 构建带分数的展示文本（格式与 /mem emb rt 一致）
-                    lines = []
-                    for i, item in enumerate(recall_items, 1):
-                        score = item.get("score", 0)
-                        tags_str = "".join(f"[{t}]" for t in item.get("tags", []))
-                        content = item.get("content", "")
-                        sid = item.get("session_id", "")
-                        rid = item.get("id", "")
-                        if i > 1:
-                            lines.append("")
-                        lines.append(f"  [{i}] 分数: {score}")
-                        lines.append(f"  (id={rid})")
-                        content_line = f"  - {tags_str} {content}" if tags_str else f"  - {content}"
-                        if sid:
-                            content_line += f" (session={sid})"
-                        lines.append(content_line)
-                    display_text = "\n".join(lines)
-
-                    cli_separator = '=' * 50
-                    cli_print.print_info(
-                        f"{cli_separator}\n"
-                        f"  记忆召回测试（共 {recall_count} 条）\n"
-                        f"{cli_separator}\n"
-                        f"{display_text}\n"
-                        f"{cli_separator}"
-                    )
-
-                    # 完整记录召回内容到日志（md 和 html），格式与 CLI 一致
+                    # 记录到日志
+                    log_text = retrieval_result.to_log_text() if hasattr(retrieval_result, "to_log_text") else ""
                     log_separator = '=' * 50
                     log_lines = [
                         log_separator,
-                        f"  记忆召回测试: {recall_count} 条 (查询: {sub_cmd_full[:50]})",
+                        f"  记忆召回测试 (查询: {sub_cmd_full[:50]})",
+                        log_separator,
+                        log_text,
                         log_separator,
                     ]
-                    for i, item in enumerate(recall_items, 1):
-                        score = item.get("score", 0)
-                        tags_str = "".join(f"[{t}]" for t in item.get("tags", []))
-                        content = item.get("content", "")
-                        sid = item.get("session_id", "")
-                        rid = item.get("id", "")
-                        if i > 1:
-                            log_lines.append("")
-                        log_lines.append(f"  [{i}] 分数: {score}")
-                        if rid:
-                            log_lines.append(f"  (id={rid})")
-                        content_line = f"  - {tags_str} {content}" if tags_str else f"  - {content}"
-                        if sid:
-                            content_line += f" (session={sid})"
-                        log_lines.append(content_line)
-                    log_lines.append(log_separator)
                     self.query_loop.append_cli_result("\n".join(log_lines))
-
-                elif mem_context:
-                    # 降级：无 retrieve_detailed 后端时走原有逻辑
-                    recall_count = self.query_loop._count_recalled(mem_context)
-                    _log_sep = '=' * 50
-                    cli_print.print_info(
-                        f"{_log_sep}\n"
-                        f"  记忆召回测试（共 {recall_count} 条）\n"
-                        f"{_log_sep}\n"
-                        f"{mem_context}\n"
-                        f"{_log_sep}"
-                    )
-                    self.query_loop.append_cli_result(
-                        f"{_log_sep}\n  记忆召回测试: {recall_count} 条 (查询: {sub_cmd_full[:50]})\n{_log_sep}\n{mem_context}\n{_log_sep}"
-                    )
                 else:
                     cli_print.print_info("未召回任何相关记忆。")
                     self.query_loop.append_cli_result(f"记忆召回测试: 0 条 (查询: {sub_cmd_full[:50]})")
@@ -1721,11 +1704,14 @@ class MyClaudeCLI:
         return True
 
 
-    def _auto_embedding(self):
+    def _auto_embedding(self) -> str:
         """在记忆变更操作（extract/compaction/evolution）完成后自动执行向量化同步。
 
         将当前 MEMORY.md 全量重新向量化，重建 FAISS 索引，
         确保向量索引与记忆内容保持一致。
+
+        Returns:
+            向量化结果摘要文本；若失败则返回错误信息
         """
         try:
             from src.memory_ex.embedding.memory_embedding import run_embedding
@@ -1735,10 +1721,11 @@ class MyClaudeCLI:
             # 重置模块级缓存，确保下次检索时从磁盘重新加载新索引
             reset_store()
             if emb_result:
-                self.query_loop.append_cli_result(emb_result)
+                return emb_result
+            return ""
         except Exception as e:
             cli_print.print_error(f"自动向量化失败: {e}")
-            self.query_loop.append_cli_result(f"自动向量化失败: {e}")
+            return f"自动向量化失败: {e}"
 
     def _get_bug_base(self):
         """获取或初始化 BugBase 实例。"""

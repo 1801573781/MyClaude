@@ -12,6 +12,7 @@
 
 import logging
 import re
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -22,6 +23,84 @@ logger = logging.getLogger(__name__)
 
 # Prompt 模板路径
 _PROMPT_DIR = Path(__file__).parent / "prompts"
+
+# ===== 策略描述映射 =====
+_STRATEGY_DESC = {
+    "coarse_only": "仅粗排",
+    "coarse_llm": "粗排+LLM精排",
+    "coarse_rerank": "粗排+Rerank精排",
+    "llm_only": "仅LLM精排",
+    "rerank_only": "仅Rerank精排",
+}
+
+
+@dataclass
+class RetrievalStage:
+    """单个召回阶段的记录"""
+    stage_name: str          # 阶段名称：如 "向量粗排"、"LLM精排"、"Rerank精排"
+    items: List[Dict[str, Any]]  # 本阶段召回的记忆条目列表
+    count: int               # 本阶段召回条目数
+
+
+@dataclass
+class RetrievalResult:
+    """记忆召回完整结果"""
+    strategy: str            # 策略代号：如 "coarse_llm"
+    strategy_desc: str       # 策略描述：如 "粗排+LLM精排"
+    stages: List[RetrievalStage] = field(default_factory=list)
+    final_items: List[Dict[str, Any]] = field(default_factory=list)
+    final_count: int = 0
+
+    def to_log_text(self) -> str:
+        """生成记忆召回日志文本（MD格式）。
+
+        每条记忆按以下格式输出：
+          [j] 分数: xxx
+          (id=xxx)
+          - 内容
+          (session=xxx)
+        """
+        lines = [f"策略: {self.strategy_desc} ({self.strategy})"]
+        for i, stage in enumerate(self.stages, 1):
+            lines.append(f"\n  ── [{i}] {stage.stage_name} ({stage.count}条) ──")
+            lines.append("")  # 阶段标题后加空行
+            for j, item in enumerate(stage.items, 1):
+                score = item.get("score", "N/A")
+                content = item.get("content", "")
+                entry_id = item.get("id", "")
+                session_id = item.get("session_id", "")
+                if isinstance(score, float):
+                    score_str = f"{score:.4f}"
+                else:
+                    score_str = str(score)
+                lines.append(f"  [{j}] 分数: {score_str}")
+                if entry_id:
+                    lines.append(f"  (id={entry_id})")
+                lines.append(f"  - {content}")
+                if session_id:
+                    lines.append(f"  (session={session_id})")
+                if j < len(stage.items):
+                    lines.append("")  # 多条记忆之间加空行
+        lines.append(f"\n  ── 最终返回 ({self.final_count}条) ──")
+        lines.append("")  # 阶段标题后加空行
+        for j, item in enumerate(self.final_items, 1):
+            score = item.get("score", "N/A")
+            content = item.get("content", "")
+            entry_id = item.get("id", "")
+            session_id = item.get("session_id", "")
+            if isinstance(score, float):
+                score_str = f"{score:.4f}"
+            else:
+                score_str = str(score)
+            lines.append(f"  [{j}] 分数: {score_str}")
+            if entry_id:
+                lines.append(f"  (id={entry_id})")
+            lines.append(f"  - {content}")
+            if session_id:
+                lines.append(f"  (session={session_id})")
+            if j < len(self.final_items):
+                lines.append("")  # 多条记忆之间加空行
+        return "\n".join(lines)
 
 
 def _load_prompt(filename: str) -> str:
@@ -57,15 +136,37 @@ class MemoryRetriever:
         retrieval_config = mem_config.retrieval
         self._default_top_k = int(getattr(retrieval_config, "default_top_k", 5))
         self._max_top_k = int(getattr(retrieval_config, "max_top_k", 20))
-        self._timeout = int(getattr(retrieval_config, "timeout", 30))
 
-        # 向量粗排参数
-        self._vector_top_k = int(getattr(retrieval_config, "vector_top_k", 10))
-        self._vector_score_threshold = float(
-            getattr(retrieval_config, "vector_score_threshold", 0.3)
-        )
-        # LLM 精排参数
-        self._llm_max_results = int(getattr(retrieval_config, "llm_max_results", 3))
+        # 召回策略
+        self._strategy = getattr(retrieval_config, "strategy", "coarse_llm")
+
+        # 向量粗排参数（兼容旧版扁平配置和新版嵌套配置）
+        vector_cfg = getattr(retrieval_config, "vector", None)
+        if vector_cfg is not None:
+            self._vector_top_k = int(getattr(vector_cfg, "top_k", 10))
+            self._vector_score_threshold = float(getattr(vector_cfg, "score_threshold", 0.3))
+        else:
+            self._vector_top_k = int(getattr(retrieval_config, "vector_top_k", 10))
+            self._vector_score_threshold = float(getattr(retrieval_config, "vector_score_threshold", 0.3))
+
+        # LLM 精排参数（兼容旧版扁平配置和新版嵌套配置）
+        llm_rerank_cfg = getattr(retrieval_config, "llm_rerank", None)
+        if llm_rerank_cfg is not None:
+            self._llm_max_results = int(getattr(llm_rerank_cfg, "max_results", 3))
+            self._timeout = int(getattr(llm_rerank_cfg, "timeout", 30))
+        else:
+            self._llm_max_results = int(getattr(retrieval_config, "llm_max_results", 3))
+            self._timeout = int(getattr(retrieval_config, "timeout", 30))
+
+        # Rerank 精排参数
+        rerank_cfg = getattr(retrieval_config, "rerank", None)
+        if rerank_cfg is not None:
+            self._rerank_max_results = int(getattr(rerank_cfg, "max_results", 3))
+            self._rerank_timeout = int(getattr(rerank_cfg, "timeout", 30))
+        else:
+            self._rerank_max_results = 3
+            self._rerank_timeout = 30
+
         # 降级策略
         self._fallback_to_full = bool(
             getattr(retrieval_config, "fallback_to_full", True)
@@ -79,17 +180,34 @@ class MemoryRetriever:
         # LLM 调用函数（延迟注入）
         self._llm_chat_fn = None
 
+        # Rerank 客户端（延迟初始化）
+        self._rerank_client = None
+
     def set_llm_chat_fn(self, fn):
         """注入 LLM 调用函数。"""
         self._llm_chat_fn = fn
 
+    def _get_rerank_client(self):
+        """延迟初始化 Rerank 客户端。"""
+        if self._rerank_client is None:
+            try:
+                from .embedding.rerank_client import RerankClient
+                from src.utility.config_loader import global_cfg
+                rerank_provider = getattr(global_cfg, "rerank_re_ranking", None)
+                if rerank_provider is not None:
+                    provider_name = getattr(rerank_provider, "provider", "GLM")
+                else:
+                    provider_name = "GLM"
+                self._rerank_client = RerankClient(provider=provider_name)
+            except Exception as e:
+                logger.error(f"RerankClient 初始化失败: {e}")
+                self._rerank_client = False  # 标记初始化失败，避免重复尝试
+        return self._rerank_client if self._rerank_client is not False else None
+
     def retrieve_for_query(self, query: str, exclude_session_id: str = "") -> List[Dict[str, Any]]:
-        """两阶段记忆召回：向量粗排 + LLM 精排。
+        """记忆召回（仅返回条目，不带分数）。
 
-        阶段一（向量粗排）：通过 FAISS 向量检索从全量记忆中筛选 top_k 候选。
-        阶段二（LLM 精排）：在候选集上用 LLM 评分，选出最终注入的记忆。
-
-        降级策略：索引不存在或向量化失败时，降级为全量记忆送入 LLM 精排。
+        根据配置的策略执行召回，返回最终选中的记忆条目列表。
 
         Args:
             query: 增强后的用户查询（可能含文件内容）
@@ -99,37 +217,46 @@ class MemoryRetriever:
             筛选后的记忆条目列表，每个元素含 id, session_id, tags, content, raw_line。
             空列表表示无相关记忆或召回失败。
         """
-        ranked = self.retrieve_for_query_with_scores(query, exclude_session_id)
-        return [entry for entry, _ in ranked]
+        result = self.retrieve_for_query_with_scores(query, exclude_session_id)
+        return result.final_items
 
     def retrieve_for_query_with_scores(
         self, query: str, exclude_session_id: str = ""
-    ) -> List[Tuple[Dict[str, Any], int]]:
-        """两阶段记忆召回（带 LLM 评分）。
+    ) -> RetrievalResult:
+        """记忆召回（带完整阶段记录）。
 
-        与 retrieve_for_query() 逻辑一致，但额外返回每条记忆的 LLM 评分，
-        供 CLI /mem rt 展示相似度分数，并将完整召回内容记录到日志。
+        根据配置的策略执行召回，返回包含各阶段记录的 RetrievalResult 对象。
 
-        阶段一（向量粗排）：通过 FAISS 向量检索从全量记忆中筛选 top_k 候选。
-        阶段二（LLM 精排）：在候选集上用 LLM 评分，选出最终注入的记忆。
-
-        降级策略：索引不存在或向量化失败时，降级为全量记忆送入 LLM 精排。
+        支持的策略：
+        - coarse_only: 仅向量粗排
+        - coarse_llm: 向量粗排 + LLM精排
+        - coarse_rerank: 向量粗排 + Rerank精排
+        - llm_only: 仅LLM精排（全量记忆）
+        - rerank_only: 仅Rerank精排（全量记忆）
 
         Args:
             query: 增强后的用户查询（可能含文件内容）
             exclude_session_id: 需要排除的 session_id（当前会话）
 
         Returns:
-            (条目 dict, LLM 评分) 元组列表，按分数降序排列。
-            空列表表示无相关记忆或召回失败。
+            RetrievalResult 对象，包含策略信息、各阶段记录和最终结果。
         """
+        strategy = self._strategy
+        strategy_desc = _STRATEGY_DESC.get(strategy, strategy)
+
+        # 空结果对象
+        empty_result = RetrievalResult(
+            strategy=strategy,
+            strategy_desc=strategy_desc,
+        )
+
         layer1_content = self._store.read_layer1()
         if not layer1_content or not layer1_content.strip():
-            return []
+            return empty_result
 
         all_entries = self._parse_layer1_entries(layer1_content)
         if not all_entries:
-            return []
+            return empty_result
 
         # 显式过滤：排除当前 session 的记忆
         if exclude_session_id:
@@ -144,18 +271,336 @@ class MemoryRetriever:
             entries = all_entries
 
         if not entries:
-            return []
+            return empty_result
 
-        # 无 LLM 函数时不召回
+        # 策略分发
+        if strategy == "coarse_only":
+            return self._retrieve_coarse_only(query, entries, strategy, strategy_desc)
+        elif strategy == "coarse_llm":
+            return self._retrieve_coarse_llm(query, entries, strategy, strategy_desc)
+        elif strategy == "coarse_rerank":
+            return self._retrieve_coarse_rerank(query, entries, strategy, strategy_desc)
+        elif strategy == "llm_only":
+            return self._retrieve_llm_only(query, entries, strategy, strategy_desc)
+        elif strategy == "rerank_only":
+            return self._retrieve_rerank_only(query, entries, strategy, strategy_desc)
+        else:
+            logger.warning(f"未知召回策略: {strategy}，降级为 coarse_llm")
+            return self._retrieve_coarse_llm(query, entries, "coarse_llm", "粗排+LLM精排")
+
+    # ===== 策略实现 =====
+
+    def _retrieve_coarse_only(
+        self, query: str, entries: List[Dict[str, Any]], strategy: str, strategy_desc: str
+    ) -> RetrievalResult:
+        """策略A：仅向量粗排。"""
+        result = RetrievalResult(strategy=strategy, strategy_desc=strategy_desc)
+
+        candidates = self._vector_coarse_rank(query, entries)
+        if candidates is None:
+            # 降级为全量
+            logger.info("向量粗排降级：全量记忆返回")
+            candidates = entries if self._fallback_to_full else []
+        if not candidates:
+            result.stages.append(RetrievalStage(
+                stage_name="向量粗排",
+                items=[],
+                count=0,
+            ))
+            return result
+
+        # 粗排结果带上向量分数（从 retrieve_by_vector 获取）
+        scored_candidates = self._enrich_with_vector_scores(query, candidates)
+
+        stage = RetrievalStage(
+            stage_name="向量粗排",
+            items=scored_candidates,
+            count=len(scored_candidates),
+        )
+        result.stages.append(stage)
+        result.final_items = scored_candidates
+        result.final_count = len(scored_candidates)
+        return result
+
+    def _retrieve_coarse_llm(
+        self, query: str, entries: List[Dict[str, Any]], strategy: str, strategy_desc: str
+    ) -> RetrievalResult:
+        """策略B：向量粗排 + LLM精排。"""
+        result = RetrievalResult(strategy=strategy, strategy_desc=strategy_desc)
+
         if not self._llm_chat_fn:
             logger.info("LLM 调用函数未注入，跳过召回")
-            return []
+            result.stages.append(RetrievalStage(
+                stage_name="向量粗排",
+                items=[],
+                count=0,
+            ))
+            result.stages.append(RetrievalStage(
+                stage_name="LLM精排",
+                items=[],
+                count=0,
+            ))
+            return result
 
-        # ===== 阶段一：向量粗排 =====
+        # 阶段一：向量粗排
         candidates = self._vector_coarse_rank(query, entries)
+        if candidates is None:
+            # 降级为 llm_only
+            logger.info("向量粗排降级：全量记忆送入 LLM 精排")
+            return self._retrieve_llm_only(query, entries, strategy, strategy_desc)
+        if not candidates:
+            result.stages.append(RetrievalStage(
+                stage_name="向量粗排",
+                items=[],
+                count=0,
+            ))
+            result.stages.append(RetrievalStage(
+                stage_name="LLM精排",
+                items=[],
+                count=0,
+            ))
+            return result
 
-        # ===== 阶段二：LLM 精排 =====
-        return self._llm_fine_rank(query, candidates, entries)
+        scored_candidates = self._enrich_with_vector_scores(query, candidates)
+        result.stages.append(RetrievalStage(
+            stage_name="向量粗排",
+            items=scored_candidates,
+            count=len(scored_candidates),
+        ))
+
+        # 阶段二：LLM 精排
+        ranked = self._llm_fine_rank(query, candidates, entries)
+        if not ranked:
+            result.stages.append(RetrievalStage(
+                stage_name="LLM精排",
+                items=[],
+                count=0,
+            ))
+            return result
+
+        final_items = []
+        for entry, score in ranked:
+            item = dict(entry)
+            item["score"] = score
+            final_items.append(item)
+
+        result.stages.append(RetrievalStage(
+            stage_name="LLM精排",
+            items=final_items,
+            count=len(final_items),
+        ))
+        result.final_items = final_items
+        result.final_count = len(final_items)
+        return result
+
+    def _retrieve_coarse_rerank(
+        self, query: str, entries: List[Dict[str, Any]], strategy: str, strategy_desc: str
+    ) -> RetrievalResult:
+        """策略C：向量粗排 + Rerank精排。"""
+        result = RetrievalResult(strategy=strategy, strategy_desc=strategy_desc)
+
+        # 阶段一：向量粗排
+        candidates = self._vector_coarse_rank(query, entries)
+        if candidates is None:
+            # 降级为 rerank_only
+            logger.info("向量粗排降级：全量记忆送入 Rerank 精排")
+            return self._retrieve_rerank_only(query, entries, strategy, strategy_desc)
+        if not candidates:
+            return result
+
+        scored_candidates = self._enrich_with_vector_scores(query, candidates)
+        result.stages.append(RetrievalStage(
+            stage_name="向量粗排",
+            items=scored_candidates,
+            count=len(scored_candidates),
+        ))
+
+        # 阶段二：Rerank 精排
+        rerank_client = self._get_rerank_client()
+        if rerank_client is None:
+            logger.error("Rerank客户端不可用，返回粗排结果")
+            result.stages.append(RetrievalStage(
+                stage_name="Rerank精排",
+                items=[],
+                count=0,
+            ))
+            result.final_items = scored_candidates
+            result.final_count = len(scored_candidates)
+            return result
+
+        documents = [c.get("content", "") for c in candidates]
+        rerank_results = rerank_client.rerank(
+            query, documents, top_n=self._rerank_max_results, timeout=self._rerank_timeout
+        )
+        if not rerank_results:
+            logger.info("Rerank精排无结果，返回粗排结果")
+            result.stages.append(RetrievalStage(
+                stage_name="Rerank精排",
+                items=[],
+                count=0,
+            ))
+            result.final_items = scored_candidates
+            result.final_count = len(scored_candidates)
+            return result
+
+        final_items = []
+        for r in rerank_results:
+            idx = r.get("index", -1)
+            if 0 <= idx < len(candidates):
+                item = dict(candidates[idx])
+                item["score"] = r.get("score", 0.0)
+                final_items.append(item)
+
+        result.stages.append(RetrievalStage(
+            stage_name="Rerank精排",
+            items=final_items,
+            count=len(final_items),
+        ))
+        result.final_items = final_items
+        result.final_count = len(final_items)
+        return result
+
+    def _retrieve_llm_only(
+        self, query: str, entries: List[Dict[str, Any]], strategy: str, strategy_desc: str
+    ) -> RetrievalResult:
+        """策略D：仅LLM精排（全量记忆）。"""
+        result = RetrievalResult(strategy=strategy, strategy_desc=strategy_desc)
+
+        if not self._llm_chat_fn:
+            logger.info("LLM 调用函数未注入，跳过召回")
+            result.stages.append(RetrievalStage(
+                stage_name="全量候选",
+                items=[],
+                count=0,
+            ))
+            result.stages.append(RetrievalStage(
+                stage_name="LLM精排",
+                items=[],
+                count=0,
+            ))
+            return result
+
+        # 全量候选
+        result.stages.append(RetrievalStage(
+            stage_name="全量候选",
+            items=entries,
+            count=len(entries),
+        ))
+
+        # LLM 精排
+        ranked = self._llm_fine_rank(query, entries, entries)
+        if not ranked:
+            result.stages.append(RetrievalStage(
+                stage_name="LLM精排",
+                items=[],
+                count=0,
+            ))
+            return result
+
+        final_items = []
+        for entry, score in ranked:
+            item = dict(entry)
+            item["score"] = score
+            final_items.append(item)
+
+        result.stages.append(RetrievalStage(
+            stage_name="LLM精排",
+            items=final_items,
+            count=len(final_items),
+        ))
+        result.final_items = final_items
+        result.final_count = len(final_items)
+        return result
+
+    def _retrieve_rerank_only(
+        self, query: str, entries: List[Dict[str, Any]], strategy: str, strategy_desc: str
+    ) -> RetrievalResult:
+        """策略E：仅Rerank精排（全量记忆）。"""
+        result = RetrievalResult(strategy=strategy, strategy_desc=strategy_desc)
+
+        # 全量候选
+        result.stages.append(RetrievalStage(
+            stage_name="全量候选",
+            items=entries,
+            count=len(entries),
+        ))
+
+        # Rerank 精排
+        rerank_client = self._get_rerank_client()
+        if rerank_client is None:
+            logger.error("Rerank客户端不可用，跳过召回")
+            result.stages.append(RetrievalStage(
+                stage_name="Rerank精排",
+                items=[],
+                count=0,
+            ))
+            return result
+
+        documents = [e.get("content", "") for e in entries]
+        rerank_results = rerank_client.rerank(
+            query, documents, top_n=self._rerank_max_results, timeout=self._rerank_timeout
+        )
+        if not rerank_results:
+            logger.info("Rerank精排无结果")
+            result.stages.append(RetrievalStage(
+                stage_name="Rerank精排",
+                items=[],
+                count=0,
+            ))
+            return result
+
+        final_items = []
+        for r in rerank_results:
+            idx = r.get("index", -1)
+            if 0 <= idx < len(entries):
+                item = dict(entries[idx])
+                item["score"] = r.get("score", 0.0)
+                final_items.append(item)
+
+        result.stages.append(RetrievalStage(
+            stage_name="Rerank精排",
+            items=final_items,
+            count=len(final_items),
+        ))
+        result.final_items = final_items
+        result.final_count = len(final_items)
+        return result
+
+    def _enrich_with_vector_scores(
+        self, query: str, candidates: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """为粗排候选条目附加向量分数。
+
+        Args:
+            query: 查询文本
+            candidates: 粗排匹配到的条目列表
+
+        Returns:
+            带有 score 字段的条目列表
+        """
+        try:
+            results = retrieve_by_vector(
+                query,
+                top_k=self._vector_top_k,
+                score_threshold=self._vector_score_threshold,
+            )
+            score_map = {}
+            if results:
+                for r in results:
+                    mem_id = r.get("id", "")
+                    if mem_id:
+                        score_map[mem_id] = r.get("score", 0.0)
+        except Exception:
+            score_map = {}
+
+        enriched = []
+        for c in candidates:
+            item = dict(c)
+            item["score"] = score_map.get(c.get("id", ""), 0.0)
+            enriched.append(item)
+        return enriched
+
+    # ===== 原有方法保留 =====
 
     def _vector_coarse_rank(
         self, query: str, entries: List[Dict[str, Any]]
