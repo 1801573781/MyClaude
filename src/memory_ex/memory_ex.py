@@ -271,6 +271,47 @@ class MemoryEx(MemoryExInterface):
 
         return self._injector.format_for_injection(entries, query)
 
+    def retrieve_detailed(self, query: str, exclude_session_id: str = "") -> List[Dict]:
+        """执行带分数的记忆召回，供 CLI /mem rt 展示和记录日志。
+
+        与 get_context_for_query() 使用相同的召回链路（意图压缩 + 两阶段召回），
+        但返回每条记忆的完整信息和 LLM 评分，便于 CLI 打印分数
+        并将召回内容完整记录到日志（md 和 html）。
+
+        Args:
+            query: 用户查询文本
+            exclude_session_id: 需要排除的 session_id（当前会话）
+
+        Returns:
+            召回结果列表，每个元素含 id, score, tags, content, session_id。
+            空列表表示无相关记忆或召回失败。
+        """
+        layer1_content = self._store.read_layer1()
+        if not layer1_content:
+            return []
+
+        # 意图压缩：超过300字时调用 LLM 压缩，消除噪声
+        recall_query = self._compress_intent(query)
+
+        # 带分数的两阶段召回（排除当前 session 的记忆）
+        ranked = self._retriever.retrieve_for_query_with_scores(
+            recall_query, exclude_session_id=exclude_session_id
+        )
+        if not ranked:
+            return []
+
+        results = []
+        for entry, score in ranked:
+            results.append({
+                "id": entry.get("id", ""),
+                "score": score,
+                "tags": entry.get("tags", []),
+                "content": entry.get("content", ""),
+                "raw_line": entry.get("raw_line", ""),
+                "session_id": entry.get("session_id", ""),
+            })
+        return results
+
     def _compress_intent(self, query: str) -> str:
         """压缩用户意图到300字以内，消除CLI输出示例等噪声。
 

@@ -99,6 +99,30 @@ class MemoryRetriever:
             筛选后的记忆条目列表，每个元素含 id, session_id, tags, content, raw_line。
             空列表表示无相关记忆或召回失败。
         """
+        ranked = self.retrieve_for_query_with_scores(query, exclude_session_id)
+        return [entry for entry, _ in ranked]
+
+    def retrieve_for_query_with_scores(
+        self, query: str, exclude_session_id: str = ""
+    ) -> List[Tuple[Dict[str, Any], int]]:
+        """两阶段记忆召回（带 LLM 评分）。
+
+        与 retrieve_for_query() 逻辑一致，但额外返回每条记忆的 LLM 评分，
+        供 CLI /mem rt 展示相似度分数，并将完整召回内容记录到日志。
+
+        阶段一（向量粗排）：通过 FAISS 向量检索从全量记忆中筛选 top_k 候选。
+        阶段二（LLM 精排）：在候选集上用 LLM 评分，选出最终注入的记忆。
+
+        降级策略：索引不存在或向量化失败时，降级为全量记忆送入 LLM 精排。
+
+        Args:
+            query: 增强后的用户查询（可能含文件内容）
+            exclude_session_id: 需要排除的 session_id（当前会话）
+
+        Returns:
+            (条目 dict, LLM 评分) 元组列表，按分数降序排列。
+            空列表表示无相关记忆或召回失败。
+        """
         layer1_content = self._store.read_layer1()
         if not layer1_content or not layer1_content.strip():
             return []
@@ -223,7 +247,7 @@ class MemoryRetriever:
         query: str,
         candidates: Optional[List[Dict[str, Any]]],
         all_entries: List[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
+    ) -> List[Tuple[Dict[str, Any], int]]:
         """LLM 精排阶段：在候选集上用 LLM 评分选出最终记忆。
 
         Args:
@@ -232,7 +256,7 @@ class MemoryRetriever:
             all_entries: 全量条目（仅用于日志统计）
 
         Returns:
-            最终筛选后的记忆条目列表（≤ llm_max_results 条）
+            (条目 dict, 评分) 元组列表，按分数降序排列（≤ llm_max_results 条）。
         """
         if not candidates:
             logger.info("粗排无候选，跳过 LLM 精排")
@@ -267,7 +291,11 @@ class MemoryRetriever:
 
             # 最多返回 llm_max_results 条
             scored = scored[: self._llm_max_results]
-            selected = [candidates[idx] for idx, _ in scored if idx < len(candidates)]
+            selected = [
+                (candidates[idx], score)
+                for idx, score in scored
+                if idx < len(candidates)
+            ]
             logger.info(
                 f"LLM 精排命中 {len(selected)}/{len(candidates)} 条候选 "
                 f"(全量 {len(all_entries)} 条)"
@@ -340,11 +368,11 @@ class MemoryRetriever:
             logger.warning("retrieval_prompt.txt 未找到，跳过 LLM 预检索")
             return ""
 
-        # 构建记忆列表（带编号）
+        # 构建记忆列表（带编号，方括号格式与提示词输出要求对齐）
         memory_lines = []
         for i, entry in enumerate(entries, 1):
             tags_str = "".join(f"[{t}]" for t in entry.get("tags", []))
-            memory_lines.append(f"{i}. {tags_str} {entry.get('content', '')}")
+            memory_lines.append(f"[{i}] {tags_str} {entry.get('content', '')}")
 
         memories_text = "\n".join(memory_lines)
 
@@ -490,8 +518,10 @@ class MemoryRetriever:
     def _call_llm_with_timeout(self, prompt: str, timeout: int = 30) -> Optional[str]:
         """调用 LLM，带超时保护。
 
-        直接将 timeout 传递给 simple_chat，由 httpx 在 HTTP 层处理超时，
-        确保超时后连接被正确关闭，避免线程泄漏和僵尸连接。
+        精排阶段使用 re-ranking.provider 指定的模型（rerank_simple_chat），
+        若精排模型不可用则回退到注入的 LLM 函数。
+        超时由 httpx 在 HTTP 层处理，确保超时后连接被正确关闭，
+        避免线程泄漏和僵尸连接。
 
         精排输出仅需分析摘要 + 逐条评估 + SCORED 行，
         2048 tokens 足够（10 条候选 × ~150 token/条 + 分析 ~300 token）。
@@ -508,12 +538,25 @@ class MemoryRetriever:
 
         try:
             start = time.time()
-            response = self._llm_chat_fn(
-                prompt,
-                temperature=0.1,
-                max_tokens=20480,
-                timeout=float(timeout),
-            )
+            # 优先使用精排模型（re-ranking.provider），失败时回退到通用 LLM
+            try:
+                from src.query import chat_llm
+                rerank_fn = getattr(chat_llm, "rerank_simple_chat", None)
+                if rerank_fn is None:
+                    raise AttributeError("chat_llm.rerank_simple_chat 不存在")
+                response = rerank_fn(
+                    prompt,
+                    temperature=0.1,
+                    max_tokens=20480,
+                    timeout=float(timeout),
+                )
+            except Exception:
+                response = self._llm_chat_fn(
+                    prompt,
+                    temperature=0.1,
+                    max_tokens=20480,
+                    timeout=float(timeout),
+                )
             elapsed = time.time() - start
 
             if not response:

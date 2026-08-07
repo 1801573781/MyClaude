@@ -268,6 +268,103 @@ def simple_chat(prompt: str, temperature: float = 0.3, max_tokens: int = 1024,
         return ""
 
 
+# ===== 精排模型（re-ranking）专用调用 =====
+
+# 精排模型客户端（基于 re-ranking.provider 配置，惰性初始化）
+_rerank_client = None
+_rerank_model_name = ""
+
+
+def _get_rerank_client():
+    """获取精排模型客户端。
+
+    根据 model_key.yaml 中 re-ranking.provider 指定的配置创建独立客户端。
+    若 re-ranking 配置缺失或 provider 未定义，回退到主模型客户端，确保精排始终可用。
+
+    Returns:
+        (client, model_name) 元组
+    """
+    global _rerank_client, _rerank_model_name
+
+    if _rerank_client is not None:
+        return _rerank_client, _rerank_model_name
+
+    # 读取 re-ranking 配置（键名含连字符，需用 getattr）
+    rerank_cfg = getattr(global_cfg, "re-ranking", None)
+    if rerank_cfg is None:
+        logger.warning("配置中缺少 re-ranking 节，精排回退到主模型")
+        _rerank_client = client
+        _rerank_model_name = model_name
+        return _rerank_client, _rerank_model_name
+
+    rerank_provider = rerank_cfg.provider
+    provider_cfg = getattr(global_cfg, rerank_provider, None)
+    if provider_cfg is None:
+        logger.warning(
+            f"re-ranking.provider={rerank_provider} 未在 model_key.yaml 中定义，"
+            f"精排回退到主模型"
+        )
+        _rerank_client = client
+        _rerank_model_name = model_name
+        return _rerank_client, _rerank_model_name
+
+    try:
+        _rerank_client = OpenAI(
+            api_key=provider_cfg.api_key,
+            base_url=provider_cfg.base_url,
+            http_client=httpx.Client(verify=False),
+            max_retries=0,
+        )
+        _rerank_model_name = provider_cfg.model_name
+        logger.info(
+            f"精排模型已初始化: provider={rerank_provider}, model={_rerank_model_name}"
+        )
+    except Exception as e:
+        logger.error(f"精排客户端初始化失败: {e}，回退到主模型")
+        _rerank_client = client
+        _rerank_model_name = model_name
+
+    return _rerank_client, _rerank_model_name
+
+
+def rerank_simple_chat(prompt: str, temperature: float = 0.1,
+                       max_tokens: int = 2048, timeout: float = 30) -> str:
+    """精排专用非流式单轮调用。
+
+    使用 model_key.yaml 中 re-ranking.provider 指定的模型进行 LLM 精排。
+    若 re-ranking 配置缺失，降级使用主模型（simple_chat）。
+
+    Args:
+        prompt: 精排 Prompt
+        temperature: 采样温度（精排默认 0.1，保证评分稳定）
+        max_tokens: 最大输出 token 数
+        timeout: HTTP 请求超时秒数
+
+    Returns:
+        LLM 响应的纯文本内容；异常时返回空字符串
+    """
+    try:
+        rerank_client, rerank_model = _get_rerank_client()
+        messages = _sanitize_messages_for_provider(
+            [{"role": "user", "content": prompt}]
+        )
+        api_kwargs = dict(
+            model=rerank_model,
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            stream=False,
+            timeout=timeout,
+        )
+        # 刻意不传 extra_body，与 simple_chat 保持一致（避免 thinking 模式消耗 token）
+
+        response = rerank_client.chat.completions.create(**api_kwargs)
+        return response.choices[0].message.content or ""
+    except Exception as e:
+        logger.error(f"精排调用失败: {e}")
+        return ""
+
+
 """
 # 同步，非流式
 def block_chat(msg, max_tokens=9000):

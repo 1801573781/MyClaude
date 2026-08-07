@@ -137,32 +137,39 @@ def run_retrieval(query: str, top_k: int = None):
     results = retrieve_by_vector(query, top_k=top_k, score_threshold=score_threshold)
 
     if results is None:
-        print(f"索引文件不存在，请先执行 /mem emb 生成向量索引。")
-        return "索引文件不存在，向量召回跳过。"
+        return "索引文件不存在，请先执行 /mem emb 生成向量索引。"
 
     actual_count = len(results)
 
-    # 2. 打印召回结果
-    print(f"向量召回（top_k={top_k}，实际召回 {actual_count} 条）：")
+    # 2. 构建召回结果文本（由调用方负责终端打印）
+    import re
+    separator = '=' * 50
 
-    summary_lines = [f"向量召回测试: {actual_count} 条 (top_k={top_k}, 查询: {query[:50]})"]
+    lines = [
+        separator,
+        f"  向量召回测试: {actual_count} 条 (top_k={top_k}, 查询: {query[:50]})",
+        separator,
+    ]
 
     for i, r in enumerate(results):
         if i > 0:
-            print()
-        print(f"  [{i + 1}] 分数: {r['score']:.4f}")
-        if r.get("id"):
-            print(f"  (id={r['id']})")
-        print(f"  {r['text']}")
-        summary_lines.append(f"  [{i + 1}] 分数: {r['score']:.4f}")
-        summary_lines.append(f"  {r['text']}")
+            lines.append("")
+        score = r['score']
+        rid = r.get("id", "")
+        # Strip trailing (id=xxx) from text to avoid duplicate display
+        text = re.sub(r'\s*\(id=[^)]+\)\s*$', '', r['text'])
+
+        lines.append(f"  [{i + 1}] 分数: {score:.4f}")
+        if rid:
+            lines.append(f"  (id={rid})")
+        lines.append(f"  {text}")
 
     if actual_count < top_k:
-        print()
-        print(f"注意：期望召回 {top_k} 条，实际召回 {actual_count} 条（索引中记忆总数不足或相似度较低）。")
-        summary_lines.append(f"注意：期望召回 {top_k} 条，实际召回 {actual_count} 条（索引中记忆总数不足或相似度较低）。")
+        lines.append(f"注意：期望召回 {top_k} 条，实际召回 {actual_count} 条（索引中记忆总数不足或相似度较低）。")
 
-    return "\n".join(summary_lines)
+    lines.append(separator)
+
+    return "\n".join(lines)
 
 
 def reset_store():

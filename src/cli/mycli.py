@@ -820,6 +820,7 @@ class MyClaudeCLI:
                     try:
                         result_summary = run_retrieval(emb_query)
                         if result_summary:
+                            cli_print.print_info(f"\n{result_summary}")
                             self.query_loop.append_cli_result(result_summary)
                     except FileNotFoundError as e:
                         cli_print.print_error(str(e))
@@ -1393,29 +1394,98 @@ class MyClaudeCLI:
                     cli_print.print_error("缺少参数。用法: /mem rt <信息>")
                     return True
                 memory = self.query_loop._memory
+                recall_items = []
+                mem_context = None
                 try:
                     current_session_id = getattr(self.query_loop.session, 'session_file_name', '')
                     chat_llm.set_context(query=sub_cmd_full, turn="CLI_COMMAND")
-                    mem_context = memory.get_context_for_query(
-                        sub_cmd_full, exclude_session_id=current_session_id
-                    )
+                    # 优先使用带分数的详细召回接口（若后端支持）
+                    if hasattr(memory, "retrieve_detailed"):
+                        recall_items = memory.retrieve_detailed(
+                            sub_cmd_full, exclude_session_id=current_session_id
+                        )
+                    else:
+                        mem_context = memory.get_context_for_query(
+                            sub_cmd_full, exclude_session_id=current_session_id
+                        )
                     chat_llm.set_context()
                 except Exception as e:
                     chat_llm.set_context()
                     cli_print.print_error(f"记忆召回失败: {e}")
                     return True
 
-                if not mem_context:
+                if recall_items:
+                    recall_count = len(recall_items)
+
+                    # 构建带分数的展示文本（格式与 /mem emb rt 一致）
+                    lines = []
+                    for i, item in enumerate(recall_items, 1):
+                        score = item.get("score", 0)
+                        tags_str = "".join(f"[{t}]" for t in item.get("tags", []))
+                        content = item.get("content", "")
+                        sid = item.get("session_id", "")
+                        rid = item.get("id", "")
+                        if i > 1:
+                            lines.append("")
+                        lines.append(f"  [{i}] 分数: {score}")
+                        lines.append(f"  (id={rid})")
+                        content_line = f"  - {tags_str} {content}" if tags_str else f"  - {content}"
+                        if sid:
+                            content_line += f" (session={sid})"
+                        lines.append(content_line)
+                    display_text = "\n".join(lines)
+
+                    cli_separator = '=' * 50
+                    cli_print.print_info(
+                        f"{cli_separator}\n"
+                        f"  记忆召回测试（共 {recall_count} 条）\n"
+                        f"{cli_separator}\n"
+                        f"{display_text}\n"
+                        f"{cli_separator}"
+                    )
+
+                    # 完整记录召回内容到日志（md 和 html），格式与 CLI 一致
+                    log_separator = '=' * 50
+                    log_lines = [
+                        log_separator,
+                        f"  记忆召回测试: {recall_count} 条 (查询: {sub_cmd_full[:50]})",
+                        log_separator,
+                    ]
+                    for i, item in enumerate(recall_items, 1):
+                        score = item.get("score", 0)
+                        tags_str = "".join(f"[{t}]" for t in item.get("tags", []))
+                        content = item.get("content", "")
+                        sid = item.get("session_id", "")
+                        rid = item.get("id", "")
+                        if i > 1:
+                            log_lines.append("")
+                        log_lines.append(f"  [{i}] 分数: {score}")
+                        if rid:
+                            log_lines.append(f"  (id={rid})")
+                        content_line = f"  - {tags_str} {content}" if tags_str else f"  - {content}"
+                        if sid:
+                            content_line += f" (session={sid})"
+                        log_lines.append(content_line)
+                    log_lines.append(log_separator)
+                    self.query_loop.append_cli_result("\n".join(log_lines))
+
+                elif mem_context:
+                    # 降级：无 retrieve_detailed 后端时走原有逻辑
+                    recall_count = self.query_loop._count_recalled(mem_context)
+                    _log_sep = '=' * 50
+                    cli_print.print_info(
+                        f"{_log_sep}\n"
+                        f"  记忆召回测试（共 {recall_count} 条）\n"
+                        f"{_log_sep}\n"
+                        f"{mem_context}\n"
+                        f"{_log_sep}"
+                    )
+                    self.query_loop.append_cli_result(
+                        f"{_log_sep}\n  记忆召回测试: {recall_count} 条 (查询: {sub_cmd_full[:50]})\n{_log_sep}\n{mem_context}\n{_log_sep}"
+                    )
+                else:
                     cli_print.print_info("未召回任何相关记忆。")
                     self.query_loop.append_cli_result(f"记忆召回测试: 0 条 (查询: {sub_cmd_full[:50]})")
-                else:
-                    recall_count = self.query_loop._count_recalled(mem_context)
-                    cli_print.print_info(
-                        f"记忆召回测试（共 {recall_count} 条）:\n"
-                        f"{'─' * 50}\n"
-                        f"{mem_context}"
-                    )
-                    self.query_loop.append_cli_result(f"记忆召回测试: {recall_count} 条 (查询: {sub_cmd_full[:50]})")
                 return True
 
             elif sub_cmd in ("remove", "rm"):
