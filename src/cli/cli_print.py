@@ -27,11 +27,11 @@ _interaction_starts = []  # 记录每次用户输入时 _html_parts 的索引，
 
 # 自定义样式
 STYLES = {
-    "user": "bold cyan",
+    "user": "bold bright_cyan",
     "assistant": "bold green",
     "system": "dim italic",
     "error": "bold red",
-    "info": "bold blue",
+    "info": "bright_cyan",
     "timestamp": "dim",
     "header": "bold magenta",
     "border": "blue",
@@ -194,7 +194,7 @@ def print_user_input(content: str):
     _interaction_starts.append(len(_html_parts))
 
     role_emoji = "👤"
-    role_color = "cyan"
+    role_color = "bright_cyan"
     role_name = "You"
 
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -294,7 +294,7 @@ def print_banner():
 def print_header(session_id):
     """打印头部信息"""
     header_table = Table(show_header=False, box=None, padding=0)
-    header_table.add_column(style="cyan")
+    header_table.add_column(style="bright_cyan")
     header_table.add_column(style="magenta", justify="right")
 
     time_str = datetime.now().strftime("%H:%M:%S")
@@ -423,11 +423,12 @@ def show_history(messages):
 
 def show_token_count(token_stats: dict):
     """显示详细的 Token 统计（基于 API 返回的精确 usage）"""
-    console.print(f"[bold]📊 Token 统计（{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}）[/bold]")
+    console.print()
+    console.print(f"[bold bright_cyan]📊 Token 统计（{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}）[/bold bright_cyan]")
 
     stats_table = Table(show_header=False, box=None)
-    stats_table.add_column("Metric", style="cyan", min_width=20)
-    stats_table.add_column("Value", style="green", min_width=12)
+    stats_table.add_column("Metric", style="bright_cyan", min_width=20)
+    stats_table.add_column("Value", style="bright_green", min_width=12)
 
     stats_table.add_row("输入（命中缓存）", f"{token_stats['prompt_cache_hit']:,}")
     stats_table.add_row("输入（未命中缓存）", f"{token_stats['prompt_cache_miss']:,}")
@@ -463,7 +464,7 @@ def print_command_list(registry, prefix: str = None) -> None:
 
     title = f"{prefix.strip('/').upper()} 命令列表" if prefix else "已注册命令列表"
     table = Table(title=title, show_header=True, border_style="blue")
-    table.add_column("命令", style="cyan", min_width=20)
+    table.add_column("命令", style="bright_cyan", min_width=20)
     table.add_column("用途", style="white")
 
     for cmd in commands:
@@ -599,7 +600,7 @@ def print_tool_call(tool_name: str, params: dict):
         detail = params.get("path", "")
 
     # 箭头用亮青色（与工具名一致），工具名亮青加粗，参数亮白
-    console.print(f"  [bold cyan]→[/bold cyan] [bold cyan]{tool_name}[/bold cyan] [white]{detail}[/white]")
+    console.print(f"  [bold bright_cyan]→[/bold bright_cyan] [bold bright_cyan]{tool_name}[/bold bright_cyan] [white]{detail}[/white]")
     # HTML 缓冲区
     _append_html(f'<p style="margin:4px 0 4px 20px; color:#22d3ee;">→ {html_escape(tool_name)} {html_escape(detail)}</p>')
 
@@ -896,8 +897,8 @@ def print_todo_list(todo_list):
     # 使用 Panel 包裹
     panel = Panel(
         table,
-        title=f"[bold cyan]📋 Todo [{bar}] {completed}/{total} ({pct}%)[/bold cyan]",
-        border_style="cyan",
+        title=f"[bold bright_cyan]📋 Todo [{bar}] {completed}/{total} ({pct}%)[/bold bright_cyan]",
+        border_style="bright_cyan",
         padding=(0, 1),
     )
 
@@ -976,12 +977,12 @@ def print_memory_recall_detailed(retrieval_result, query: str = ""):
 
     # 头部
     sep = "=" * 50
-    console.print(f"\n[bold cyan]{sep}[/bold cyan]")
+    console.print(f"\n[bold bright_cyan]{sep}[/bold bright_cyan]")
     console.print(f"  [bold]记忆召回测试[/bold]")
     console.print(f"  [bold]策略: {strategy_desc} ({strategy})[/bold]")
     if query:
         console.print(f"  查询: \"{escape(query)}\"")
-    console.print(f"[bold cyan]{sep}[/bold cyan]")
+    console.print(f"[bold bright_cyan]{sep}[/bold bright_cyan]")
 
     # 各阶段
     for i, stage in enumerate(stages, 1):
@@ -999,16 +1000,16 @@ def print_memory_recall_detailed(retrieval_result, query: str = ""):
                 score_str = f"{score:.4f}"
             else:
                 score_str = str(score)
-            console.print(f"  [{j}] 分数: {score_str}")
+            console.print(f"  \\[{j}] 分数: {score_str}")
             if entry_id:
-                console.print(f"  (id={entry_id})")
+                console.print(f"  [sky_blue](id={escape(entry_id)})[/sky_blue]")
             console.print(f"  - {escape(content)}")
             if session_id:
-                console.print(f"  (session={session_id})")
+                console.print(f"  [dim](session={escape(session_id)})[/dim]")
             console.print()
 
     # 最终返回
-    console.print(f"\n  [bold green]── 最终返回 ({final_count}条) ──[/bold green]")
+    console.print(f"\n  [bold bright_green]── 最终返回 ({final_count}条) ──[/bold bright_green]")
     for j, item in enumerate(final_items, 1):
         score = item.get("score", "N/A")
         content = item.get("content", "")
@@ -1018,15 +1019,15 @@ def print_memory_recall_detailed(retrieval_result, query: str = ""):
             score_str = f"{score:.4f}"
         else:
             score_str = str(score)
-        console.print(f"  [{j}] 分数: {score_str}")
+        console.print(f"  \\[{j}] 分数: {score_str}")
         if entry_id:
-            console.print(f"  (id={entry_id})")
+            console.print(f"  [sky_blue](id={escape(entry_id)})[/sky_blue]")
         console.print(f"  - {escape(content)}")
         if session_id:
-            console.print(f"  (session={session_id})")
+            console.print(f"  [dim](session={escape(session_id)})[/dim]")
         console.print()
 
-    console.print(f"[bold cyan]{sep}[/bold cyan]\n")
+    console.print(f"[bold bright_cyan]{sep}[/bold bright_cyan]\n")
 
     # HTML 缓冲区
     html_parts = [f'<div style="margin:12px 0; border:1px solid #7c3aed; border-radius:8px; padding:12px;">']
@@ -1130,7 +1131,7 @@ def get_input() -> str:
                 # 4. 写入提示符：\r\n 确保光标回到行首再换行
                 sys.stdout.write("\r\n")
                 sys.stdout.flush()
-                kernel32.SetConsoleTextAttribute(stdout_handle, 0xB)  # bold cyan
+                kernel32.SetConsoleTextAttribute(stdout_handle, 0xA)  # bright green
                 sys.stdout.write("➤ You : ")
                 sys.stdout.flush()
                 kernel32.SetConsoleTextAttribute(stdout_handle, original_attr)
@@ -1150,7 +1151,7 @@ def get_input() -> str:
             return user_input.strip()
         else:
             # 非 Windows: 安全使用 ANSI 转义码
-            sys.stdout.write("\n\033[1;36m➤ You :\033[0m ")
+            sys.stdout.write("\n\033[1;33m➤ You :\033[0m ")
             sys.stdout.flush()
             user_input = input()
             return user_input.strip()
