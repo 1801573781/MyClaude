@@ -28,24 +28,24 @@ _interaction_starts = []  # 记录每次用户输入时 _html_parts 的索引，
 # 自定义样式
 STYLES = {
     "user": "bold bright_cyan",
-    "assistant": "bold green",
-    "system": "dim italic",
+    "assistant": "bold bright_green",
+    "system": "italic",
     "error": "bold red",
     "info": "bright_cyan",
-    "timestamp": "dim",
-    "header": "bold magenta",
-    "border": "blue",
+    "timestamp": "white",
+    "header": "bold bright_cyan",
+    "border": "bright_cyan",
 }
 
 # 颜色常量
 COLORS = {
-    "primary": "#7C3AED",  # 紫色
-    "secondary": "#10B981",  # 绿色
-    "accent": "#F59E0B",  # 橙色
+    "primary": "#22d3ee",  # bright_cyan
+    "secondary": "#4ade80",  # bright_green
+    "accent": "#22d3ee",  # bright_cyan
     "background": "#1E1E2E",  # 深色背景
     "surface": "#2D2D3F",  # 表面色
     "text": "#E2E8F0",  # 文本色
-    "muted": "#94A3B8",  # 次要文本
+    "muted": "#E2E8F0",  # 默认文本色
 }
 
 # 强制 Rich 走 UTF-8 模式，避免在 Docker 沙箱/旧控制台等环境中回退到 GBK legacy 渲染器
@@ -178,14 +178,14 @@ def print_info(content: str):
     """打印通用消息（带前后空行，用于独立的关键提示）"""
     safe_content = escape(content)
     console.print(f"\n[{STYLES['info']}]{safe_content}[/{STYLES['info']}]\n")
-    _append_html(f'<p style="color:#3b82f6;">{html_escape(content)}</p>')
+    _append_html(f'<p style="color:#22d3ee;">{html_escape(content)}</p>')
 
 
 def print_detail(content: str):
     """打印详细信息（无 ✅ 前缀、无额外空行，紧跟 print_info 后展示附属信息）"""
     safe_content = escape(content)
     console.print(f"[{STYLES['info']}]{safe_content}[/{STYLES['info']}]")
-    _append_html(f'<p style="color:#3b82f6;">{html_escape(content)}</p>')
+    _append_html(f'<p style="color:#22d3ee;">{html_escape(content)}</p>')
 
 
 def print_user_input(content: str):
@@ -193,15 +193,15 @@ def print_user_input(content: str):
     # 记录本次交互的 HTML 起始索引
     _interaction_starts.append(len(_html_parts))
 
-    role_emoji = "👤"
-    role_color = "bright_cyan"
+    role_emoji = "👶"
+    role_color = "bold bright_cyan"
     role_name = "You"
 
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     # 用户消息使用简单的文本显示
     console.print(
-        f"\n[{role_color}]{role_emoji} {role_name}[/{role_color}] [{STYLES['timestamp']}]{timestamp}[/{STYLES['timestamp']}]")
+        f"\n[{role_color}]{role_emoji} {role_name}[/{role_color}] [white]{timestamp}[/white]")
     console.print(Panel(
         content,
         border_style=role_color,
@@ -214,7 +214,7 @@ def print_user_input(content: str):
     # 追加到 HTML 缓冲区
     _append_html(f'<div style="margin:12px 0;">'
                  f'<span style="color:#22d3ee;">👤 You</span> '
-                 f'<span style="color:#94a3b8;">{html_escape(timestamp)}</span>'
+                 f'<span>{html_escape(timestamp)}</span>'
                  f'<div style="border:1px solid #22d3ee; border-radius:4px; padding:8px; margin-top:4px;">'
                  f'{html_escape(content)}'
                  f'</div></div>')
@@ -259,14 +259,14 @@ Welcome to MyClaude Code CLI! A beautiful terminal interface for AI Coding.
 
     console.print(Panel(
         Markdown(welcome_text),
-        title="[bold magenta]MyClaude Code CLI[/bold magenta]",
-        border_style="blue",
+        title="[bold bright_cyan]MyClaude Code CLI[/bold bright_cyan]",
+        border_style="bright_cyan",
         padding=(1, 2)
     ))
 
     # HTML 缓冲区：欢迎信息文本（Markdown 格式无渲染，纯文本存储）
-    _append_html('<div style="border:2px solid #3b82f6; border-radius:8px; padding:12px; margin-bottom:16px;">'
-                 '<h1 style="color:#c084fc; margin:0 0 12px 0; font-size:28px; border-bottom:2px solid #7C3AED; padding-bottom:8px; text-align:center;">🤖 MyClaude Code CLI</h1>'
+    _append_html('<div style="border:2px solid #22d3ee; border-radius:8px; padding:12px; margin-bottom:16px;">'
+                 '<h1 style="color:#22d3ee; margin:0 0 12px 0; font-size:28px; border-bottom:2px solid #22d3ee; padding-bottom:8px; text-align:center;">🤖 MyClaude Code CLI</h1>'
                  '<pre style="color:#e2e8f0; white-space:pre-wrap; font-family:inherit;">'
                  + html_escape(welcome_text) +
                  '</pre></div>')
@@ -287,7 +287,7 @@ def print_banner():
 ║                    [ CLI Interface v2.0 ]                    ║
 ╚══════════════════════════════════════════════════════════════╝
     """
-    console.print(f"[bold magenta]{banner}[/bold magenta]")
+    console.print(f"[bold bright_cyan]{banner}[/bold bright_cyan]")
     console.print()
 
 
@@ -295,7 +295,7 @@ def print_header(session_id):
     """打印头部信息"""
     header_table = Table(show_header=False, box=None, padding=0)
     header_table.add_column(style="bright_cyan")
-    header_table.add_column(style="magenta", justify="right")
+    header_table.add_column(style="bright_cyan", justify="right")
 
     time_str = datetime.now().strftime("%H:%M:%S")
     header_table.add_row(
@@ -309,8 +309,8 @@ def print_header(session_id):
 
 def print_timestamp(timestamp):
     console.print(
-        f"\n[bold green]🤖 MyClaude[/bold green] "
-        f"[{STYLES['timestamp']}]{timestamp}[/{STYLES['timestamp']}]"
+        f"\n[bold bright_green]🤖 MyClaude[/bold bright_green] "
+        f"[white]{timestamp}[/white]"
     )
 
 
@@ -389,7 +389,7 @@ def typewriter_then_markdown(text: str, delay: float = 0.005):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     _append_html(f'<div style="margin:12px 0;">'
                  f'<span style="color:#4ade80;">🤖 MyClaude</span> '
-                 f'<span style="color:#94a3b8;">{html_escape(ts)}</span>'
+                 f'<span>{html_escape(ts)}</span>'
                  f'<pre style="background:#2D2D3F; border-radius:4px; padding:12px; '
                  f'color:#e2e8f0; white-space:pre-wrap; font-family:inherit; margin-top:4px;">'
                  f'{html_escape(text)}'
@@ -403,10 +403,10 @@ def show_history(messages):
         return
 
     table = Table(title="Conversation History", show_header=True)
-    table.add_column("ID", style="cyan", width=4)
-    table.add_column("Role", style="magenta")
+    table.add_column("ID", style="bright_cyan", width=4)
+    table.add_column("Role", style="bright_cyan")
     table.add_column("Preview", style="white")
-    table.add_column("Time", style="dim")
+    table.add_column("Time", style="white")
 
     for i, msg in enumerate(messages, 1):
         preview = msg['content'][:50] + "..." if len(msg['content']) > 50 else msg['content']
@@ -438,7 +438,7 @@ def show_token_count(token_stats: dict):
     console.print(stats_table)
     # HTML 缓冲区
     _append_html(
-        f'<p style="color:#f59e0b;">📊 Token（精确）: '
+        f'<p style="color:#22d3ee;">📊 Token（精确）: '
         f'输入(缓存命中)={token_stats["prompt_cache_hit"]:,}, '
         f'输入(未命中)={token_stats["prompt_cache_miss"]:,}, '
         f'输出={token_stats["completion_tokens"]:,}, '
@@ -463,7 +463,7 @@ def print_command_list(registry, prefix: str = None) -> None:
         return
 
     title = f"{prefix.strip('/').upper()} 命令列表" if prefix else "已注册命令列表"
-    table = Table(title=title, show_header=True, border_style="blue")
+    table = Table(title=title, show_header=True, border_style="bright_cyan")
     table.add_column("命令", style="bright_cyan", min_width=20)
     table.add_column("用途", style="white")
 
@@ -471,23 +471,23 @@ def print_command_list(registry, prefix: str = None) -> None:
         table.add_row(cmd.command_name, cmd.description or "(无描述)")
 
     console.print(table)
-    _append_html(f'<p style="color:#3b82f6;">✅ {html_escape(title)} 已显示</p>')
+    _append_html(f'<p style="color:#22d3ee;">✅ {html_escape(title)} 已显示</p>')
 
 
 def print_command_invoked(command_name: str, user_arg: str, file_path: str = "") -> None:
     """打印斜杠命令调用提示"""
-    console.print(f"\n[bold yellow]⚡ 命令: {escape(command_name)}[/bold yellow]")
+    console.print(f"\n[bold bright_cyan]⚡ 命令: {escape(command_name)}[/bold bright_cyan]")
     if user_arg:
-        console.print(f"[dim]📝 参数: {escape(user_arg)}[/dim]")
+        console.print(f"📝 参数: {escape(user_arg)}")
     if file_path:
-        console.print(f"[dim]📋 指令来源: {escape(file_path)}[/dim]")
-    console.print(f"[dim]{'─' * 40}[/dim]\n")
+        console.print(f"📋 指令来源: {escape(file_path)}")
+    console.print(f"{'─' * 40}\n")
 
     _append_html(
-        f'<div style="margin:8px 0; padding:8px; border-left:3px solid #f59e0b;">'
-        f'<span style="color:#f59e0b;">⚡ 命令: {html_escape(command_name)}</span><br>'
-        f'{"<span style=\"color:#94a3b8;\">📝 参数: " + html_escape(user_arg) + "</span><br>" if user_arg else ""}'
-        f'{"<span style=\"color:#94a3b8;\">📋 指令来源: " + html_escape(file_path) + "</span><br>" if file_path else ""}'
+        f'<div style="margin:8px 0; padding:8px; border-left:3px solid #22d3ee;">'
+        f'<span style="color:#22d3ee;">⚡ 命令: {html_escape(command_name)}</span><br>'
+        f'{"📝 参数: " + html_escape(user_arg) + "<br>" if user_arg else ""}'
+        f'{"📋 指令来源: " + html_escape(file_path) + "<br>" if file_path else ""}'
         f'</div>'
     )
 
@@ -496,18 +496,18 @@ def print_command_unknown(command_name: str, available: list[str]) -> None:
     """打印未知斜杠命令提示"""
     console.print(f"\n[bold red]⚠ 未知命令: {escape(command_name)}[/bold red]")
     if available:
-        console.print(f"[dim]可用命令: {', '.join(available)}[/dim]")
+        console.print(f"可用命令: {', '.join(available)}")
     console.print()
 
     _append_html(
         f'<p style="color:#ef4444;">⚠ 未知命令: {html_escape(command_name)}</p>'
-        f'<p style="color:#94a3b8;">可用命令: {html_escape(", ".join(available))}</p>'
+        f'<p>可用命令: {html_escape(", ".join(available))}</p>'
     )
 
 
 def print_unknown_cmd(command):
     print_error(f"Unknown command: {command}")
-    console.print("[dim]Type /help for available commands[/dim]")
+    console.print("Type /help for available commands")
 
 
 def typewriter_then_collapse(text: str, turn: int, delay: float = 0.003):
@@ -534,7 +534,7 @@ def typewriter_then_collapse(text: str, turn: int, delay: float = 0.003):
     max_visible_lines = max(4, (console.height * 2) // 3 - 4)
 
     with Live(
-        Panel("", title=base_title, border_style="dim", padding=(0, 1)),
+        Panel("", title=base_title, border_style="bright_cyan", padding=(0, 1)),
         console=console,
         refresh_per_second=30,
         transient=False,
@@ -549,7 +549,7 @@ def typewriter_then_collapse(text: str, turn: int, delay: float = 0.003):
             visible_lines = all_lines[-max_visible_lines:]
             display_text = '\n'.join(visible_lines)
             live.update(
-                Panel(display_text, title=base_title, border_style="dim", padding=(0, 1)),
+                Panel(display_text, title=base_title, border_style="bright_cyan", padding=(0, 1)),
                 refresh=True
             )
             if delay:
@@ -562,9 +562,9 @@ def typewriter_then_collapse(text: str, turn: int, delay: float = 0.003):
             preview += "\n···"
 
         collapsed_panel = Panel(
-            preview + f"\n[dim][已折叠，共 {char_count} 字符] — 输入 /t 数字 展开[/dim]",
+            preview + f"\n[已折叠，共 {char_count} 字符] — 输入 /t 数字 展开",
             title=f"💭 思考过程 ({char_count} 字符) [已折叠]",
-            border_style="dim",
+            border_style="bright_cyan",
             padding=(0, 1)
         )
         live.update(collapsed_panel, refresh=True)
@@ -572,7 +572,7 @@ def typewriter_then_collapse(text: str, turn: int, delay: float = 0.003):
     # 不阻塞，直接继续。完整文本由 QueryLoop 存储，通过 /t 命令访问。
     # 追加完整推理过程到 HTML 缓冲区
     _append_html(f'<details style="margin:8px 0;">'
-                 f'<summary style="color:#94a3b8; cursor:pointer;">💭 思考过程 ({char_count} 字符)</summary>'
+                 f'<summary style="cursor:pointer;">💭 思考过程 ({char_count} 字符)</summary>'
                  f'<pre style="background:#2D2D3F; border-radius:4px; padding:12px; '
                  f'color:#e2e8f0; white-space:pre-wrap; font-family:inherit; margin-top:8px;">'
                  f'{html_escape(text)}'
@@ -623,15 +623,15 @@ def print_ask_user_question(question: str, choices: list[str] | None = None) -> 
         for i, choice in enumerate(choices, 1):
             content_lines.append(f"  [{i}] {choice}")
         content_lines.append("")
-        content_lines.append("[dim]请输入编号选择，或直接输入文本回答：[/dim]")
+        content_lines.append("请输入编号选择，或直接输入文本回答：")
 
     content = "\n".join(content_lines)
 
-    # 使用 Rich Panel 渲染问题，边框黄色表示需要用户关注
+    # 使用 Rich Panel 渲染问题，边框亮青色
     console.print(Panel(
         content,
         title="🤔 AI 提问",
-        border_style="yellow",
+        border_style="bright_cyan",
         padding=(1, 2),
         width=console.width - 2
     ))
@@ -642,18 +642,18 @@ def print_ask_user_question(question: str, choices: list[str] | None = None) -> 
         choices_html = '<div style="margin-top:8px;">'
         for i, choice in enumerate(choices, 1):
             choices_html += f'<div>[{i}] {html_escape(choice)}</div>'
-        choices_html += '<div style="color:#94a3b8; margin-top:4px;">请输入编号选择，或直接输入文本回答</div></div>'
+        choices_html += '<div style="margin-top:4px;">请输入编号选择，或直接输入文本回答</div></div>'
 
     _append_html(
-        f'<div style="margin:12px 0; border:1px solid #f59e0b; border-radius:4px; padding:12px;">'
-        f'<div style="color:#f59e0b; font-weight:bold; margin-bottom:8px;">🤔 AI 提问</div>'
+        f'<div style="margin:12px 0; border:1px solid #22d3ee; border-radius:4px; padding:12px;">'
+        f'<div style="color:#22d3ee; font-weight:bold; margin-bottom:8px;">🤔 AI 提问</div>'
         f'<div style="color:#e2e8f0;">{html_escape(question)}</div>'
         f'{choices_html}'
         f'</div>'
     )
 
     # 同步阻塞等待用户输入（与项目全同步架构一致）
-    user_input = Prompt.ask("\n[bold yellow]>[/bold yellow]")
+    user_input = Prompt.ask("\n[bold bright_cyan]>[/bold bright_cyan]")
     return user_input
 
 
@@ -666,14 +666,14 @@ def print_tool_result(tool_name: str, content: str, params: dict | None = None):
         params: 工具参数（可选，用于判断 bash openspec 等命令时抑制长输出）
     """
     if not content:
-        console.print("    [yellow]⚠ 无输出[/yellow]")
-        _append_html('<p style="margin:4px 0 4px 40px; color:#f59e0b;">⚠ 无输出</p>')
+        console.print("    [bright_cyan]⚠ 无输出[/bright_cyan]")
+        _append_html('<p style="margin:4px 0 4px 40px; color:#22d3ee;">⚠ 无输出</p>')
         console.print()
         return
 
     # 对于 file_view、use_skill、excel_view，不打印详细内容，只输出简洁提示
     if tool_name in ("file_view", "use_skill", "excel_view"):
-        console.print(f"    [green]✓[/green] [{tool_name}]工具执行结果：详细内容略", markup=True)
+        console.print(f"    [bright_green]✓[/bright_green] [{tool_name}]工具执行结果：详细内容略", markup=True)
         _append_html(f'<p style="margin:4px 0 4px 40px; color:#4ade80;">✓ [{tool_name}] 工具执行结果</p>')
         console.print()
         return
@@ -687,7 +687,7 @@ def print_tool_result(tool_name: str, content: str, params: dict | None = None):
             bug_hint = "无相关 Bug"
         else:
             bug_hint = f"召回 {bug_count} 个相关 Bug"
-        console.print(f"    [green]✓[/green] [get_file_context] 函数摘要已获取，{bug_hint}", markup=True)
+        console.print(f"    [bright_green]✓[/bright_green] [get_file_context] 函数摘要已获取，{bug_hint}", markup=True)
         _append_html(f'<p style="margin:4px 0 4px 40px; color:#4ade80;">✓ [get_file_context] 函数摘要已获取，{bug_hint}</p>')
         console.print()
         return
@@ -697,7 +697,7 @@ def print_tool_result(tool_name: str, content: str, params: dict | None = None):
     if tool_name == "bash" and params:
         cmd_str = params.get("command", "").strip()
         if cmd_str.startswith("openspec"):
-            console.print(f"    [green]✓[/green] [bash]工具执行结果：略", markup=True)
+            console.print(f"    [bright_green]✓[/bright_green] [bash]工具执行结果：略", markup=True)
             _append_html(f'<p style="margin:4px 0 4px 40px; color:#4ade80;">✓ [bash] 工具执行结果（openspec 命令，已折叠）</p>')
             console.print()
             return
@@ -705,7 +705,7 @@ def print_tool_result(tool_name: str, content: str, params: dict | None = None):
     # 其他工具正常打印
     if len(content) < 300:
         safe_content = escape(content)
-        console.print(f"    [green]✓[/green] {safe_content}", markup=True)
+        console.print(f"    [bright_green]✓[/bright_green] {safe_content}", markup=True)
         _append_html(f'<p style="margin:4px 0 4px 40px; color:#4ade80;">✓</p>'
                      f'<pre style="background:#2D2D3F; margin:4px 0 4px 40px; padding:8px; '
                      f'border-radius:4px; color:#e2e8f0; white-space:pre-wrap; font-family:inherit; '
@@ -713,11 +713,11 @@ def print_tool_result(tool_name: str, content: str, params: dict | None = None):
         console.print()
     else:
         lines = content.count("\n") + 1
-        console.print(f"    [green]✓[/green] [dim]({lines} 行，共 {len(content)} 字符)[/dim]", markup=True)
+        console.print(f"    [bright_green]✓[/bright_green] ({lines} 行，共 {len(content)} 字符)", markup=True)
         safe_content = escape(content)
         console.print(safe_content, markup=True)
         _append_html(f'<p style="margin:4px 0 4px 40px; color:#4ade80;">✓'
-                     f' <span style="color:#94a3b8;">({lines} 行，{len(content)} 字符)</span></p>'
+                     f' ({lines} 行，{len(content)} 字符)</p>'
                      f'<pre style="background:#2D2D3F; margin:4px 0 4px 40px; padding:8px; '
                      f'border-radius:4px; color:#e2e8f0; white-space:pre-wrap; font-family:inherit; '
                      f'font-size:13px;">{html_escape(content)}</pre>')
@@ -767,7 +767,7 @@ def expand_reasoning(turn: int = -1):
     """
     global _reasoning_history, _reasoning_cursor, _reasoning_expanded
     if not _reasoning_history:
-        console.print("[dim]无思考过程可展开[/dim]")
+        console.print("无思考过程可展开")
         return
 
     total = len(_reasoning_history)
@@ -794,7 +794,7 @@ def expand_reasoning(turn: int = -1):
     console.print(Panel(
         text,
         title=f"💭 思考过程 [Turn {turn_num}] {idx + 1}/{total} ({len(text)} 字符) [已展开]",
-        border_style="dim",
+        border_style="bright_cyan",
         padding=(0, 1)
     ))
 
@@ -803,11 +803,11 @@ def fold_reasoning():
     """折叠当前展开的思考过程"""
     global _reasoning_history, _reasoning_cursor, _reasoning_expanded
     if not _reasoning_history:
-        console.print("[dim]无思考过程可折叠[/dim]")
+        console.print("无思考过程可折叠")
         return
 
     if not _reasoning_expanded:
-        console.print("[dim]当前已是折叠状态[/dim]")
+        console.print("当前已是折叠状态")
         return
 
     total = len(_reasoning_history)
@@ -830,9 +830,9 @@ def _show_reasoning_folded(text: str, turn: int, total: int):
     if len(lines) > 2 or len(preview) < char_count:
         preview += "\n···"
     console.print(Panel(
-        preview + f"\n[dim][已折叠，共 {char_count} 字符] — 输入 /t 数字 展开[/dim]",
+        preview + f"\n[已折叠，共 {char_count} 字符] — 输入 /t 数字 展开",
         title=f"💭 思考过程 [Turn {turn}] ({char_count} 字符) [已折叠]",
-        border_style="dim",
+        border_style="bright_cyan",
         padding=(0, 1)
     ))
 
@@ -845,7 +845,7 @@ def show_status(text: str = "Thinking...", spinner: str = "dots"):
         with show_status("正在执行..."):
             do_something()
     """
-    with console.status(f"[bold green]{text}...", spinner=spinner):
+    with console.status(f"[bold bright_green]{text}...", spinner=spinner):
         yield  # 把控制权交还给调用方
 
 
@@ -876,15 +876,15 @@ def print_todo_list(todo_list):
 
     for item in items:
         if item.status.value == "completed":
-            status_icon = "[green]✅[/green]"
-            content_style = "dim"
+            status_icon = "[bright_green]✅[/bright_green]"
+            content_style = "white"
         elif item.status.value == "in_progress":
-            status_icon = "[yellow]▶[/yellow]"
-            content_style = "bold yellow"
-            suffix = f" [dim]— {item.active_form}[/dim]" if item.active_form else ""
+            status_icon = "[bright_cyan]▶[/bright_cyan]"
+            content_style = "bold bright_cyan"
+            suffix = f" — {item.active_form}" if item.active_form else ""
         else:
-            status_icon = "[dim]○[/dim]"
-            content_style = "dim"
+            status_icon = "[white]○[/white]"
+            content_style = "white"
             suffix = ""
 
         # 使用 markup 转义内容中的方括号
@@ -912,10 +912,10 @@ def print_todo_list(todo_list):
             color = "#4ade80"
         elif item.status.value == "in_progress":
             icon = "▶"
-            color = "#f59e0b"
+            color = "#22d3ee"
         else:
             icon = "○"
-            color = "#94a3b8"
+            color = "#e2e8f0"
         todo_html_lines.append(
             f'<div style="color:{color};">{icon} {html_escape(item.content)}</div>'
         )
@@ -942,18 +942,18 @@ def print_memory_recall(retrieval_result):
     final_count = getattr(retrieval_result, "final_count", 0)
 
     if final_count == 0:
-        console.print(f"  [dim]🧠 记忆召回: 无相关记忆 (策略: {strategy_desc})[/dim]")
+        console.print(f"  🧠 记忆召回: 无相关记忆 (策略: {strategy_desc})")
         console.print()
-        _append_html(f'<p style="color:#94a3b8;">🧠 记忆召回: 无相关记忆 (策略: {html_escape(strategy_desc)})</p>')
+        _append_html(f'<p>🧠 记忆召回: 无相关记忆 (策略: {html_escape(strategy_desc)})</p>')
         return
 
     # 简洁格式：仅打印策略行，不打印具体记忆条目
-    console.print(f"  [dim]🧠 记忆召回 策略: {strategy_desc} ({strategy}) | 召回: {final_count} 条[/dim]")
+    console.print(f"  🧠 记忆召回 策略: {strategy_desc} ({strategy}) | 召回: {final_count} 条")
     console.print()
 
     _append_html(
-        f'<div style="margin:8px 0; padding:8px; border-left:3px solid #7c3aed;">'
-        f'<div style="color:#7c3aed; font-weight:bold;">🧠 记忆召回 策略: {html_escape(strategy_desc)} ({html_escape(strategy)}) | 召回: {final_count} 条</div>'
+        f'<div style="margin:8px 0; padding:8px; border-left:3px solid #22d3ee;">'
+        f'<div style="color:#22d3ee; font-weight:bold;">🧠 记忆召回 策略: {html_escape(strategy_desc)} ({html_escape(strategy)}) | 召回: {final_count} 条</div>'
         f'</div>'
     )
 
@@ -978,10 +978,10 @@ def print_memory_recall_detailed(retrieval_result, query: str = ""):
     # 头部
     sep = "=" * 50
     console.print(f"\n[bold bright_cyan]{sep}[/bold bright_cyan]")
-    console.print(f"  [bold]记忆召回测试[/bold]")
-    console.print(f"  [bold]策略: {strategy_desc} ({strategy})[/bold]")
+    console.print(f"  [bold white]记忆召回测试[/bold white]")
+    console.print(f"  [bold white]策略: {strategy_desc} ({strategy})[/bold white]")
     if query:
-        console.print(f"  查询: \"{escape(query)}\"")
+        console.print(f"  [white]查询: \"{escape(query)}\"[/white]")
     console.print(f"[bold bright_cyan]{sep}[/bold bright_cyan]")
 
     # 各阶段
@@ -990,7 +990,7 @@ def print_memory_recall_detailed(retrieval_result, query: str = ""):
         stage_items = getattr(stage, "items", [])
         stage_count = getattr(stage, "count", 0)
 
-        console.print(f"\n  [bold]── [{i}] {stage_name} ({stage_count}条) ──[/bold]")
+        console.print(f"\n  [bold white]── [{i}] {stage_name} ({stage_count}条) ──[/bold white]")
         for j, item in enumerate(stage_items, 1):
             score = item.get("score", "N/A")
             content = item.get("content", "")
@@ -1000,12 +1000,12 @@ def print_memory_recall_detailed(retrieval_result, query: str = ""):
                 score_str = f"{score:.4f}"
             else:
                 score_str = str(score)
-            console.print(f"  \\[{j}] 分数: {score_str}")
+            console.print(f"  [white]\\[{j}] 分数: {score_str}[/white]")
             if entry_id:
-                console.print(f"  [sky_blue](id={escape(entry_id)})[/sky_blue]")
-            console.print(f"  - {escape(content)}")
+                console.print(f"  [white](id={escape(entry_id)})[/white]")
+            console.print(f"  [white]- {escape(content)}[/white]")
             if session_id:
-                console.print(f"  [dim](session={escape(session_id)})[/dim]")
+                console.print(f"  [white](session={escape(session_id)})[/white]")
             console.print()
 
     # 最终返回
@@ -1019,29 +1019,29 @@ def print_memory_recall_detailed(retrieval_result, query: str = ""):
             score_str = f"{score:.4f}"
         else:
             score_str = str(score)
-        console.print(f"  \\[{j}] 分数: {score_str}")
+        console.print(f"  [white]\\[{j}] 分数: {score_str}[/white]")
         if entry_id:
-            console.print(f"  [sky_blue](id={escape(entry_id)})[/sky_blue]")
-        console.print(f"  - {escape(content)}")
+            console.print(f"  [white](id={escape(entry_id)})[/white]")
+        console.print(f"  [white]- {escape(content)}[/white]")
         if session_id:
-            console.print(f"  [dim](session={escape(session_id)})[/dim]")
+            console.print(f"  [white](session={escape(session_id)})[/white]")
         console.print()
 
     console.print(f"[bold bright_cyan]{sep}[/bold bright_cyan]\n")
 
     # HTML 缓冲区
-    html_parts = [f'<div style="margin:12px 0; border:1px solid #7c3aed; border-radius:8px; padding:12px;">']
-    html_parts.append(f'<div style="color:#7c3aed; font-weight:bold; margin-bottom:8px;">记忆召回测试</div>')
-    html_parts.append(f'<div style="color:#e2e8f0;">策略: {html_escape(strategy_desc)} ({html_escape(strategy)})</div>')
+    html_parts = [f'<div style="margin:12px 0; border:1px solid #22d3ee; border-radius:8px; padding:12px;">']
+    html_parts.append(f'<div style="color:#22d3ee; font-weight:bold; margin-bottom:8px;">记忆召回测试</div>')
+    html_parts.append(f'<div>策略: {html_escape(strategy_desc)} ({html_escape(strategy)})</div>')
     if query:
-        html_parts.append(f'<div style="color:#94a3b8;">查询: "{html_escape(query)}"</div>')
+        html_parts.append(f'<div>查询: "{html_escape(query)}"</div>')
     html_parts.append('<hr style="border:none; border-top:1px solid #e0e0e0; margin:8px 0;">')
 
     for i, stage in enumerate(stages, 1):
         stage_name = getattr(stage, "stage_name", "")
         stage_items = getattr(stage, "items", [])
         stage_count = getattr(stage, "count", 0)
-        html_parts.append(f'<div style="color:#f59e0b; font-weight:bold; margin-top:8px;">── [{i}] {html_escape(stage_name)} ({stage_count}条) ──</div>')
+        html_parts.append(f'<div style="color:#22d3ee; font-weight:bold; margin-top:8px;">── [{i}] {html_escape(stage_name)} ({stage_count}条) ──</div>')
         for j, item in enumerate(stage_items, 1):
             score = item.get("score", "N/A")
             content = item.get("content", "")
@@ -1050,10 +1050,10 @@ def print_memory_recall_detailed(retrieval_result, query: str = ""):
             score_str = f"{score:.4f}" if isinstance(score, float) else str(score)
             html_parts.append(f'<div style="margin:4px 0 4px 16px;">[{j}] 分数: {score_str}</div>')
             if entry_id:
-                html_parts.append(f'<div style="margin:0 0 0 16px; color:#94a3b8; font-size:0.9em;">(id={html_escape(entry_id)})</div>')
+                html_parts.append(f'<div style="margin:0 0 0 16px;">(id={html_escape(entry_id)})</div>')
             html_parts.append(f'<div style="margin:0 0 4px 16px;">- {html_escape(content)}</div>')
             if session_id:
-                html_parts.append(f'<div style="margin:0 0 4px 16px; color:#94a3b8; font-size:0.9em;">(session={html_escape(session_id)})</div>')
+                html_parts.append(f'<div style="margin:0 0 4px 16px;">(session={html_escape(session_id)})</div>')
 
     html_parts.append(f'<div style="color:#4ade80; font-weight:bold; margin-top:8px;">── 最终返回 ({final_count}条) ──</div>')
     for j, item in enumerate(final_items, 1):
@@ -1064,10 +1064,10 @@ def print_memory_recall_detailed(retrieval_result, query: str = ""):
         score_str = f"{score:.4f}" if isinstance(score, float) else str(score)
         html_parts.append(f'<div style="margin:4px 0 4px 16px;">[{j}] 分数: {score_str}</div>')
         if entry_id:
-            html_parts.append(f'<div style="margin:0 0 0 16px; color:#94a3b8; font-size:0.9em;">(id={html_escape(entry_id)})</div>')
+            html_parts.append(f'<div style="margin:0 0 0 16px;">(id={html_escape(entry_id)})</div>')
         html_parts.append(f'<div style="margin:0 0 4px 16px;">- {html_escape(content)}</div>')
         if session_id:
-            html_parts.append(f'<div style="margin:0 0 4px 16px; color:#94a3b8; font-size:0.9em;">(session={html_escape(session_id)})</div>')
+            html_parts.append(f'<div style="margin:0 0 4px 16px;">(session={html_escape(session_id)})</div>')
 
     html_parts.append('</div>')
     _append_html(''.join(html_parts))
