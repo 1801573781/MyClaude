@@ -1620,21 +1620,20 @@ class MyClaudeCLI:
 
         elif cmd == '/cs':
             # /cs — 统计项目代码行数
+            # 直接让 code_statistics 通过 Rich Console 渲染表格，避免 stdout 重定向导致 ANSI 乱码
             from src.cli.code_statistics import code_statistics
-            from io import StringIO
-            import sys as _sys
+            grand = code_statistics()
 
-            # 捕获 code_statistics 的输出用于记录到上下文
-            old_stdout = _sys.stdout
-            _sys.stdout = captured = StringIO()
-            try:
-                code_statistics()
-            finally:
-                _sys.stdout = old_stdout
-            output = captured.getvalue().strip()
-            if output:
-                # 截断过长输出，只保留摘要信息
-                self.query_loop.append_cli_result(output[:2000])
+            # 组装纯文本摘要供对话上下文使用
+            if grand:
+                summary_text = (
+                    f"项目代码统计: 文件 {grand.get('files', 0)} 个, "
+                    f"总行数 {grand.get('total', 0)}, "
+                    f"代码行 {grand.get('code', 0)}, "
+                    f"空行 {grand.get('blank', 0)}, "
+                    f"注释 {grand.get('comment', 0)}"
+                )
+                self.query_loop.append_cli_result(summary_text)
             return True
 
         elif cmd.startswith('/save'):
