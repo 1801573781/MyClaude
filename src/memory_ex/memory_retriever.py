@@ -193,7 +193,8 @@ class MemoryRetriever:
             try:
                 from .embedding.rerank_client import RerankClient
                 from src.utility.config_loader import global_cfg
-                rerank_provider = getattr(global_cfg, "rerank_re_ranking", None)
+                memory_cfg = getattr(global_cfg, "memory", None)
+                rerank_provider = getattr(memory_cfg, "rerank_re_ranking", None) if memory_cfg else None
                 if rerank_provider is not None:
                     provider_name = getattr(rerank_provider, "provider", "GLM")
                 else:
@@ -571,6 +572,9 @@ class MemoryRetriever:
     ) -> List[Dict[str, Any]]:
         """为粗排候选条目附加向量分数。
 
+        降级条目（带 _degraded 标记）已自带 score=0.0，跳过 API 调用，
+        避免对同一超长查询文本重复调用必然失败的 embedding API。
+
         Args:
             query: 查询文本
             candidates: 粗排匹配到的条目列表
@@ -578,6 +582,10 @@ class MemoryRetriever:
         Returns:
             带有 score 字段的条目列表
         """
+        # 降级条目已带 score=0.0，跳过 API 调用（避免重复失败）
+        if candidates and candidates[0].get("_degraded"):
+            return candidates
+
         try:
             results = retrieve_by_vector(
                 query,
@@ -590,7 +598,8 @@ class MemoryRetriever:
                     mem_id = r.get("id", "")
                     if mem_id:
                         score_map[mem_id] = r.get("score", 0.0)
-        except Exception:
+        except Exception as e:
+            print(f"⚠️ [记忆召回] 向量分数获取异常: {e}")
             score_map = {}
 
         enriched = []
@@ -624,13 +633,21 @@ class MemoryRetriever:
             )
         except Exception as e:
             logger.error(f"向量粗排异常: {e}，降级为全量记忆")
+            print(f"⚠️ [记忆召回] 向量粗排失败: {e}，已降级为全量记忆送入精排")
             results = None
 
         # 索引不存在或向量化失败 → 降级为全量记忆
         if results is None:
             if self._fallback_to_full:
                 logger.info("向量粗排降级：全量记忆送入 LLM 精排")
-                return entries
+                # 降级条目标记 score=0.0，避免 _enrich_with_vector_scores 重复调 API
+                degraded = []
+                for e in entries:
+                    item = dict(e)
+                    item["score"] = 0.0
+                    item["_degraded"] = True
+                    degraded.append(item)
+                return degraded
             else:
                 logger.info("向量粗排降级已禁用，不召回")
                 return []
@@ -641,14 +658,6 @@ class MemoryRetriever:
 
         # 用 ID 直接查表，将向量检索结果映射回结构化条目
         matched = self._match_vector_to_entries_by_id(results, entries)
-
-        # 如果匹配率过低（如索引过期），降级为全量记忆
-        if len(matched) < len(results) * 0.5:
-            logger.warning(
-                f"向量粗排 ID 匹配率低 ({len(matched)}/{len(results)})，"
-                f"索引可能过期，降级为全量记忆"
-            )
-            return entries if self._fallback_to_full else matched
 
         logger.info(f"向量粗排匹配 {len(matched)} 条候选记忆")
         return matched
@@ -749,6 +758,7 @@ class MemoryRetriever:
 
         except Exception as e:
             logger.error(f"LLM 精排失败: {e}，跳过召回")
+            print(f"⚠️ [记忆召回] LLM 精排失败: {e}，跳过精排")
             return []
 
     def _parse_layer1_entries(self, layer1_content: str) -> List[Dict[str, Any]]:
@@ -983,38 +993,33 @@ class MemoryRetriever:
 
         try:
             start = time.time()
-            # 优先使用精排模型（re-ranking.provider），失败时回退到通用 LLM
-            try:
-                from src.query import chat_llm
-                rerank_fn = getattr(chat_llm, "rerank_simple_chat", None)
-                if rerank_fn is None:
-                    raise AttributeError("chat_llm.rerank_simple_chat 不存在")
-                response = rerank_fn(
-                    prompt,
-                    temperature=0.1,
-                    max_tokens=20480,
-                    timeout=float(timeout),
-                )
-            except Exception:
-                response = self._llm_chat_fn(
-                    prompt,
-                    temperature=0.1,
-                    max_tokens=20480,
-                    timeout=float(timeout),
-                )
+            # 使用 LLM 精排模型（memory.llm_re_ranking.provider）
+            from src.query import chat_llm
+            rerank_fn = getattr(chat_llm, "rerank_simple_chat", None)
+            if rerank_fn is None:
+                raise AttributeError("chat_llm.rerank_simple_chat 不存在")
+            response = rerank_fn(
+                prompt,
+                temperature=0.1,
+                max_tokens=20480,
+                timeout=float(timeout),
+            )
             elapsed = time.time() - start
 
             if not response:
                 if elapsed >= timeout * 0.9:
                     logger.warning(f"LLM 预检索疑似超时（耗时 {elapsed:.1f}s，阈值 {timeout}s）")
+                    print(f"⚠️ [记忆召回] LLM 精排疑似超时（{elapsed:.1f}s），跳过精排")
                 else:
                     logger.warning(f"LLM 预检索返回空响应（耗时 {elapsed:.1f}s）")
+                    print(f"⚠️ [记忆召回] LLM 精排返回空响应，跳过精排")
                 return None
 
             logger.info(f"LLM 预检索成功（耗时 {elapsed:.1f}s）")
             return response
         except Exception as e:
             logger.error(f"LLM 预检索调用异常: {e}")
+            print(f"⚠️ [记忆召回] LLM 精排调用异常: {e}")
             return None
 
     def get_layer1_content(self) -> str:

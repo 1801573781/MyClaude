@@ -37,7 +37,8 @@ def load_embedding_config(config_path: str = None) -> EmbeddingConfig:
     with open(config_path, "r", encoding="utf-8") as f:
         raw = yaml.safe_load(f)
 
-    embedding_section = raw.get("embedding", {})
+    memory_section = raw.get("memory", {}) or {}
+    embedding_section = memory_section.get("embedding", {})
     provider = embedding_section.get("provider", "")
 
     # 用 provider 值作为 key 读取 API 连接参数

@@ -15,11 +15,56 @@ def _to_dict(obj):
     return obj
 
 
-model_provider = global_cfg.model.provider
-provider_cfg = getattr(global_cfg, model_provider)
-api_key = provider_cfg.api_key
-base_url = provider_cfg.base_url
-model_name = provider_cfg.model_name
+# 主模型配置：从 model_key.yaml 的 main_model 节读取 provider 名称
+main_model_cfg = getattr(global_cfg, "main_model", None)
+model_provider = getattr(main_model_cfg, "provider", "DeepSeek")
+
+
+def _resolve_provider_cfg(provider_name):
+    """根据 provider 名称从 model_key.yaml 顶层配置中查找对应连接参数。
+
+    支持 main_model / simple_chat / memory.llm_re_ranking /
+    memory.rerank_re_ranking 等节引用同一个 provider（如 "DeepSeek"），
+    返回包含 api_key、base_url、model_name、extra_body 的 SimpleNamespace。
+    """
+    provider_cfg = getattr(global_cfg, provider_name, None)
+    if provider_cfg is None:
+        logger.warning(f"provider '{provider_name}' 未在 model_key.yaml 顶层定义")
+    return provider_cfg
+
+
+def _merge_extra_body(base_extra_body, override_extra_body):
+    """合并 provider 顶层 extra_body 与专用节 extra_body。
+
+    专用节（如 simple_chat / memory.llm_re_ranking）的配置优先，
+    与 provider 顶层配置在 extra_body 层面冲突时以专用节为准。
+
+    Args:
+        base_extra_body: provider 顶层配置中的 extra_body（可能为 None）
+        override_extra_body: 专用节配置中的 extra_body（可能为 None）
+
+    Returns:
+        合并后的 dict；两者皆空时返回 None
+    """
+    base = _to_dict(base_extra_body) if base_extra_body else {}
+    override = _to_dict(override_extra_body) if override_extra_body else {}
+
+    if not base and not override:
+        return None
+
+    merged = dict(base)
+    for key, value in override.items():
+        if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
+            merged[key] = _merge_extra_body(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+provider_cfg = _resolve_provider_cfg(model_provider)
+api_key = getattr(provider_cfg, "api_key", None) if provider_cfg else None
+base_url = getattr(provider_cfg, "base_url", None) if provider_cfg else None
+model_name = getattr(provider_cfg, "model_name", None) if provider_cfg else None
 extra_body = getattr(provider_cfg, 'extra_body', None)
 
 # 检查当前 provider 是否限制 system 角色只能出现在消息列表首位
@@ -198,15 +243,82 @@ def stream_chat(msg, max_tokens=global_cfg.model_chat.initial_max_tokens):
     return full_content, is_truncated, reasoning_content, usage
 
 
+# ===== 单轮聊天（simple_chat）专用客户端 =====
+_simple_chat_client = None
+_simple_chat_model_name = ""
+_simple_chat_extra_body = None
+
+
+def _get_simple_chat_client():
+    """获取单轮聊天（simple_chat）专用客户端。
+
+    根据 model_key.yaml 中 simple_chat.provider 指定的配置创建独立客户端。
+    provider 顶层 connection 与 simple_chat.extra_body 合并，simple_chat 配置优先。
+    若 simple_chat 配置缺失或 provider 未定义，回退到主模型客户端。
+
+    Returns:
+        (client, model_name, extra_body) 元组
+    """
+    global _simple_chat_client, _simple_chat_model_name, _simple_chat_extra_body
+
+    if _simple_chat_client is not None:
+        return _simple_chat_client, _simple_chat_model_name, _simple_chat_extra_body
+
+    simple_chat_cfg = getattr(global_cfg, "simple_chat", None)
+    if simple_chat_cfg is None:
+        logger.warning("配置中缺少 simple_chat 节，回退到主模型")
+        _simple_chat_client = client
+        _simple_chat_model_name = model_name
+        _simple_chat_extra_body = _to_dict(extra_body) if extra_body else None
+        return _simple_chat_client, _simple_chat_model_name, _simple_chat_extra_body
+
+    simple_chat_provider = getattr(simple_chat_cfg, "provider", model_provider)
+    provider_cfg = _resolve_provider_cfg(simple_chat_provider)
+    if provider_cfg is None:
+        logger.warning(
+            f"simple_chat.provider={simple_chat_provider} 未在 model_key.yaml 中定义，"
+            f"回退到主模型"
+        )
+        _simple_chat_client = client
+        _simple_chat_model_name = model_name
+        _simple_chat_extra_body = _to_dict(extra_body) if extra_body else None
+        return _simple_chat_client, _simple_chat_model_name, _simple_chat_extra_body
+
+    _simple_chat_model_name = getattr(provider_cfg, "model_name", model_name)
+    _simple_chat_extra_body = _merge_extra_body(
+        getattr(provider_cfg, "extra_body", None),
+        getattr(simple_chat_cfg, "extra_body", None),
+    )
+    try:
+        _simple_chat_client = OpenAI(
+            api_key=getattr(provider_cfg, "api_key", api_key),
+            base_url=getattr(provider_cfg, "base_url", base_url),
+            http_client=httpx.Client(verify=False),
+            max_retries=0,
+        )
+        logger.info(
+            f"simple_chat 客户端已初始化: provider={simple_chat_provider}, "
+            f"model={_simple_chat_model_name}, extra_body={_simple_chat_extra_body}"
+        )
+    except Exception as e:
+        logger.error(f"simple_chat 客户端初始化失败: {e}，回退到主模型")
+        _simple_chat_client = client
+        _simple_chat_model_name = model_name
+        _simple_chat_extra_body = _to_dict(extra_body) if extra_body else None
+
+    return _simple_chat_client, _simple_chat_model_name, _simple_chat_extra_body
+
+
 def simple_chat(prompt: str, temperature: float = 0.3, max_tokens: int = 1024,
                   query: str = "", turn: str = "", timeout: float = 120) -> str:
-    """非流式单轮调用，供记忆系统（提取器/整理器/进化器）使用。
+    """非流式单轮调用，供记忆系统（提取器/整理器/进化器及意图压缩）使用。
 
     接收纯文本 prompt，构建单条 user 消息发送给 LLM，返回纯文本响应。
     发生异常时返回空字符串，不抛出异常，确保记忆系统流程不被中断。
 
-    注意：刻意不传 extra_body（关闭 thinking 模式），因为记忆系统的提取/
-    整理/进化是纯文本任务，thinking 会消耗大量 token 导致 content 为空。
+    模型与 extra_body 由 model_key.yaml 中 simple_chat 节配置：
+    provider 递归引用顶层连接参数，thinking 模式按 simple_chat.extra_body 的配置生效
+    （配置 disabled 就 disabled，配置 enabled 就 enabled）。
 
     Args:
         prompt: 完整的提示词文本
@@ -223,21 +335,22 @@ def simple_chat(prompt: str, temperature: float = 0.3, max_tokens: int = 1024,
         LLM 响应的纯文本内容；异常时返回空字符串
     """
     try:
+        sc_client, sc_model, sc_extra = _get_simple_chat_client()
         messages = _sanitize_messages_for_provider([{"role": "user", "content": prompt}])
         api_kwargs = dict(
-            model=model_name,
+            model=sc_model,
             messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
             stream=False,
             timeout=timeout,
         )
-        # 显式禁用 thinking 模式：GLM coding 端点默认启用 thinking，
-        # 非流式调用中 thinking 会消耗全部 max_tokens 导致 content 为空
-        if extra_body and hasattr(extra_body, 'thinking'):
-            api_kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+        # thinking 模式由 simple_chat.extra_body 决定：
+        # 配置 disabled 就 disabled，配置 enabled 就 enabled
+        if sc_extra:
+            api_kwargs["extra_body"] = sc_extra
 
-        response = client.chat.completions.create(**api_kwargs)
+        response = sc_client.chat.completions.create(**api_kwargs)
         choice = response.choices[0]
         content = choice.message.content or ""
 
@@ -247,7 +360,7 @@ def simple_chat(prompt: str, temperature: float = 0.3, max_tokens: int = 1024,
             effective_query = query if query else _context_query
             effective_turn = turn if turn else _context_turn
             record_token_usage(
-                model_name=model_name,
+                model_name=sc_model,
                 prompt_tokens=response.usage.prompt_tokens or 0,
                 cached_tokens=getattr(
                     getattr(response.usage, 'prompt_tokens_details', None),
@@ -271,63 +384,74 @@ def simple_chat(prompt: str, temperature: float = 0.3, max_tokens: int = 1024,
         return ""
 
 
-# ===== 精排模型（re-ranking）专用调用 =====
+# ===== LLM 精排模型（llm_re_ranking）专用调用 =====
 
-# 精排模型客户端（基于 re-ranking.provider 配置，惰性初始化）
+# LLM 精排模型客户端（基于 memory.llm_re_ranking.provider 配置，惰性初始化）
 _rerank_client = None
 _rerank_model_name = ""
+_rerank_extra_body = None
 
 
 def _get_rerank_client():
-    """获取精排模型客户端。
+    """获取 LLM 精排模型客户端。
 
-    根据 model_key.yaml 中 re-ranking.provider 指定的配置创建独立客户端。
-    若 re-ranking 配置缺失或 provider 未定义，回退到主模型客户端，确保精排始终可用。
+    根据 model_key.yaml 中 memory.llm_re_ranking.provider 指定的配置创建独立客户端。
+    provider 顶层 connection 与 llm_re_ranking.extra_body 合并，
+    llm_re_ranking 配置优先。
+    若 llm_re_ranking 配置缺失或 provider 未定义，回退到主模型客户端。
 
     Returns:
-        (client, model_name) 元组
+        (client, model_name, extra_body) 元组
     """
-    global _rerank_client, _rerank_model_name
+    global _rerank_client, _rerank_model_name, _rerank_extra_body
 
     if _rerank_client is not None:
-        return _rerank_client, _rerank_model_name
+        return _rerank_client, _rerank_model_name, _rerank_extra_body
 
-    # 读取 re-ranking 配置（键名含连字符，需用 getattr）
-    rerank_cfg = getattr(global_cfg, "re-ranking", None)
+    memory_cfg = getattr(global_cfg, "memory", None)
+    rerank_cfg = getattr(memory_cfg, "llm_re_ranking", None) if memory_cfg else None
     if rerank_cfg is None:
-        logger.warning("配置中缺少 re-ranking 节，精排回退到主模型")
+        logger.warning("配置中缺少 memory.llm_re_ranking 节，精排回退到主模型")
         _rerank_client = client
         _rerank_model_name = model_name
-        return _rerank_client, _rerank_model_name
+        _rerank_extra_body = _to_dict(extra_body) if extra_body else None
+        return _rerank_client, _rerank_model_name, _rerank_extra_body
 
-    rerank_provider = rerank_cfg.provider
-    provider_cfg = getattr(global_cfg, rerank_provider, None)
+    rerank_provider = getattr(rerank_cfg, "provider", model_provider)
+    provider_cfg = _resolve_provider_cfg(rerank_provider)
     if provider_cfg is None:
         logger.warning(
-            f"re-ranking.provider={rerank_provider} 未在 model_key.yaml 中定义，"
+            f"memory.llm_re_ranking.provider={rerank_provider} 未在 model_key.yaml 中定义，"
             f"精排回退到主模型"
         )
         _rerank_client = client
         _rerank_model_name = model_name
-        return _rerank_client, _rerank_model_name
+        _rerank_extra_body = _to_dict(extra_body) if extra_body else None
+        return _rerank_client, _rerank_model_name, _rerank_extra_body
 
+    _rerank_model_name = getattr(provider_cfg, "model_name", model_name)
+    _rerank_extra_body = _merge_extra_body(
+        getattr(provider_cfg, "extra_body", None),
+        getattr(rerank_cfg, "extra_body", None),
+    )
     try:
         _rerank_client = OpenAI(
-            api_key=provider_cfg.api_key,
-            base_url=provider_cfg.base_url,
+            api_key=getattr(provider_cfg, "api_key", api_key),
+            base_url=getattr(provider_cfg, "base_url", base_url),
             http_client=httpx.Client(verify=False),
             max_retries=0,
         )
-        _rerank_model_name = provider_cfg.model_name
         logger.info(
-            f"精排模型已初始化: provider={rerank_provider}, model={_rerank_model_name}"
+            f"LLM 精排模型已初始化: provider={rerank_provider}, "
+            f"model={_rerank_model_name}, extra_body={_rerank_extra_body}"
         )
     except Exception as e:
-        logger.error(f"精排客户端初始化失败: {e}，回退到主模型")
+        logger.error(f"LLM 精排客户端初始化失败: {e}，回退到主模型")
         _rerank_client = client
         _rerank_model_name = model_name
+        _rerank_extra_body = _to_dict(extra_body) if extra_body else None
 
-    return _rerank_client, _rerank_model_name
+    return _rerank_client, _rerank_model_name, _rerank_extra_body
 
 
 def rerank_simple_chat(prompt: str, temperature: float = 0.1,
@@ -347,7 +471,7 @@ def rerank_simple_chat(prompt: str, temperature: float = 0.1,
         LLM 响应的纯文本内容；异常时返回空字符串
     """
     try:
-        rerank_client, rerank_model = _get_rerank_client()
+        rerank_client, rerank_model, rerank_extra = _get_rerank_client()
         messages = _sanitize_messages_for_provider(
             [{"role": "user", "content": prompt}]
         )
@@ -359,10 +483,10 @@ def rerank_simple_chat(prompt: str, temperature: float = 0.1,
             stream=False,
             timeout=timeout,
         )
-        # 显式禁用 thinking 模式：GLM coding 端点默认启用 thinking，
-        # 非流式调用中 thinking 会消耗全部 max_tokens 导致 content 为空
-        if extra_body and hasattr(extra_body, 'thinking'):
-            api_kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+        # thinking 模式由 memory.llm_re_ranking.extra_body 决定：
+        # 配置 disabled 就 disabled，配置 enabled 就 enabled
+        if rerank_extra:
+            api_kwargs["extra_body"] = rerank_extra
 
         response = rerank_client.chat.completions.create(**api_kwargs)
 

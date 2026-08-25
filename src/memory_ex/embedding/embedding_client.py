@@ -2,9 +2,12 @@
 """
 封装 GLM embedding API 调用，支持批量向量化。
 """
+import logging
 import requests
 
 from .embedding_config import EmbeddingConfig
+
+logger = logging.getLogger(__name__)
 
 
 class EmbeddingClient:
@@ -71,9 +74,17 @@ class EmbeddingClient:
         ]
         return embeddings
 
+    # 单条文本向量化的最大输入字符数（约 8000 tokens）
+    # 超长文本（如完整 session log）会导致 Embedding API 报错，需截断
+    MAX_INPUT_CHARS = 16000
+
     def get_single_embedding(self, text: str) -> list:
         """
         获取单条文本的向量。
+
+        对超长文本进行截断，避免 Embedding API 报错。
+        截断长度为 MAX_INPUT_CHARS 字符，在保证不触发 API 限制的同时
+        尽可能保留更多语义信息。
 
         Args:
             text: 文本字符串
@@ -81,4 +92,10 @@ class EmbeddingClient:
         Returns:
             向量列表
         """
+        if len(text) > self.MAX_INPUT_CHARS:
+            logger.warning(
+                f"Embedding 输入文本过长（{len(text)} 字符），"
+                f"截断为前 {self.MAX_INPUT_CHARS} 字符"
+            )
+            text = text[:self.MAX_INPUT_CHARS]
         return self.get_embeddings([text])[0]

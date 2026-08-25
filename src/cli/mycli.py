@@ -975,37 +975,47 @@ class MyClaudeCLI:
                     reason = result.get('reason', '未知原因')
                     cli_print.print_info(f"记忆整理已跳过: {reason}")
                     self.query_loop.append_cli_result(f"记忆整理已跳过: {reason}")
-                else:
-                    merged = result.get('merged', 0)
-                    evicted = result.get('evicted', 0)
-                    l1_before = result.get('layer1_before', 0)
-                    l1_after = result.get('layer1_after', 0)
-                    duration_ms = result.get('duration_ms', 0)
-                    duration_str = MyClaudeCLI._format_duration(duration_ms)
+                    chat_llm.set_context()
+                    return True
 
-                    # 保存详细报告到 log 目录
-                    from src.utility.config_loader import global_cfg
-                    logs_root = global_cfg.base_path.logs_root
-                    report_path = self._save_compaction_report(result, logs_root, start_time=op_start_str, end_time=op_end_str)
+                merged = result.get('merged', 0)
+                evicted = result.get('evicted', 0)
+                l1_before = result.get('layer1_before', 0)
+                l1_after = result.get('layer1_after', 0)
+                duration_ms = result.get('duration_ms', 0)
+                duration_str = MyClaudeCLI._format_duration(duration_ms)
 
-                    cli_print.print_info(
-                        f"记忆整理完成:\n"
-                        f"  开始时间: {op_start_str}\n"
-                        f"  结束时间: {op_end_str}\n"
-                        f"  耗时: {duration_str}\n"
-                        f"  合并: {merged} 条\n"
-                        f"  淘汰: {evicted} 条\n"
-                        f"  Layer 1 条数: {l1_before} → {l1_after}\n"
-                        f"  详细报告已保存到: {report_path}"
-                    )
-                    self.query_loop.append_cli_result(
-                        f"记忆整理完成: 开始时间 {op_start_str}, 结束时间 {op_end_str}, 耗时: {duration_str}, "
-                        f"合并 {merged} 条, 淘汰 {evicted} 条, Layer 1 条数: {l1_before} → {l1_after}. 报告: {report_path}"
-                    )
+                # 保存详细报告到 log 目录
+                from src.utility.config_loader import global_cfg
+                logs_root = global_cfg.base_path.logs_root
+                report_path = self._save_compaction_report(result, logs_root, start_time=op_start_str, end_time=op_end_str)
+
+                cli_print.print_info(
+                    f"记忆整理完成:\n"
+                    f"  开始时间: {op_start_str}\n"
+                    f"  结束时间: {op_end_str}\n"
+                    f"  耗时: {duration_str}\n"
+                    f"  合并: {merged} 条\n"
+                    f"  淘汰: {evicted} 条\n"
+                    f"  Layer 1 条数: {l1_before} → {l1_after}\n"
+                    f"  详细报告已保存到: {report_path}"
+                )
                 # 清除 token 统计上下文
                 chat_llm.set_context()
                 # 记忆已变更，自动同步向量化
-                self._auto_embedding()
+                emb_result = self._auto_embedding()
+                # 合并整理结果和向量化结果为一条日志（多行格式，与 CLI 打印一致）
+                self.query_loop.append_cli_result(
+                    f"记忆整理完成:\n"
+                    f"  开始时间: {op_start_str}\n"
+                    f"  结束时间: {op_end_str}\n"
+                    f"  耗时: {duration_str}\n"
+                    f"  合并: {merged} 条\n"
+                    f"  淘汰: {evicted} 条\n"
+                    f"  Layer 1 条数: {l1_before} → {l1_after}\n"
+                    f"  详细报告已保存到: {report_path}"
+                    + (f"\n\n{emb_result}" if emb_result else "")
+                )
                 return True
 
             elif sub_cmd in ("evolution", "evo"):
