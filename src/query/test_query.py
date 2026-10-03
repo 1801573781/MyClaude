@@ -6,7 +6,7 @@ from src.utility.config_loader import global_cfg
 from openai import OpenAI
 
 
-provider_cfg = getattr(global_cfg, global_cfg.model.provider)
+provider_cfg = getattr(global_cfg, global_cfg.main_model.provider)
 
 
 def hello_with_openai() -> str:

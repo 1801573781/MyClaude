@@ -352,7 +352,25 @@ def simple_chat(prompt: str, temperature: float = 0.3, max_tokens: int = 1024,
 
         response = sc_client.chat.completions.create(**api_kwargs)
         choice = response.choices[0]
-        content = choice.message.content or ""
+        message = choice.message
+        finish_reason = getattr(choice, "finish_reason", None)
+        content = getattr(message, "content", None) or ""
+
+        # 思考模型在部分端点下可能将输出全部写入 reasoning_content（content 为空），
+        # 回退读取 reasoning_content，避免"API 成功但内容为空"的静默失败
+        reasoning = getattr(message, "reasoning_content", None) or getattr(message, "reasoning", None) or ""
+        if not content.strip():
+            if reasoning.strip():
+                logger.warning(
+                    f"simple_chat content 为空，回退使用 reasoning_content "
+                    f"(model={sc_model}, finish_reason={finish_reason})"
+                )
+                content = reasoning
+            else:
+                logger.warning(
+                    f"simple_chat 返回空响应 (model={sc_model}, "
+                    f"finish_reason={finish_reason}, max_tokens={max_tokens})"
+                )
 
         # 记录 token 统计：优先使用参数传入的 query/turn，否则使用模块级上下文
         if response.usage:
@@ -489,6 +507,33 @@ def rerank_simple_chat(prompt: str, temperature: float = 0.1,
             api_kwargs["extra_body"] = rerank_extra
 
         response = rerank_client.chat.completions.create(**api_kwargs)
+        choice = response.choices[0]
+        message = choice.message
+        finish_reason = getattr(choice, "finish_reason", None)
+        content = getattr(message, "content", None) or ""
+
+        # 思考模型在部分端点下可能将输出全部写入 reasoning_content（content 为空），
+        # 回退读取 reasoning_content，避免"API 成功但内容为空"导致精排静默跳过
+        reasoning = getattr(message, "reasoning_content", None) or getattr(message, "reasoning", None) or ""
+        if not content.strip():
+            if reasoning.strip():
+                logger.warning(
+                    f"精排 content 为空，回退使用 reasoning_content "
+                    f"(model={rerank_model}, finish_reason={finish_reason})"
+                )
+                content = reasoning
+            else:
+                logger.warning(
+                    f"精排返回空响应 (model={rerank_model}, "
+                    f"finish_reason={finish_reason}, max_tokens={max_tokens})"
+                )
+
+        # 检查是否因 max_tokens 不足被截断
+        if finish_reason == "length":
+            logger.warning(
+                f"精排响应被截断 (finish_reason=length, max_tokens={max_tokens})，"
+                f"返回内容可能不完整"
+            )
 
         # 记录 token 统计：精排模型消耗的 token 也需统计
         # 使用模块级上下文（由 query_loop 或 CLI 在调用前通过 set_context 设置）
@@ -508,7 +553,7 @@ def rerank_simple_chat(prompt: str, temperature: float = 0.1,
                 turn=effective_turn,
             )
 
-        return response.choices[0].message.content or ""
+        return content.strip()
     except Exception as e:
         logger.error(f"精排调用失败: {e}")
         return ""
