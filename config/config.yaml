@@ -48,3 +48,15 @@ api_constraints:
 # log配置
 log:
   format: "html"   # 可选 "md" 或 "html"
+
+# 互联网搜索工具配置（参数类；密钥在 model_key.yaml 的 web_search 段）
+web_search:
+  enabled: true          # 功能总开关（true=启用联网搜索）
+  trigger_mode: private  # 触发模式: auto=LLM自主 / explicit=仅用户明确要求 / private=自主但query仅限通用词汇
+  sensitive_words: []    # 额外受保护词汇（query命中即拒绝），如 ["MyClaude", "某内部项目名"]
+  max_results: 5          # 默认返回条数
+  timeout: 10             # HTTP 超时（秒）
+  max_retries: 2          # 失败重试次数（指数退避）
+  cache_ttl: 3600         # 搜索结果本地缓存有效期（秒），0 为禁用缓存
+  token_budget: 3000      # 单次结果注入的 token 预算
+  min_interval: 2.0       # 两次真实搜索的最小间隔（秒），防止刷配额

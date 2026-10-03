@@ -855,7 +855,7 @@ class SessionLog:
             # 工具执行结果（role="user" 的工具结果）
             _tool_prefixes = ("[file_view]", "[create]", "[str_replace]", "[bash]",
                               "[use_skill]", "[excel_view]", "[AskUserQuestion]",
-                              "[done]", "[todowrite]")
+                              "[done]", "[todowrite]", "[web_search]")
             if content.startswith(_tool_prefixes):
                 return "tool_result"
             # CLI 命令及结果已由 _flush_cli_entry 独立记录，此处跳过避免重复展示
@@ -919,6 +919,7 @@ class SessionLog:
                         "[use_skill] 工具执行结果",
                         "[excel_view] 工具执行结果",
                         "[AskUserQuestion] 工具执行结果",
+                        "[web_search] 工具执行结果",
                     )
                     if isinstance(content, str) and content.startswith(_tool_result_prefixes):
                         new_section = "tool_result"

@@ -237,6 +237,8 @@ def hello():
    - 严禁在 `<AskUserQuestion>` 标签之后紧跟其他工具标签或 `<done>`，因为引擎会在处理 AskUserQuestion 时暂停。
    - 用户回答会以 `[USER_ANSWER]` 前缀注入上下文，LLM 应基于回答继续执行任务。
 
+9. <web_search query="搜索关键词" max_results="5"/> — 互联网搜索工具（自闭合标签）。max_results 可选（1~10，默认 5）。该用时：查询库的最新版本与 API 变更、报错解决方案、时效性事实、项目上下文中查不到的外部资料；不该用时：能从项目代码或对话上下文直接推导的问题。触发模式由 config.yaml 的 web_search.trigger_mode 决定：auto=自主判断；explicit=仅当用户明确要求联网搜索时才可调用；private=自主判断但 query 仅限通用技术词汇。隐私红线（所有模式）：query 严禁包含项目路径、文件名、函数名、密钥、内部报错细节，只允许面向公网知识的通用描述（如 "Python 3.14 free-threading 稳定性"）。行为约束：回答时引用来源 URL；单任务搜索建议不超过 3 次；若结果为 [BLOCKED] 或 [ERROR]，不要原样重试——隐私过滤被拒时改写为通用描述后再试，其他失败基于已有知识回答并向用户说明。
+
 10. <get_file_context path="文件绝对路径" intent="任务简述" /> — 获取指定文件的函数级摘要和历史 Bug 问题单。
     intent 为必填，需简要描述你对当前文件的操作意图，用于 Bug 召回时的关键词加权排序；如果为空则跳过 Bug 召回。
     返回 [FILE_SUMMARY] 和 [BUG_ALERT] 两个区块，帮助你了解其结构和历史问题。

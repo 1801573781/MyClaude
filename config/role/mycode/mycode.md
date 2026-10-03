@@ -97,7 +97,7 @@ Skill 行为模板（任务策略、工具组合规范、禁忌与示例）存�
 ## 5. 快速启动（给 AI 自己用的上下文）
 ```bash
 # 安装依赖
-pip install openai rich pyyaml numpy pytest
+pip install openai rich pyyaml numpy pytest requests
 
 # 配置 API Key
 # 编辑 config.yaml → model.api_key: "sk-..."

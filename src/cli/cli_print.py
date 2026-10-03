@@ -596,6 +596,11 @@ def print_tool_call(tool_name: str, params: dict):
         if offset is not None:
             parts.append(f"offset={offset}")
         detail = "，".join(parts)
+    elif tool_name == "web_search":
+        # web_search 显示查询词与请求条数
+        query = params.get("query", "")
+        max_results = params.get("max_results")
+        detail = f"{query}（max_results={max_results}）" if max_results is not None else query
     else:
         detail = params.get("path", "")
 
@@ -689,6 +694,15 @@ def print_tool_result(tool_name: str, content: str, params: dict | None = None):
             bug_hint = f"召回 {bug_count} 个相关 Bug"
         console.print(f"    [bright_green]✓[/bright_green] [get_file_context] 函数摘要已获取，{bug_hint}", markup=True)
         _append_html(f'<p style="margin:4px 0 4px 40px; color:#4ade80;">✓ [get_file_context] 函数摘要已获取，{bug_hint}</p>')
+        console.print()
+        return
+
+    # 对于 web_search，只打印结果首行（后端/查询/条数摘要），完整结果注入 LLM 上下文
+    # [BLOCKED]/[ERROR] 提示较短，走正常打印路径完整展示
+    if tool_name == "web_search" and not content.startswith(("[BLOCKED]", "[ERROR]")):
+        first_line = content.split("\n", 1)[0]
+        console.print(f"    [bright_green]✓[/bright_green] {escape(first_line)}，详细内容略", markup=True)
+        _append_html(f'<p style="margin:4px 0 4px 40px; color:#4ade80;">✓ {html_escape(first_line)}，详细内容略</p>')
         console.print()
         return
 

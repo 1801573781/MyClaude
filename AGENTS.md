@@ -4,7 +4,7 @@
 
 - **Run**: `python -m src.myclaude` (root `src/myclaude.py`)
 - **With proxy** (corp env): `start.bat` sets `http_proxy`, `https_proxy`, `NODE_TLS_REJECT_UNAUTHORIZED=0`
-- **Deps**: `pip_install.bat` → `openai`, `rich`, `prompt-toolkit`, `PyYAML`
+- **Deps**: `pip_install.bat` → `openai`, `rich`, `prompt-toolkit`, `PyYAML`, `requests`
 - **Role flag**: `-r mycode` (only `mycode` supported; others rejected)
 - **CLI commands**: `/quit`, `/clear`, `/help`, `/tokens`, `/t N`, `/r mem`, `/pt`, `/h2m`, `/cs`, `/save`
 
@@ -37,6 +37,7 @@ Tools parsed from LLM output via regex in `src/llm_tool/tool_executor.py`:
 - `<str_replace path="..." summary="..."><old>...</old><new>...</new></str_replace>`
 - `<bash>command</bash>`
 - `<use_skill name="..."/>`
+- `<web_search query="..." max_results="N"/>` (internet search; gated by `web_search.enabled` + `trigger_mode` [auto/explicit/private]; privacy filter rejects queries containing paths/keys)
 - `<done>summary</done>`
 
 ## Critical Rules (from sys_prompt)
