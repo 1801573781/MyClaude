@@ -265,7 +265,7 @@ class QueryLoop:
                                                      ai_response, reasoning_content)
 
             """3. 开始处理工具"""
-            quit_chat, tool_exec_info = self._handle_tools(tools)
+            quit_chat, tool_exec_info = self._handle_tools(tools, remaining_text)
 
             # 只记录首个完整 Turn 的记忆（避免同一 Query 多 Turn 重复写入 raw 记忆）
             # 后续 Turn 主要是工具执行跟进，核心信息已在首 Turn 中体现
@@ -561,11 +561,49 @@ class QueryLoop:
         }
         return prompts.get(retry_count, prompts[3])
 
-    def _follow_up_for_tools(self):
+    def _get_format_error_prompt(self, retry_count: int) -> str:
+        """格式纠错追问：检测到标签形态但未解析出任何工具时（402 现场）。
+
+        典型现场：LLM 输出 '<web_search max_results="5" query="深圳今天天气.../web_search>'
+        ——属性值引号未闭合 + 自闭合标签误用容器闭合。strict/loose/lenient 均无法
+        解析时，标签文本被当作正文直接展示给用户，用户只看到裸 XML，工具从未执行。
+
+        Args:
+            retry_count: 追问次数（1, 2, 3）
+
+        Returns:
+            携带正确格式示例的纠错追问消息
+        """
+        prompts = {
+            1: (
+                "[格式错误] 你上一条回复中的工具标签格式错误，未能解析执行。常见错误：属性值引号未闭合、"
+                "自闭合标签误用了容器式闭合标签。正确格式示例：\n"
+                '<file_view path="D:/AI/MyClaude/spec/xxx.md"/>\n'
+                '<web_search query="搜索关键词" max_results="5"/>\n'
+                "请严格按照上述格式重新输出工具调用（自闭合标签以 /> 结尾，属性值必须有成对双引号）。"
+            ),
+            2: (
+                "[格式错误-重复] 工具标签仍然无法解析。请检查：1) 每个属性值都有成对双引号；"
+                "2) 自闭合标签（file_view/web_search/use_skill 等）必须以 /> 结尾，不要写 </tag>；"
+                "3) 不要在属性值中换行。重新输出正确的工具调用。"
+            ),
+            3: (
+                "[最后机会] 请输出一个格式正确的工具调用，或直接输出 <done> 结束本轮。"
+                "工具调用格式：工具名 + 属性（值用双引号包裹）+ 以 /> 结尾，"
+                '例如 <web_search query="深圳天气"/>'
+            ),
+        }
+        return prompts.get(retry_count, prompts[3])
+
+    def _follow_up_for_tools(self, format_error: bool = False):
         """无工具时追问 LLM 最多 3 次，尝试获取工具列表。
 
         追问成功后，将追问消息和 LLM 回复追加到正式 api_messages，
         确保后续工具执行结果前面有完整的 assistant 消息，避免上下文断裂。
+
+        Args:
+            format_error: 是否为格式纠错模式（检测到标签形态但解析失败），
+                          使用携带正确格式示例的纠错提示词
 
         Returns:
             解析到的工具列表；若 3 次追问仍无工具，返回空列表。
@@ -576,9 +614,13 @@ class QueryLoop:
             return []
 
         self._no_tool_retry += 1
-        prompt = self._get_follow_up_prompt(self._no_tool_retry)
+        if format_error:
+            prompt = self._get_format_error_prompt(self._no_tool_retry)
+        else:
+            prompt = self._get_follow_up_prompt(self._no_tool_retry)
         # 方案 E：第一次追问静默（不打印到屏幕），只注入给 LLM
-        silent = (self._no_tool_retry == 1)
+        # 格式纠错场景不静默：让用户看到发生了什么
+        silent = (self._no_tool_retry == 1) and not format_error
         if not silent:
             self._print_info(f"[追问 {self._no_tool_retry}/3] {prompt}")
 
@@ -612,7 +654,8 @@ class QueryLoop:
             self.session.log_dict_info({"role": "system", "content": reason})
             self.session.log_turn(-self._no_tool_retry)  # 负数 turn 表示追问
             self.session.log_llm_req(temp_msgs)
-            self.session.log_llm_rsp(ai_response)
+            md_content = self._compress_assistant_message(strip_thinking(ai_response))
+            self.session.log_llm_rsp(ai_response, md_content=md_content)
             self.session.log_reasoning_content(reasoning_content)
         except Exception as e:
             logger.error(f"追问 LLM 失败: {e}")
@@ -625,7 +668,12 @@ class QueryLoop:
         if not ai_response_clean.strip() and reasoning_content:
             ai_response_clean = reasoning_content.strip()
 
-        _, tools = tool_executor.parse_tools(ai_response_clean)
+        remaining_text, tools = tool_executor.parse_tools(ai_response_clean)
+
+        # 打印追问回复中的正文（此前正文被丢弃，导致用户看不到 LLM 的说明文字，
+        # 出现"done 消息声称已提供内容但用户从未看到"的现象）
+        if remaining_text:
+            self._print_llm_rsp(remaining_text)
 
         if tools:
             if not silent:
@@ -641,21 +689,47 @@ class QueryLoop:
         return tools
 
 
-    def _handle_tools(self, tools):
+    def _handle_tools(self, tools, remaining_text: str = ""):
         """执行工具并返回 (quit_chat, tool_exec_info)。
         tool_exec_info 为列表，每个元素是 {"tool": 工具名, "params": 参数, "result": 结果文本}。
+
+        Args:
+            tools: 解析出的工具列表
+            remaining_text: 工具标签剥离后的正文（用于标签形态检测）
         """
         # 1. 如果 LLM response 中没有工具
         if not tools:
-            # 第一轮（is_multi_turns 未确定）：无工具无 done → 单轮场景
+            # ===== 402 修复：第一轮无工具但残留标签形态 → 格式纠错追问 =====
+            # LLM 输出畸形标签（引号未闭合等）时，标签文本被当正文展示，
+            # 工具从未执行。检测到标签形态时优先追问纠错，而非静默退出单轮。
+            tag_shape = tool_executor.has_tool_tag_shape(remaining_text)
             if self.is_multi_turns is None:
-                self.is_multi_turns = False
-                self.session.log_dict_info({"role": "system", "content": "LLM 未调用工具，本轮结束，等待用户输入"})
-                return ChatOrNot.QuitByNoneTool, []
+                if tag_shape:
+                    # 有标签形态但未解析出工具：格式错误，触发纠错追问
+                    self.is_multi_turns = True
+                    self._print_info("[格式异常] 检测到工具标签形态但解析失败，发起格式纠错追问")
+                    self.session.log_dict_info({
+                        "role": "system",
+                        "content": "[格式异常] 工具标签格式错误（引号未闭合/闭合标签误用），触发格式纠错追问"
+                    })
+                    while self._no_tool_retry < 3:
+                        tools = self._follow_up_for_tools(format_error=True)
+                        if tools:
+                            self._no_tool_retry = 0
+                            break
+                    if not tools:
+                        self._print_info("格式纠错追问 3 次后仍未获得工具，本轮结束，等待用户输入")
+                        self.session.log_dict_info({"role": "system", "content": "格式纠错追问 3 次后仍未获得工具，本轮结束，等待用户输入"})
+                        return ChatOrNot.QuitByNoneTool, []
+                else:
+                    # 正常无工具无标签形态：单轮场景
+                    self.is_multi_turns = False
+                    self.session.log_dict_info({"role": "system", "content": "LLM 未调用工具，本轮结束，等待用户输入"})
+                    return ChatOrNot.QuitByNoneTool, []
 
             # is_multi_turns = True 的后续轮次：无工具无 done → 触发追问
             while self._no_tool_retry < 3:
-                tools = self._follow_up_for_tools()
+                tools = self._follow_up_for_tools(format_error=tag_shape)
                 if tools:
                     # 追问得到了工具，重置计数器
                     self._no_tool_retry = 0

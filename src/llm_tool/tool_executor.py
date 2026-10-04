@@ -1,19 +1,77 @@
+import logging
+import re
+
 from src.utility.config_loader import global_cfg
 from src.utility.file_tool import file_view, file_create, file_str_replace
 from src.llm_tool.cmd_bash import tool_bash
 
-import re
+logger = logging.getLogger(__name__)
 
 # ======================== XML 标签集中管理 ========================
 # 所有 XML 工具标签（用于标签泄露清理和识别）。
 # 新增工具时必须同步更新这三个常量，其他地方全部引用它们。
-_ALL_XML_TAGS = {"create", "str_replace", "bash", "done", "file_view", "excel_view", "use_skill", "old", "new", "AskUserQuestion", "get_file_context", "web_search"}
+_ALL_XML_TAGS = {"create", "str_replace", "bash", "done", "todowrite", "file_view", "excel_view", "use_skill", "old", "new", "AskUserQuestion", "get_file_context", "web_search"}
 
 # 容器标签（需要闭合标签的，如 <create>...</create>）
-_CONTAINER_TAGS = {"create", "str_replace", "bash", "done"}
+# 修复：todowrite 此前遗漏，导致其开标签正则虽已定义但 strict 循环永远遍历不到，标签永不解析
+_CONTAINER_TAGS = {"create", "str_replace", "bash", "done", "todowrite"}
 
 # 自闭合标签（如 <file_view path="..."/>）
 _SELF_CLOSING_TAGS = {"file_view", "excel_view", "use_skill", "AskUserQuestion", "get_file_context", "web_search"}
+
+# 属性序列片段（strict，双引号值）：任意属性名 + 双引号值（值内可含 > / 等特殊字符），重复 1+ 次。
+# 用于属性顺序无关的标签匹配：LLM 交换属性顺序（如 max_results 写在 query 之前）时不再失配。
+_ATTR_SEQ = r'(?:[a-zA-Z_][\w-]*\s*=\s*"[^"]*"\s*)+'
+
+# 属性序列片段（loose，兼容单/双引号值），用于 reasoning_content 兜底解析
+_ATTR_SEQ_LOOSE = r"""(?:[a-zA-Z_][\w-]*\s*=\s*["'][^"']*["']\s*)+"""
+
+
+def _extract_attr(attrs: str, name: str):
+    """从属性串中提取指定属性值（双引号形态）。未找到返回 None。
+
+    负向后顾断言防止匹配到其他属性的尾部（如从 xpath 中误提取 path）。
+    """
+    m = re.search(rf'(?<![\w-]){name}\s*=\s*"([^"]*)"', attrs)
+    return m.group(1) if m else None
+
+
+def _extract_attr_loose(attrs: str, name: str):
+    """从属性串中提取指定属性值（单/双引号均可）。未找到返回 None。"""
+    m = re.search(rf"""(?<![\w-]){name}\s*=\s*["']([^"']*)["']""", attrs)
+    return m.group(1) if m else None
+
+
+def _extract_attr_lenient(attrs: str, name: str):
+    """宽容属性提取：处理引号未闭合的畸形属性串（402 现场）。
+
+    策略：
+    1. 先尝试标准完整引号对提取；若值内疑似吞并了后续属性（含 name=" 残留特征），
+       说明引号配对错位，转边界感知提取
+    2. 边界感知：值取到下一个"属性名="边界或串末尾，剥除残余引号
+
+    示例（402 现场）：
+        attrs = 'max_results="5" query="深圳今天天气 2026年10月4日'
+        max_results -> "5"（标准提取命中）
+        query -> "深圳今天天气 2026年10月4日"（未闭合，边界感知取到串末尾）
+    """
+    m = re.search(rf'(?<![\w-]){name}\s*=\s*"([^"]*)"', attrs)
+    if m:
+        val = m.group(1)
+        # 值内疑似吞并了后续属性（如 "5 query=" 或 "... choices="）→ 引号配对错位，转边界感知。
+        # 检测特征：值中残留 "空格+属性名=" 边界（其后的引号可能已被误当作闭合引号消费）
+        if not re.search(r'\s+[a-zA-Z_][\w-]*\s*=', val):
+            return val
+    # 边界感知提取：值 = 到下一个属性名= 边界之前或串末尾
+    m = re.search(rf'(?<![\w-]){name}\s*=\s*(.+?)(?=\s+[a-zA-Z_][\w-]*\s*=|$)', attrs)
+    if not m:
+        return None
+    val = m.group(1).strip()
+    if len(val) >= 2 and val[0] == val[-1] and val[0] in ('"', "'"):
+        val = val[1:-1]
+    elif val.startswith(('"', "'")):
+        val = val[1:].rstrip('"\'')
+    return val
 
 
 def _final_clean_xml_tags(content: str) -> str:
@@ -184,15 +242,13 @@ def _parse_str_replace_block(block: str):
     Returns:
         dict 或 None（解析失败时）
     """
-    # 1. 从块开头提取外层 path/summary
-    open_match = re.match(
-        r'<str_replace\s+path="([^"]*)"(?:\s+summary="([^"]*)")?\s*>',
-        block
-    )
+    # 1. 从块开头提取外层 path/summary（属性顺序无关：先匹配属性串再提取）
+    open_match = re.match(r'<str_replace\s+(' + _ATTR_SEQ + r')>', block)
     if not open_match:
         return None
-    path = open_match.group(1)
-    summary = open_match.group(2) or ""
+    attrs = open_match.group(1)
+    path = _extract_attr(attrs, "path") or ""
+    summary = _extract_attr(attrs, "summary") or ""
 
     # 2. 提取 old 子标签（嵌套感知优先）
     old_content, old_end, old_found = _extract_subtag_content(block, "old")
@@ -271,6 +327,124 @@ def _parse_str_replace_block(block: str):
     }
 
 
+
+
+def has_tool_tag_shape(text: str) -> bool:
+    """安全网检测：正文中残留疑似工具标签形态的文本（402 现场）。
+
+    LLM 输出畸形标签（如属性值引号未闭合）导致 strict/loose 均失配时，
+    标签文本会被当作普通正文展示给用户——用户看到裸 XML 而非工具执行。
+    此检测供 query_loop 判断"无工具但有标签形态"场景，触发格式纠错追问。
+
+    只检测自闭合标签的形态（标签名 + 至少一个属性=），避免正文里提到
+    <done> 字样造成误报。
+    """
+    for tag in _SELF_CLOSING_TAGS:
+        if re.search(rf'<{tag}\s+[a-zA-Z_][\w-]*\s*=', text):
+            return True
+    return False
+
+
+def _parse_tools_lenient(response: str):
+    """宽容解析层：处理引号未闭合 + 容器式误闭合的复合畸形标签（402 现场）。
+
+    strict/loose 均要求属性值有完整引号对，无法解析：
+
+
+    本层策略（仅在 strict/loose 均无工具时启用）：
+    1. 匹配标签名 + 宽松属性段（引号可未闭合，值内可含 < / > 等字符）
+    2. _extract_attr_lenient 边界感知提取属性值
+    3. 剥除容器式误闭合尾（</tag>）或裸 > 后提取属性
+    """
+    tools = []
+    consumed = []
+
+    for tag in _SELF_CLOSING_TAGS:
+        # 宽容匹配：<tag ...，以首个闭标签 </tag>、裸 > 或行尾结束（取最近者）。
+        # 行尾兜底：输出被截断（流式中断/生成停止）时标签无任何结束符，
+        # 如 402 变体 '<AskUserQuestion question="... choices="A,B'（串尾无 >）。
+        pattern = rf'<{tag}\s.*?(?:</{tag}>|>|\n|$)'
+        for m in _iter_outside_code(re.compile(pattern, re.DOTALL), response):
+            raw = m.group(0)
+            # 剥离容器式误闭合尾或裸 >
+            inner = raw[len(f'<{tag}'):]
+            inner = re.sub(rf'(?:</{tag}>|>)\s*$', '', inner)
+
+            # 无任何属性形态则跳过（避免误吞纯文本）
+            if not re.search(r'[a-zA-Z_][\w-]*\s*=', inner):
+                continue
+
+            def _pick(name, _inner=inner):
+                return _extract_attr_lenient(_inner, name)
+
+            if tag == "web_search":
+                q = _pick("query")
+                if not q:
+                    continue
+                params = {"query": q}
+                mr = _pick("max_results")
+                if mr and str(mr).isdigit():
+                    params["max_results"] = int(mr)
+                tools.append({"llm_tool": "web_search", "params": params})
+            elif tag == "file_view":
+                p = _pick("path")
+                if not p:
+                    continue
+                params = {"path": p}
+                for k in ("limit", "offset"):
+                    v = _pick(k)
+                    if v and str(v).isdigit():
+                        params[k] = int(v)
+                tools.append({"llm_tool": "file_view", "params": params})
+            elif tag == "excel_view":
+                p = _pick("path")
+                if not p:
+                    continue
+                params = {"path": p}
+                for k, t in (("sheet", str), ("start_row", int), ("end_row", int),
+                             ("start_col", int), ("end_col", int)):
+                    v = _pick(k)
+                    if v:
+                        try:
+                            params[k] = t(v)
+                        except (TypeError, ValueError):
+                            pass
+                tools.append({"llm_tool": "excel_view", "params": params})
+            elif tag == "use_skill":
+                n = _pick("name")
+                if not n:
+                    continue
+                tools.append({"llm_tool": "use_skill", "params": {"name": n}})
+            elif tag == "get_file_context":
+                p = _pick("path")
+                if not p:
+                    continue
+                params = {"path": p, "intent": _pick("intent") or ""}
+                tools.append({"llm_tool": "get_file_context", "params": params})
+            elif tag == "AskUserQuestion":
+                q = _pick("question")
+                if not q:
+                    continue
+                choices = _pick("choices")
+                params = {"question": q}
+                if choices:
+                    params["choices"] = [c.strip() for c in choices.split(",") if c.strip()]
+                tools.append({"llm_tool": "AskUserQuestion", "params": params})
+
+            consumed.append(m.span())
+
+    if not tools:
+        return None
+
+    # 从正文中剥除已修复的畸形标签，避免标签文本重复展示
+    cleaned = response
+    for start, end in sorted(consumed, reverse=True):
+        cleaned = cleaned[:start] + cleaned[end:]
+
+    remaining = cleaned.strip()
+    remaining = re.sub(r'\n{3,}', '\n\n', remaining)
+    return remaining, tools
+
 def parse_tools(response: str, reasoning_content: str = ""):
     """
     按顺序解析 AI 响应中的 XML 工具调用。
@@ -280,8 +454,13 @@ def parse_tools(response: str, reasoning_content: str = ""):
     正确处理内容中包含同名闭标签的情况。
     非容器工具（file_view / use_skill）为自闭合标签，使用正则匹配。
 
-    如果主响应中未解析到任何工具，且 reasoning_content 非空，
-    则对 reasoning_content 使用宽松匹配兜底（容忍单引号、无闭合 done 等畸形容器标签）。
+    解析层级（逐级降级）：
+    1. strict：标准格式（双引号属性、自闭合/容器闭合规范）
+    2. loose：单引号属性、无闭合 done 等轻度畸形
+    3. lenient：引号未闭合 + 容器式误闭合的复合畸形（402 现场）
+    4. reasoning_content 兜底：响应为空但思考内容中有工具标签
+
+    lenient 无修复结果时返回 None，保留 strict 的 remaining（防止文本丢失）。
     """
     remaining, tools = _parse_tools_strict(response)
 
@@ -292,11 +471,21 @@ def parse_tools(response: str, reasoning_content: str = ""):
         if loose_tools:
             remaining, tools = loose_rem, loose_tools
 
-    # 兜底2：仍无工具，且额外提供了 reasoning_content
+    # 兜底2：宽容解析（402 现场复合畸形：属性值引号未闭合 + 容器式误闭合）
+    if not tools and response.strip():
+        lenient_result = _parse_tools_lenient(response)
+        if lenient_result is not None:
+            remaining, tools = lenient_result
+
+    # 兜底3：仍无工具，且额外提供了 reasoning_content（某些 LLM 将所有内容放在思考中）
     if not tools and reasoning_content:
         loose_rem, loose_tools = _parse_tools_loose(reasoning_content)
         if loose_tools:
             remaining, tools = loose_rem, loose_tools
+        else:
+            lenient_result = _parse_tools_lenient(reasoning_content)
+            if lenient_result is not None:
+                remaining, tools = lenient_result
 
     return remaining, tools
 
@@ -428,6 +617,19 @@ def _is_position_in_code(pos: int, code_ranges: list) -> bool:
     return False
 
 
+def _iter_outside_code(pattern, text, flags=0):
+    """代码块感知的宽松匹配迭代器。
+
+    宽松解析（reasoning_content / 畸形标签兜底）此前不识别 Markdown 代码块，
+    会把正文代码块中展示的标签文本误判为真实工具调用，导致幻影工具执行。
+    strict 解析已有 _is_position_in_code 防护，本函数为 loose 解析补齐同等防护。
+    """
+    code_ranges = _find_markdown_code_ranges(text)
+    for m in re.finditer(pattern, text, flags):
+        if not _is_position_in_code(m.start(), code_ranges):
+            yield m
+
+
 def _parse_tools_strict(response: str):
     """严格模式解析 AI 响应中的 XML 工具调用。"""
     # 获取 Markdown 代码范围，用于过滤代码区域内的标签匹配
@@ -436,13 +638,16 @@ def _parse_tools_strict(response: str):
     all_matches = []
 
     # === 非容器工具（自闭合标签）：正则匹配 ===
+    # 属性顺序无关：先匹配整个属性串（任意属性名 + 双引号值），再从中提取具体属性。
+    # 修复：LLM 交换属性顺序（如 max_results 在 query 之前）时原正则失配，
+    # 导致工具被漏解析、标签文本被当作正文输出。
     non_container_patterns = {
-        "file_view": re.compile(r'<file_view\s+path="([^"]*)"[^>]*/>'),
-        "excel_view": re.compile(r'<excel_view\s+path="([^"]*)"[^>]*/>'),
-        "use_skill": re.compile(r'<use_skill\s+name="([^"]*)"\s*/>'),
-        "get_file_context": re.compile(r'<get_file_context\s+path="([^"]*)"(?:\s+intent="([^"]*)")?\s*/>'),
-        "AskUserQuestion": re.compile(r'<AskUserQuestion\s+question="([^"]*)"(?:\s+choices="([^"]*)")?\s*/?>'),
-        "web_search": re.compile(r'<web_search\s+query="([^"]*)"(?:\s+max_results="(\d+)")?\s*/?>'),
+        "file_view": re.compile(r'<file_view\s+(' + _ATTR_SEQ + r')/>'),
+        "excel_view": re.compile(r'<excel_view\s+(' + _ATTR_SEQ + r')/>'),
+        "use_skill": re.compile(r'<use_skill\s+(' + _ATTR_SEQ + r')/>'),
+        "get_file_context": re.compile(r'<get_file_context\s+(' + _ATTR_SEQ + r')/>'),
+        "AskUserQuestion": re.compile(r'<AskUserQuestion\s+(' + _ATTR_SEQ + r')/?>'),
+        "web_search": re.compile(r'<web_search\s+(' + _ATTR_SEQ + r')/?>'),
     }
     for tool_name, pattern in non_container_patterns.items():
         for m in pattern.finditer(response):
@@ -452,8 +657,8 @@ def _parse_tools_strict(response: str):
 
     # === 容器工具：嵌套感知解析 ===
     container_open_patterns = {
-        "create": re.compile(r'<create\s+path="([^"]*)"(?:\s+summary="([^"]*)")?\s*>'),
-        "str_replace": re.compile(r'<str_replace\s+path="([^"]*)"(?:\s+summary="([^"]*)")?\s*>'),
+        "create": re.compile(r'<create\s+(' + _ATTR_SEQ + r')>'),
+        "str_replace": re.compile(r'<str_replace\s+(' + _ATTR_SEQ + r')>'),
         "bash": re.compile(r'<bash>'),
         "done": re.compile(r'<done>'),
         "todowrite": re.compile(r'<todowrite>'),
@@ -544,9 +749,10 @@ def _build_result(response: str, all_matches: list, _is_inside_container):
             remaining_parts.append(response[last_end:start])
 
         if tool_name == "file_view":
-            params = {"path": m.group(1)}
-            limit_match = re.search(r'limit="(\d+)"', m.group(0))
-            offset_match = re.search(r'offset="(\d+)"', m.group(0))
+            attrs = m.group(1)  # 属性顺序无关匹配，属性串整体在 group(1)
+            params = {"path": _extract_attr(attrs, "path") or ""}
+            limit_match = re.search(r'limit="(\d+)"', attrs)
+            offset_match = re.search(r'offset="(\d+)"', attrs)
             if limit_match:
                 params["limit"] = int(limit_match.group(1))
             if offset_match:
@@ -554,13 +760,14 @@ def _build_result(response: str, all_matches: list, _is_inside_container):
             tools.append({"llm_tool": "file_view", "params": params})
 
         elif tool_name == "excel_view":
-            params = {"path": m.group(1)}
+            attrs = m.group(1)
+            params = {"path": _extract_attr(attrs, "path") or ""}
             # 可选属性
-            sheet_match = re.search(r'sheet="([^"]*)"', m.group(0))
-            start_row_match = re.search(r'start_row="(\d+)"', m.group(0))
-            end_row_match = re.search(r'end_row="(\d+)"', m.group(0))
-            start_col_match = re.search(r'start_col="(\d+)"', m.group(0))
-            end_col_match = re.search(r'end_col="(\d+)"', m.group(0))
+            sheet_match = re.search(r'sheet="([^"]*)"', attrs)
+            start_row_match = re.search(r'start_row="(\d+)"', attrs)
+            end_row_match = re.search(r'end_row="(\d+)"', attrs)
+            start_col_match = re.search(r'start_col="(\d+)"', attrs)
+            end_col_match = re.search(r'end_col="(\d+)"', attrs)
             if sheet_match:
                 params["sheet"] = sheet_match.group(1)
             if start_row_match:
@@ -575,6 +782,7 @@ def _build_result(response: str, all_matches: list, _is_inside_container):
 
         elif tool_name == "create":
             info = m
+            attrs = info["match"].group(1)
             content = info["content"]
             if content.startswith('\n'):
                 content = content[1:]
@@ -583,9 +791,9 @@ def _build_result(response: str, all_matches: list, _is_inside_container):
             tools.append({
                 "llm_tool": "create",
                 "params": {
-                    "path": info["match"].group(1),
+                    "path": _extract_attr(attrs, "path") or "",
                     "content": content,
-                    "summary": info["match"].group(2) or "",
+                    "summary": _extract_attr(attrs, "summary") or "",
                     "_is_unclosed": info["is_unclosed"],
                 }
             })
@@ -629,22 +837,25 @@ def _build_result(response: str, all_matches: list, _is_inside_container):
             tools.append({"llm_tool": "done", "params": {"message": content, "_is_unclosed": info["is_unclosed"]}})
 
         elif tool_name == "use_skill":
-            tools.append({"llm_tool": "use_skill", "params": {"name": m.group(1)}})
+            tools.append({"llm_tool": "use_skill", "params": {"name": _extract_attr(m.group(1), "name") or ""}})
 
         elif tool_name == "get_file_context":
-            path = m.group(1)
-            intent = m.group(2) or ""
+            attrs = m.group(1)
+            path = _extract_attr(attrs, "path") or ""
+            intent = _extract_attr(attrs, "intent") or ""
             tools.append({"llm_tool": "get_file_context", "params": {"path": path, "intent": intent}})
 
         elif tool_name == "AskUserQuestion":
-            question = m.group(1)
-            choices_raw = m.group(2)
+            attrs = m.group(1)
+            question = _extract_attr(attrs, "question") or ""
+            choices_raw = _extract_attr(attrs, "choices")
             choices = choices_raw.split(",") if choices_raw else None
             tools.append({"llm_tool": "AskUserQuestion", "params": {"question": question, "choices": choices}})
 
         elif tool_name == "web_search":
-            params = {"query": m.group(1)}
-            mr = re.search(r'max_results="(\d+)"', m.group(0))
+            attrs = m.group(1)
+            params = {"query": _extract_attr(attrs, "query") or ""}
+            mr = re.search(r'max_results="(\d+)"', attrs)
             if mr:
                 params["max_results"] = int(mr.group(1))
             tools.append({"llm_tool": "web_search", "params": params})
@@ -675,25 +886,27 @@ def _parse_tools_loose(text: str):
     """
     tools = []
 
-    # 1. 自闭合 file_view（单引号或双引号）
-    for m in re.finditer(r"<file_view\s+path=['\"]([^'\"]*)['\"][^>]*/>", text):
-        params = {"path": m.group(1)}
-        limit_match = re.search(r'limit=["\'](\d+)["\']', m.group(0))
-        offset_match = re.search(r'offset=["\'](\d+)["\']', m.group(0))
+    # 1. 自闭合 file_view（单/双引号，属性顺序无关）
+    for m in _iter_outside_code(r"<file_view\s+(" + _ATTR_SEQ_LOOSE + r")/>", text):
+        attrs = m.group(1)
+        params = {"path": _extract_attr_loose(attrs, "path") or ""}
+        limit_match = re.search(r'limit=["\'](\d+)["\']', attrs)
+        offset_match = re.search(r'offset=["\'](\d+)["\']', attrs)
         if limit_match:
             params["limit"] = int(limit_match.group(1))
         if offset_match:
             params["offset"] = int(offset_match.group(1))
         tools.append({"llm_tool": "file_view", "params": params})
 
-    # 2. 自闭合 excel_view（单引号或双引号）
-    for m in re.finditer(r"<excel_view\s+path=['\"]([^'\"]*)['\"][^>]*/>", text):
-        params = {"path": m.group(1)}
-        sheet_match = re.search(r"sheet=['\"]([^'\"]*)['\"]", m.group(0))
-        start_row_match = re.search(r'start_row=["\'](\d+)["\']', m.group(0))
-        end_row_match = re.search(r'end_row=["\'](\d+)["\']', m.group(0))
-        start_col_match = re.search(r'start_col=["\'](\d+)["\']', m.group(0))
-        end_col_match = re.search(r'end_col=["\'](\d+)["\']', m.group(0))
+    # 2. 自闭合 excel_view（单/双引号，属性顺序无关）
+    for m in _iter_outside_code(r"<excel_view\s+(" + _ATTR_SEQ_LOOSE + r")/>", text):
+        attrs = m.group(1)
+        params = {"path": _extract_attr_loose(attrs, "path") or ""}
+        sheet_match = re.search(r"sheet=['\"]([^'\"]*)['\"]", attrs)
+        start_row_match = re.search(r'start_row=["\'](\d+)["\']', attrs)
+        end_row_match = re.search(r'end_row=["\'](\d+)["\']', attrs)
+        start_col_match = re.search(r'start_col=["\'](\d+)["\']', attrs)
+        end_col_match = re.search(r'end_col=["\'](\d+)["\']', attrs)
         if sheet_match:
             params["sheet"] = sheet_match.group(1)
         if start_row_match:
@@ -706,51 +919,61 @@ def _parse_tools_loose(text: str):
             params["end_col"] = int(end_col_match.group(1))
         tools.append({"llm_tool": "excel_view", "params": params})
 
-    # 3. 自闭合 create（单引号或双引号）
-    for m in re.finditer(r"<create\s+path=['\"]([^'\"]*)['\"][^>]*/>", text):
-        summary_match = re.search(r"summary=['\"]([^'\"]*)['\"]", m.group(0))
+    # 3. 自闭合 create（单/双引号，属性顺序无关）
+    for m in _iter_outside_code(r"<create\s+(" + _ATTR_SEQ_LOOSE + r")/>", text):
+        attrs = m.group(1)
+        summary_match = re.search(r"summary=['\"]([^'\"]*)['\"]", attrs)
         tools.append({
             "llm_tool": "create",
             "params": {
-                "path": m.group(1),
+                "path": _extract_attr_loose(attrs, "path") or "",
                 "content": "",
                 "summary": summary_match.group(1) if summary_match else "",
             }
         })
 
-    # 3. done（可无闭合）
-    for m in re.finditer(r"<done>(.*?)(?:</done>|$)", text):
+    # 3.5 done（可无闭合）
+    for m in _iter_outside_code(r"<done>(.*?)(?:</done>|$)", text):
         content = m.group(1).strip()
         tools.append({"llm_tool": "done", "params": {"message": content}})
 
     # 4. bash
-    for m in re.finditer(r"<bash>(.*?)</bash>", text, re.DOTALL):
+    for m in _iter_outside_code(r"<bash>(.*?)</bash>", text, re.DOTALL):
         tools.append({"llm_tool": "bash", "params": {"command": m.group(1).strip()}})
 
-    # 5. use_skill（单引号或双引号）
-    for m in re.finditer(r"<use_skill\s+name=['\"]([^'\"]*)['\"][^>]*/>", text):
-        tools.append({"llm_tool": "use_skill", "params": {"name": m.group(1)}})
+    # 5. use_skill（单/双引号，属性顺序无关）
+    for m in _iter_outside_code(r"<use_skill\s+(" + _ATTR_SEQ_LOOSE + r")/>", text):
+        tools.append({"llm_tool": "use_skill", "params": {"name": _extract_attr_loose(m.group(1), "name") or ""}})
 
-    # 5.5 get_file_context（单引号或双引号）
-    for m in re.finditer(r"<get_file_context\s+path=['\"]([^'\"]*)['\"](?:\s+intent=['\"]([^'\"]*)['\"])?\s*/>", text):
-        tools.append({"llm_tool": "get_file_context", "params": {"path": m.group(1), "intent": m.group(2) or ""}})
+    # 5.5 get_file_context（单/双引号，属性顺序无关）
+    for m in _iter_outside_code(r"<get_file_context\s+(" + _ATTR_SEQ_LOOSE + r")/>", text):
+        attrs = m.group(1)
+        tools.append({
+            "llm_tool": "get_file_context",
+            "params": {
+                "path": _extract_attr_loose(attrs, "path") or "",
+                "intent": _extract_attr_loose(attrs, "intent") or "",
+            }
+        })
 
-    # 5.6 web_search（单引号或双引号）
-    for m in re.finditer(r"<web_search\s+query=['\"]([^'\"]*)['\"][^>]*/?>", text):
-        params = {"query": m.group(1)}
-        mr = re.search(r'max_results=["\'](\d+)["\']', m.group(0))
+    # 5.6 web_search（单/双引号，属性顺序无关）
+    for m in _iter_outside_code(r"<web_search\s+(" + _ATTR_SEQ_LOOSE + r")/?>", text):
+        attrs = m.group(1)
+        params = {"query": _extract_attr_loose(attrs, "query") or ""}
+        mr = re.search(r'max_results=["\'](\d+)["\']', attrs)
         if mr:
             params["max_results"] = int(mr.group(1))
         tools.append({"llm_tool": "web_search", "params": params})
 
-    # 6. str_replace 容器（单引号或双引号 path / summary）
-    for m in re.finditer(
-        r"<str_replace\s+path=['\"]([^'\"]*)['\"](?:\s+summary=['\"]([^'\"]*)['\"])?\s*>(.*?)</str_replace>",
+    # 6. str_replace 容器（单/双引号，属性顺序无关）
+    for m in _iter_outside_code(
+        r"<str_replace\s+(" + _ATTR_SEQ_LOOSE + r")>(.*?)</str_replace>",
         text, re.DOTALL
     ):
-        path = m.group(1)
-        summary = m.group(2) or ""
-        body = m.group(3)
+        attrs = m.group(1)
+        path = _extract_attr_loose(attrs, "path") or ""
+        summary = _extract_attr_loose(attrs, "summary") or ""
+        body = m.group(2)
 
         # 尝试提取 old/new 子标签
         old_content = ""

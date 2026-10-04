@@ -60,3 +60,5 @@ web_search:
   cache_ttl: 3600         # 搜索结果本地缓存有效期（秒），0 为禁用缓存
   token_budget: 3000      # 单次结果注入的 token 预算
   min_interval: 2.0       # 两次真实搜索的最小间隔（秒），防止刷配额
+  fallback_model: "glm-4-flash"  # zhipu 降级链路 chat 模型（主搜索接口无召回时自动降级，403修复）
+  fallback_max_results: 5        # 降级链路最多提取的结果条数
