@@ -1,11 +1,57 @@
 # 模型 API Key 配置（敏感信息，请勿提交到版本控制）
 # 修改后重启生效
 
+# GPT API 连接参数
+# https://api.openai.com/v1/responses
+GPT:
+  api_key: "***"
+  base_url: "https://api.openai.com/v1"
+  model_name: "gpt-5.5"
+
+
+# GLM API 连接参数
+GLM-main:
+  api_key: "***"
+  base_url: "https://open.bigmodel.cn/api/coding/paas/v4"
+  model_name: "glm-5.3"
+  extra_body:
+    thinking:
+      type: "enabled"
+
+GLM-5.2:
+  api_key: "***"
+  base_url: "https://open.bigmodel.cn/api/coding/paas/v4"
+  model_name: "glm-5.2"
+  extra_body:
+    thinking:
+      type: "enabled"
+
+
+# GLM API 连接参数
+GLM-4-FLASH:
+  api_key: "***"
+  base_url: "https://open.bigmodel.cn/api/coding/paas/v4"
+  model_name: "glm-4-flash"
+
+
+# GLM-Embedding API 连接参数
+GLM-Embedding:
+  api_key: "***"
+  base_url: "https://open.bigmodel.cn/api/paas/v4/embeddings"
+  model_name: "embedding-3"
+
+
 # DeepSeek API 连接参数
 DeepSeek:
   api_key: "***"
   base_url: "https://api.deepseek.com"
   model_name: "deepseek-v4-pro"
+
+# DeepSeek Flash API 连接参数
+DeepSeek-Flash:
+  api_key: "***"
+  base_url: "https://api.deepseek.com"
+  model_name: "deepseek-v4-flash"
 
 # MiniMax API 连接参数
 MiniMax:
@@ -13,30 +59,66 @@ MiniMax:
   base_url: "https://api.minimaxi.com/v1"
   model_name: "MiniMax-M2.7"
 
-# ============================================================
-# memory_1 模型配置（向量化 + LLM 压缩）
-#   说明：memory 模块独立于 MyClaude 主循环。
-#   provider 字段引用上方 MiniMax / DeepSeek 配置节的
-#   api_key 和 base_url，无需在此重复配置。
-# ============================================================
-memory_1:
+
+# Qwen 2.5 API 连接参数
+Qwen-2.5:
+  api_key: "***"
+  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  model_name: "qwen2.5-7b-instruct"
+
+
+
+# 互联网搜索工具后端（与 config.yaml 的 web_search 参数段配合使用）
+# provider 可选: tavily / bocha / zhipu / duckduckgo
+#   tavily      专为 LLM 设计，海外网络环境（免费 1000 次/月）
+#   bocha      国产后端，国内直连，中文召回好
+#   zhipu      智谱 web-search-pro，国内直连，api_key 可直接复用下方 GLM 段的 key
+#   duckduckgo 免 Key，需 pip install duckduckgo-search，稳定性一般
+#   zhipu      智谱，api_key，与 LLM api_key 相同， base_url:open.bigmodel.cn/api/paas/v4/tools
+web_search:
+  provider: "zhipu"
+  api_key: "***"
+  base_url: "https://open.bigmodel.cn/api/paas/v4/tools"
+
+# 主模型基本参数
+main_model:
+  provider: "GLM-main"
+
+
+# 记忆相关的模型参数
+memory:
+  # 向量化基本参数
   embedding:
-    provider: "MiniMax"
-    model_name: "embo-01"
-  llm:
-    provider: "DeepSeek"
-    model_name: "deepseek-chat"
+    enabled: "True"
+    provider: "GLM-Embedding"
+    dim: "2048"
+    batch_size: "100"
 
-# ============================================================
-# memory_2 模型配置（LLM 直接召回 + 压缩）
-#   说明：provider 引用上方 DeepSeek 配置节的 api_key / base_url，
-#   无需在此重复配置。
-# ============================================================
-memory_2:
-  llm:
-    provider: "DeepSeek"
-    model_name: "deepseek-chat"
+  # 精排模型参数（LLM语义召回）
+  llm_re_ranking:
+    provider: "GLM-5.2"
+    extra_body:
+      thinking:
+        type: "disabled"
 
-# 模型基本参数
-model:
-  provider: "DeepSeek"
+  # 精排模型参数（rerank模型精排）
+  rerank_re_ranking:
+    provider: "GLM-5.2"
+    extra_body:
+      thinking:
+        type: "disabled"
+
+
+
+# 比如，memory extract/compaction/evolution，还有意图压缩。总之，是一个单轮聊天函数
+simple_chat:
+  provider: "GLM-5.2"
+  extra_body:
+    thinking:
+      type: "disabled"
+
+
+
+
+
+
