@@ -595,6 +595,34 @@ class QueryLoop:
         }
         return prompts.get(retry_count, prompts[3])
 
+    def _log_aborted_intent_metrics(self, remaining_text: str) -> None:
+        """层 3 埋点：记录首轮纯文本的流产意图特征指标（仅观测，不参与判定）。
+
+        检测结果不作为任何分支的判定依据（判定已由层 1 协议收敛统一承担），
+        仅用于：
+        1. 统计流产发生率，验证层 1 修复前后的效果对比
+        2. 为后续是否引入 LLM 语义判定（原方案层 2）积累实证样本
+
+        观测指标：
+        - colon_ending: 正文以全角/半角冒号结尾（终局性回答几乎不会这样收尾）
+        - intent_phrase: 正文含 先看/接下来/继续看/让我/看一下/去验证 等过渡语
+        """
+        if not remaining_text or not remaining_text.strip():
+            return
+        text = remaining_text.strip()
+        signals = []
+        if text.endswith("：") or text.endswith(":"):
+            signals.append("colon_ending")
+        intent_phrases = ("先看", "接下来", "继续看", "让我", "看一下", "去验证")
+        if any(p in text for p in intent_phrases):
+            signals.append("intent_phrase")
+        if signals:
+            tail = text[-30:].replace("\n", " ")
+            self.session.log_dict_info({
+                "role": "system",
+                "content": f"[观测埋点] 首轮纯文本流产意图特征: {', '.join(signals)} | 尾部: ...{tail}"
+            })
+
     def _follow_up_for_tools(self, format_error: bool = False):
         """无工具时追问 LLM 最多 3 次，尝试获取工具列表。
 
@@ -722,10 +750,33 @@ class QueryLoop:
                         self.session.log_dict_info({"role": "system", "content": "格式纠错追问 3 次后仍未获得工具，本轮结束，等待用户输入"})
                         return ChatOrNot.QuitByNoneTool, []
                 else:
-                    # 正常无工具无标签形态：单轮场景
-                    self.is_multi_turns = False
-                    self.session.log_dict_info({"role": "system", "content": "LLM 未调用工具，本轮结束，等待用户输入"})
-                    return ChatOrNot.QuitByNoneTool, []
+                    # ===== 层 1 协议收敛：首轮纯文本无 done → 静默追问一次 =====
+                    # 协议规定 done 是唯一合法终局信号（含闲聊场景，见系统提示词 Layer 5）。
+                    # 首轮纯文本无工具无 done 属于违规输出（典型现场：LLM 说了
+                    # "先看一下..."就停住，以为还有下一轮——两次停住事故的根因）。
+                    # 处置：静默追问一次给 LLM 补救机会；仍无果则按单轮正常退出，
+                    # 兜底行为与旧版完全一致（零回归）。
+                    # 注：_follow_up_for_tools 首次追问默认静默（不打印屏幕），用户无感
+                    self._log_aborted_intent_metrics(remaining_text)  # 层 3 埋点：仅观测，不参与判定
+
+                    tools = self._follow_up_for_tools()
+                    if tools:
+                        # 追问成功：LLM 补出了工具或 done，继续正常流程。
+                        # 将追问计数置满以跳过下方"后续轮次"追问循环，避免重复追问；
+                        # 流出 if not tools 块后 "# 有工具时重置追问计数器" 会将其归零
+                        self._no_tool_retry = 3
+                        self.session.log_dict_info({
+                            "role": "system",
+                            "content": "[协议收敛] 首轮纯文本追问成功，LLM 已补出终局信号或工具"
+                        })
+                    else:
+                        # 追问无果：按单轮正常退出（兜底路径，与旧行为一致）
+                        self.is_multi_turns = False
+                        self.session.log_dict_info({
+                            "role": "system",
+                            "content": "LLM 未调用工具，首轮协议收敛追问一次后仍无工具/done，按单轮结束，等待用户输入"
+                        })
+                        return ChatOrNot.QuitByNoneTool, []
 
             # is_multi_turns = True 的后续轮次：无工具无 done → 触发追问
             while self._no_tool_retry < 3:
