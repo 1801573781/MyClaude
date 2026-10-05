@@ -1,3 +1,4 @@
+import math
 import os
 import time
 from contextlib import contextmanager
@@ -5,6 +6,7 @@ from html import escape as html_escape  # 用于 HTML 转义
 from pathlib import Path
 
 from rich.markup import escape
+from rich.cells import cell_len
 from rich.console import Console
 from rich.live import Live
 from rich.markdown import Markdown
@@ -355,7 +357,17 @@ def typewriter_then_markdown(text: str, delay: float = 0.005):
     # 估算渲染后的行数，超过终端高度 2/3 时跳过打字机效果
     # Live 组件在固定位置刷新，内容超出终端高度时会覆盖之前的内容，
     # 导致长文本只显示末尾几行，前面的内容丢失
-    estimated_lines = text.count('\n') + 1
+    # 注意：必须按终端宽度模拟软换行（cell_len 按显示列宽计算，中文占 2 列）。
+    # 旧实现只数 text.count('\n') + 1，单行长中文段落会被低估为 1-2 行，
+    # 实际经终端 wrap + Markdown 渲染后可达十几行，超出终端高度时
+    # Live 因 vertical_overflow="ellipsis" 只保留末尾，表现为"输出被截断"。
+    text_width = max(10, console.width - 2)  # Live 渲染可用宽度（留边）
+    estimated_lines = sum(
+        max(1, math.ceil(cell_len(line) / text_width))
+        for line in text.split('\n')
+    )
+    # Markdown 渲染（段落空行、标题间距）会进一步增加行数，加 20% 余量
+    estimated_lines = int(estimated_lines * 1.2) + 1
     max_typewriter_lines = max(10, console.height * 2 // 3)
     use_typewriter = estimated_lines <= max_typewriter_lines
 
@@ -1122,6 +1134,20 @@ def get_input() -> str:
             in_mode_orig = ctypes.c_ulong()
             has_out_mode = kernel32.GetConsoleMode(stdout_handle, ctypes.byref(out_mode_orig))
             has_in_mode = kernel32.GetConsoleMode(stdin_handle, ctypes.byref(in_mode_orig))
+
+            # 0. 复位 VT 状态机（兜底保障）：
+            #    子进程（npm/git/node 等）输出中的 \x1b[?7l 会关闭终端自动换行、
+            #    \x1b[?25l 隐藏光标、\x1b[t;br 修改滚动区域。在 ConPTY /
+            #    Windows Terminal 下，这些状态由终端自身解释并保留，
+            #    SetConsoleMode 恢复 mode 位管不到，必须在 VT 启用状态下
+            #    显式发送复位序列：
+            #      \x1b[?7h  DECAWM on（恢复行尾自动换行）
+            #      \x1b[?25h 显示光标（部分程序隐藏光标后不恢复）
+            #      \x1b[r    滚动区域复位为全屏
+            if has_out_mode:
+                kernel32.SetConsoleMode(stdout_handle, out_mode_orig.value | 0x7)
+                sys.stdout.write("\x1b[?7h\x1b[?25h\x1b[r")
+                sys.stdout.flush()
 
             # 1. 输出模式：禁用 VT(0x4)，仅保留 PROCESSED(0x1) | WRAP(0x2)
             #    Rich 的 Live/status 等组件在 VT 模式下会修改终端状态（DECAWM

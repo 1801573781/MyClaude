@@ -1,4 +1,32 @@
+import re
 import subprocess
+
+# ANSI/VT 转义序列清理：
+# 子进程（npm/git/node 等）输出常含 \x1b[?25l（隐藏光标）、\x1b[?7l（关闭自动
+# 换行 DECAWM）、\x1b[2K\r（行擦除）等控制码。若不清理，会随工具结果打印到终端，
+# 篡改 VT 状态机（DECAWM/DECSTBM/光标可见性），导致后续输出与用户输入在行尾
+# 不自动换行、回行首覆盖已有内容（间歇性复现：仅当 bash 输出恰好携带控制码时触发）。
+# 在源头剥离后，LLM 上下文与 CLI 显示均不受污染。
+_ANSI_CSI_RE = re.compile(r"\x1b\[[0-9;:?]*[ -/]*[@-~]")          # CSI 序列（含 private）
+_ANSI_OSC_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")  # OSC 序列（如改窗口标题）
+_ANSI_ESC_RE = re.compile(r"\x1b[@-Z\\-_]")                       # 单字符转义序列
+
+
+def _strip_ansi(text: str) -> str:
+    """移除子进程输出中的 ANSI/VT 转义序列，返回纯文本。
+
+    同时清理裸 \r（回车字符）：终端将其解释为"光标回行首"，
+    残留在输出中会导致后续字符覆盖行首内容。保留 \r\n 正常换行。
+    """
+    if not text:
+        return text
+    text = _ANSI_CSI_RE.sub("", text)
+    text = _ANSI_OSC_RE.sub("", text)
+    text = _ANSI_ESC_RE.sub("", text)
+    # 先保护 \r\n，再剥离裸 \r，最后还原
+    text = text.replace("\r\n", "\x00RN\x00")
+    text = text.replace("\r", "")
+    return text.replace("\x00RN\x00", "\r\n")
 
 
 # LLM 可能输出占位符作为命令，必须检测并拒绝
@@ -42,6 +70,7 @@ def tool_bash(command: str) -> str:
             output += f"\n[stderr]\n{result.stderr}"
         if result.returncode != 0:
             output += f"\n[exit code {result.returncode}]"
-        return output or "（命令执行完毕，无输出）"
+        # 剥离 ANSI/VT 转义序列，防止子进程控制码污染终端状态
+        return _strip_ansi(output) or "（命令执行完毕，无输出）"
     except Exception as e:
         return f"执行错误：{e}"
