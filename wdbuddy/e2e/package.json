@@ -1,0 +1,17 @@
+{
+  "name": "@wdbuddy/e2e",
+  "version": "1.0.0",
+  "private": true,
+  "description": "WDBuddy E2E 黄金场景（Playwright + mock-model-server，≥20 场景，NFR-04）",
+  "type": "module",
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.1",
+    "@wdbuddy/shared-types": "workspace:*",
+    "typescript": "^5.7.2"
+  }
+}

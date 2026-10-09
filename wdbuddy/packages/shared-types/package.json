@@ -1,0 +1,26 @@
+{
+  "name": "@wdbuddy/shared-types",
+  "version": "1.0.0",
+  "private": true,
+  "description": "WDBuddy 全局唯一类型源：IPC、JSON-RPC 协议、REST 接口类型全部由此派生",
+  "type": "commonjs",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run --passWithNoTests",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

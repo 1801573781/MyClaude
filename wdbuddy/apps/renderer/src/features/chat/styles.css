@@ -1,0 +1,284 @@
+/* chat feature 样式（§4.4） */
+.wb-chat__inner {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--wb-bg-base);
+}
+
+/* 任务头 */
+.wb-chat__header {
+  display: flex;
+  align-items: center;
+  gap: var(--wb-space-2);
+  padding: var(--wb-space-3) var(--wb-space-4);
+  border-bottom: 1px solid var(--wb-border);
+}
+.wb-chat__title {
+  font-weight: 600;
+  font-size: var(--wb-font-size-lg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 40%;
+}
+.wb-chat__badges { display: flex; gap: var(--wb-space-1); }
+.wb-chat__spacer { flex: 1; }
+
+/* 欢迎页 */
+.wb-chat__welcome {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--wb-space-2);
+  color: var(--wb-text-secondary);
+}
+.wb-chat__welcome-logo { font-size: 48px; color: var(--wb-color-primary); }
+.wb-chat__welcome-title { font-size: var(--wb-font-size-xl); font-weight: 600; color: var(--wb-text-primary); }
+.wb-chat__welcome-desc { font-size: var(--wb-font-size-sm); max-width: 400px; text-align: center; }
+
+/* 消息列表 */
+.wb-chat__messages {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--wb-space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--wb-space-3);
+}
+
+/* 消息气泡 */
+.wb-msg { display: flex; gap: var(--wb-space-2); max-width: 85%; }
+.wb-msg--user { align-self: flex-end; flex-direction: row-reverse; }
+.wb-msg--agent { align-self: flex-start; }
+.wb-msg--system {
+  align-self: center;
+  font-size: var(--wb-font-size-xs);
+  color: var(--wb-color-danger);
+  background: rgba(213, 73, 65, .06);
+  padding: 4px 12px;
+  border-radius: 999px;
+}
+
+.wb-msg__avatar { font-size: 20px; margin-top: 2px; }
+.wb-msg__bubble {
+  padding: var(--wb-space-2) var(--wb-space-3);
+  border-radius: var(--wb-radius-md);
+  background: var(--wb-bg-panel);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.wb-msg__bubble--user { background: var(--wb-bg-chat-user); }
+
+/* 轻量 Markdown */
+.wb-md__h--1 { font-size: var(--wb-font-size-xl); font-weight: 600; margin: 8px 0 4px; }
+.wb-md__h--2 { font-size: var(--wb-font-size-lg); font-weight: 600; margin: 8px 0 4px; }
+.wb-md__h--3,
+.wb-md__h--4 { font-weight: 600; margin: 6px 0 2px; }
+.wb-md__li { display: flex; gap: 6px; margin: 2px 0; }
+.wb-md__bullet { color: var(--wb-color-primary); }
+.wb-md__quote {
+  border-left: 3px solid var(--wb-color-primary);
+  padding-left: var(--wb-space-2);
+  color: var(--wb-text-secondary);
+}
+.wb-md__code {
+  background: var(--wb-bg-panel);
+  border: 1px solid var(--wb-border);
+  border-radius: var(--wb-radius-sm);
+  padding: var(--wb-space-2);
+  overflow-x: auto;
+  font-size: var(--wb-font-size-sm);
+  margin: 4px 0;
+}
+.wb-md__inline-code {
+  background: var(--wb-bg-panel);
+  border-radius: var(--wb-radius-sm);
+  padding: 1px 5px;
+  font-size: var(--wb-font-size-sm);
+}
+.wb-md__br { height: 8px; }
+
+/* PlanCard（FR-08） */
+.wb-plancard {
+  align-self: stretch;
+  border: 1px solid var(--wb-border);
+  border-radius: var(--wb-radius-lg);
+  background: var(--wb-bg-base);
+  box-shadow: var(--wb-shadow-sm);
+  padding: var(--wb-space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--wb-space-2);
+}
+.wb-plancard__header { display: flex; align-items: center; gap: var(--wb-space-2); }
+.wb-plancard__title { font-weight: 600; }
+.wb-plancard__steps { display: flex; flex-direction: column; gap: var(--wb-space-1); }
+.wb-plancard__step { display: flex; align-items: center; gap: var(--wb-space-2); padding: 4px 0; }
+.wb-plancard__seq { color: var(--wb-text-secondary); min-width: 20px; }
+.wb-plancard__step-title { flex: 1; }
+.wb-plancard__footer {
+  display: flex;
+  gap: var(--wb-space-2);
+  justify-content: flex-end;
+  border-top: 1px solid var(--wb-border);
+  padding-top: var(--wb-space-2);
+}
+
+/* StepTimeline（FR-09） */
+.wb-tl {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: var(--wb-space-1);
+  padding: var(--wb-space-2) var(--wb-space-3);
+  background: var(--wb-bg-panel);
+  border-radius: var(--wb-radius-md);
+}
+.wb-tl__title { font-size: var(--wb-font-size-sm); font-weight: 500; color: var(--wb-text-secondary); }
+.wb-tl__item { display: flex; flex-direction: column; }
+.wb-tl__row {
+  display: flex;
+  align-items: center;
+  gap: var(--wb-space-2);
+  padding: 3px 0;
+  text-align: left;
+  width: fit-content;
+}
+.wb-tl__row--failed { color: var(--wb-color-danger); cursor: pointer; }
+.wb-tl__icon { display: inline-flex; width: 16px; justify-content: center; }
+.wb-tl__icon--done { color: var(--wb-color-success); }
+.wb-tl__icon--failed { color: var(--wb-color-danger); }
+.wb-tl__icon--pending { color: var(--wb-text-disabled); }
+.wb-tl__hint { font-size: var(--wb-font-size-xs); color: var(--wb-text-secondary); }
+.wb-tl__elapsed { font-size: var(--wb-font-size-xs); color: var(--wb-text-secondary); }
+.wb-tl__replan { font-size: var(--wb-font-size-xs); color: var(--wb-color-warning); padding-left: 24px; }
+.wb-tl__log {
+  margin: 2px 0 var(--wb-space-2) 24px;
+  border-left: 2px solid var(--wb-color-danger);
+  padding-left: var(--wb-space-2);
+}
+.wb-tl__log-cause { font-size: var(--wb-font-size-sm); color: var(--wb-color-danger); margin-bottom: 4px; }
+.wb-tl__log-detail {
+  font-size: var(--wb-font-size-xs);
+  background: var(--wb-bg-base);
+  border-radius: var(--wb-radius-sm);
+  padding: var(--wb-space-2);
+  white-space: pre-wrap;
+}
+
+/* 权限确认卡片（FR-04） */
+.wb-perm {
+  align-self: stretch;
+  border: 1px solid var(--wb-color-warning);
+  border-radius: var(--wb-radius-lg);
+  padding: var(--wb-space-3);
+  background: rgba(227, 115, 24, .04);
+  display: flex;
+  flex-direction: column;
+  gap: var(--wb-space-2);
+}
+.wb-perm__header { display: flex; align-items: center; gap: var(--wb-space-2); font-weight: 600; }
+.wb-perm__row { display: flex; gap: var(--wb-space-2); align-items: baseline; }
+.wb-perm__label { color: var(--wb-text-secondary); min-width: 48px; font-size: var(--wb-font-size-sm); }
+.wb-perm__detail {
+  font-size: var(--wb-font-size-sm);
+  background: var(--wb-bg-panel);
+  padding: 1px 6px;
+  border-radius: var(--wb-radius-sm);
+  word-break: break-all;
+}
+.wb-perm__footer {
+  display: flex;
+  gap: var(--wb-space-2);
+  justify-content: flex-end;
+  border-top: 1px solid var(--wb-border);
+  padding-top: var(--wb-space-2);
+}
+
+/* 流式状态条 */
+.wb-chat__streaming {
+  display: flex;
+  align-items: center;
+  gap: var(--wb-space-2);
+  color: var(--wb-text-secondary);
+  font-size: var(--wb-font-size-sm);
+  padding: var(--wb-space-1) var(--wb-space-2);
+}
+
+/* 等待用户回复卡片（user.ask：醒目提示，区别于普通系统消息） */
+.wb-await {
+  align-self: stretch;
+  border: 1px solid var(--wb-color-primary);
+  border-radius: var(--wb-radius-lg);
+  background: rgba(59, 130, 246, .06);
+  padding: var(--wb-space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--wb-space-1);
+}
+.wb-await__header {
+  font-weight: 600;
+  color: var(--wb-color-primary);
+}
+.wb-await__question {
+  font-size: var(--wb-font-size-sm);
+  line-height: 1.6;
+}
+.wb-await__hint {
+  font-size: var(--wb-font-size-xs);
+  color: var(--wb-text-secondary);
+}
+
+/* Composer 输入区（§4.4）：flex-shrink:0 确保执行信息再多也不会把输入框挤没 */
+.wb-composer {
+  flex-shrink: 0;
+  border-top: 1px solid var(--wb-border);
+  padding: var(--wb-space-3) var(--wb-space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--wb-space-2);
+  background: var(--wb-bg-base);
+}
+.wb-composer__enhanced-hint {
+  font-size: var(--wb-font-size-xs);
+  color: var(--wb-color-primary);
+}
+.wb-composer__input { max-height: 200px; }
+.wb-composer__toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--wb-space-2);
+}
+.wb-composer__spacer { flex: 1; }
+
+/* 任务模式单选组（radio，非 tab 页：不切换视图，仅决定本轮执行方式） */
+.wb-modeswitch {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--wb-space-2);
+  font-size: var(--wb-font-size-sm);
+}
+.wb-modeswitch__label {
+  color: var(--wb-text-secondary);
+}
+.wb-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  color: var(--wb-text-secondary);
+}
+.wb-mode input {
+  margin: 0;
+  accent-color: var(--wb-color-primary);
+}
+.wb-mode--active {
+  color: var(--wb-text-primary);
+  font-weight: 600;
+}

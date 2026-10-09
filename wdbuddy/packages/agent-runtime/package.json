@@ -1,0 +1,35 @@
+{
+  "name": "@wdbuddy/agent-runtime",
+  "version": "1.0.0",
+  "private": true,
+  "description": "WDBuddy Agent Runtime：独立 Node 子进程，Planner/Executor/Replanner/Verifier 循环（ADR-0001）",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "dev": "tsc -p tsconfig.build.json --watch --preserveWatchOutput",
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@wdbuddy/model-gateway": "workspace:*",
+    "@wdbuddy/sandbox": "workspace:*",
+    "@wdbuddy/shared-types": "workspace:*",
+    "pino": "^9.5.0",
+    "pptxgenjs": "^4.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

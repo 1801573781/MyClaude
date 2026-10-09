@@ -1,0 +1,24 @@
+{
+  "name": "@wdbuddy/mock-model-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "脚本化假模型服务器：OpenAI 兼容 SSE 流，支撑确定性 E2E 测试（NFR-04）",
+  "type": "module",
+  "main": "./src/server.ts",
+  "types": "./src/server.ts",
+  "exports": {
+    ".": "./src/server.ts"
+  },
+  "scripts": {
+    "start": "node --experimental-strip-types src/server.ts",
+    "build": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

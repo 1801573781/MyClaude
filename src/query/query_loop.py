@@ -13,6 +13,7 @@ from src.memory_ex.factory import create_memory
 import logging
 from src.utility.token_statistics import record_token_usage
 import re
+import hashlib
 from src.memory_ex.memory_interface import NoopMemory
 from src.utility.token_statistics import get_token_summary
 import copy
@@ -64,7 +65,7 @@ class QueryLoop:
         # 斜杠命令上下文（None 表示普通对话模式）
         self._command_context = None
 
-        # 死循环熔断：记录上一轮的工具签名（用于 AskUserQuestion 重复提问检测）
+        # 死循环熔断：记录上一轮的工具签名（连续两轮工具列表完全一致时强制终止）
         self._last_tool_sig = None
 
         # TodoWrite 有状态进度管理
@@ -79,7 +80,7 @@ class QueryLoop:
         # 延迟记忆召回日志：file_view 后触发的召回结果，推迟到下一 Turn 记录
         self._pending_retrieval_result = None
 
-        # file_view 重复查看检测：同一文件在同一 Query 中被查看超过 2 次时提醒 LLM
+        # file_view 重复查看防护：同一文件累计查看第 3 次注入最终警告，第 4 次起硬阻断
         self._file_view_counts = {}  # {文件路径: 查看次数}
 
 
@@ -214,6 +215,7 @@ class QueryLoop:
         self._current_user_input = ""  # 清空缓存的用户输入
         self._pending_retrieval_result = None  # 清空延迟召回日志缓存
         self._file_view_counts = {}  # 重置 file_view 重复查看计数器
+        self._last_tool_sig = None  # 重置工具签名熔断器（跨 Query 不比对，防止误熔断）
 
         # 如果有斜杠命令上下文，用命令内容重置 api_messages
         self._command_context = command_context
@@ -259,6 +261,27 @@ class QueryLoop:
                         query=user_input,
                         turn=f"turn{turn}",
                     )
+
+                # ===== Prompt 超长熔断（415 现场）=====
+                # 上下文膨胀超过模型上限时 API 直接报错，消息列表只会更长，
+                # 任何重试/追问都必然失败（415 现场：追问 3 次全部返回同样的
+                # 超长错误，白白多烧 3 次调用与等待）。检测到超长错误立即终止本 Turn。
+                if ai_response.startswith("[API_ERROR:") and any(
+                    kw in ai_response.lower()
+                    for kw in ("max length", "context length", "context_length",
+                               "too long", "too large", "prompt is too")
+                ):
+                    self._print_info(
+                        "[上下文超限] 对话上下文已超过模型最大长度限制，重试必然失败，本任务强制终止。\n"
+                        "建议：1) 输入 /new session 开启新会话后继续任务；"
+                        "2) 检查是否存在重复读取文件、工具结果过大等问题。"
+                    )
+                    self.session.log_dict_info({
+                        "role": "system",
+                        "content": "[上下文超限熔断] API 返回 Prompt 超长错误，强制终止本 Turn"
+                    })
+                    quit_chat = ChatOrNot.QuitByNoneTool
+                    break
 
             """2. 解构 LLM response"""
             tools, remaining_text = self._on_llm_rsp(turn, thinking_begin,
@@ -659,6 +682,22 @@ class QueryLoop:
 
             ai_response, is_truncated, reasoning_content, usage = chat_llm.chat_with_retry(temp_msgs)
 
+            # ===== Prompt 超长熔断（415 现场）=====
+            # 追问请求同样超长时，继续追问必然失败（415 现场：追问 3 次全部
+            # 返回同样的超长错误），直接放弃追问，避免无谓的调用与等待
+            if ai_response.startswith("[API_ERROR:") and any(
+                kw in ai_response.lower()
+                for kw in ("max length", "context length", "context_length",
+                           "too long", "too large", "prompt is too")
+            ):
+                self._print_info("[上下文超限] 追问请求同样超过模型长度限制，放弃追问，结束本轮")
+                self.session.log_dict_info({
+                    "role": "system",
+                    "content": "[上下文超限熔断] 追问请求 Prompt 超长，放弃追问"
+                })
+                self._no_tool_retry = 3  # 置满计数器，阻止外层继续追问
+                return []
+
             # 累加追问的 token 统计到内存计数器并持久化
             if usage:
                 cached = usage.get("cached_tokens", 0)
@@ -697,6 +736,22 @@ class QueryLoop:
             ai_response_clean = reasoning_content.strip()
 
         remaining_text, tools = tool_executor.parse_tools(ai_response_clean)
+
+        # ===== 回声防护（408 现场）=====
+        # LLM 逐字复述追问提示词时（提示词含 <done> 字面示例），parse_tools
+        # 会把复述文本中的 <done> 误提取为幻影 done 工具：正文被挖出空洞、
+        # done 消息显示为残句、任务被误判完成。检测到复述则视为无效回复，
+        # 忽略其中的幻影工具并继续追问。
+        if tools and prompt:
+            probe = re.sub(r'^\[[^\]]+\]\s*', '', prompt)[:15].strip()
+            if probe and probe in ai_response_clean:
+                tools = []
+                remaining_text = ""
+                self._print_info("[回声检测] 追问回复复述了提示词文本，已忽略其中的幻影工具")
+                self.session.log_dict_info({
+                    "role": "system",
+                    "content": "[回声检测] 追问回复复述了提示词文本（含工具标签示例），判定为无效回复，继续追问"
+                })
 
         # 打印追问回复中的正文（此前正文被丢弃，导致用户看不到 LLM 的说明文字，
         # 出现"done 消息声称已提供内容但用户从未看到"的现象）
@@ -807,31 +862,52 @@ class QueryLoop:
         # ===== AskUserQuestion 特殊处理 =====
         has_ask_user = any(t["llm_tool"] == "AskUserQuestion" for t in exec_tools)
 
-        if has_ask_user:
-            # 死循环熔断：检查是否连续两轮问了相同问题
-            ask_tools = [t for t in exec_tools if t["llm_tool"] == "AskUserQuestion"]
-            current_sig = "AskUserQuestion:" + "|".join(
-                t["params"].get("question", "") for t in ask_tools
-            )
-            if self._last_tool_sig == current_sig:
-                self._print_info("[熔断] 检测到连续两轮提出相同问题，强制终止以避免死循环")
-                self.session.log_dict_info({
-                    "role": "system",
-                    "content": "[熔断] AskUserQuestion 连续两轮相同问题，强制终止"
-                })
-                return ChatOrNot.QuitByNoneTool, []
-            self._last_tool_sig = current_sig
-
-            # AskUserQuestion 排到最前面优先执行
-            exec_tools.sort(key=lambda t: 0 if t["llm_tool"] == "AskUserQuestion" else 1)
-        else:
-            self._last_tool_sig = None
-
         # TodoWrite 排到最前面优先执行（先更新计划，再执行动作）
         # 排序键：todowrite=0, AskUserQuestion=1, 其他=2
         exec_tools.sort(key=lambda t: 0 if t["llm_tool"] == "todowrite" else (1 if t["llm_tool"] == "AskUserQuestion" else 2))
 
+        # ===== 死循环熔断（通用版，415 现场）=====
+        # 架构契约：QueryLoop 维护 last_tool_sig，连续两轮工具签名完全一致时强制终止。
+        # 旧版仅对 AskUserQuestion 生效；415 现场 LLM 连续多轮对同一文件调用
+        # 完全相同的 file_view（limit=160），每轮结果都 append 进 api_messages，
+        # 上下文无限膨胀直至 Prompt exceeds max length。
+        # 签名 = 各工具名 + 关键短参数（path/command/query/question/name/intent/
+        # sheet/limit/offset/max_results）+ 大内容字段哈希（old/new/content 取
+        # md5 前 8 位）。file_view 的 limit/offset 参与签名，分页读取（offset
+        # 递增）不算重复；str_replace 修正内容后哈希变化，合法重试不被误熔断。
+        def _sig_of(t):
+            p = t.get("params", {}) or {}
+            bits = []
+            for k in ("path", "command", "query", "question", "name", "intent", "sheet"):
+                v = p.get(k)
+                if v is not None:
+                    bits.append(f"{k}={v}")
+            for k in ("limit", "offset", "max_results"):
+                v = p.get(k)
+                if v is not None:
+                    bits.append(f"{k}={v}")
+            # 大内容字段以内容哈希参与签名：仅当内容也完全一致时才判定重复，
+            # 避免 LLM 修正 old/new 后对同一文件的合法重试被误熔断
+            for k in ("old", "new", "content"):
+                v = p.get(k)
+                if isinstance(v, str) and v:
+                    digest = hashlib.md5(v.encode("utf-8")).hexdigest()[:8]
+                    bits.append(f"{k}#{digest}")
+            return f"{t['llm_tool']}({','.join(bits)})"
+
+        current_sig = "|".join(_sig_of(t) for t in exec_tools) if exec_tools else None
+        if current_sig is not None and current_sig == self._last_tool_sig:
+            self._print_info("[熔断] 检测到连续两轮调用完全相同的工具列表，强制终止以避免死循环")
+            self.session.log_dict_info({
+                "role": "system",
+                "content": f"[熔断] 连续两轮工具签名完全一致（{current_sig[:200]}），强制终止"
+            })
+            return ChatOrNot.QuitByNoneTool, []
+        self._last_tool_sig = current_sig
+
         tool_exec_info = []
+        fv_seen = set()  # 本轮已执行的 file_view 键（path/limit/offset），用于单轮去重
+        fv_dup_warned = 0  # 单轮内重复 file_view 的阻断提示计数（超过 3 个后静默跳过）
 
         # 执行普通工具
         if exec_tools:
@@ -840,6 +916,8 @@ class QueryLoop:
             for t in exec_tools:
                 self._print_tool_call(t["llm_tool"], t["params"])  # 打印：工具名称，工具参数
                 self.session.log_tool_call(t["llm_tool"], t["params"])
+
+                blocked = False  # 工具是否被防护逻辑阻断（file_view 重复防护等）
 
                 # ===== TodoWrite 拦截：交给 TodoManager 处理 =====
                 if t["llm_tool"] == "todowrite":
@@ -857,14 +935,69 @@ class QueryLoop:
                             "content": f"[ERROR] TodoWrite 执行失败: {e}"
                         }
                 else:
-                    try:
-                        result_msg = tool_executor.execute_code_tool(t)  # 工具执行
-                    except Exception as e:
-                        logger.error(f"工具执行异常 [{t['llm_tool']}]: {e}")
-                        result_msg = {
-                            "role": "user",
-                            "content": f"[ERROR] 工具 {t['llm_tool']} 执行失败: {e}"
-                        }
+                    # ===== file_view 重复防护（415 现场）=====
+                    # 两层防护，杜绝同一文件被无限重复读取撑爆上下文：
+                    # 1) 单轮去重：同一条回复中重复的 file_view（相同 path/limit/
+                    #    offset）只执行第一个，其余前 3 个生成阻断提示、之后静默
+                    #    跳过——防止 LLM 单轮输出成百上千个重复标签撑爆上下文
+                    # 2) 跨轮硬阻断：同一文件累计查看第 3 次注入最终警告（仍执行），
+                    #    第 4 次起直接拒绝执行。旧版仅注入软提醒且可被 LLM 无视
+                    #    （415 现场：同一文件被连续读取 2600+ 次，直至 Prompt 超限）
+                    if t["llm_tool"] == "file_view":
+                        fv_path = t["params"].get("path", "")
+                        fv_key = (fv_path, t["params"].get("limit"), t["params"].get("offset"))
+                        if fv_key in fv_seen:
+                            # 单轮内重复：前 3 个生成阻断提示告知 LLM，之后静默跳过
+                            # （防止极端场景下单轮海量重复标签的 BLOCKED 消息本身撑大上下文）
+                            blocked = True
+                            if fv_dup_warned < 3:
+                                fv_dup_warned += 1
+                                result_msg = {
+                                    "role": "user",
+                                    "content": f"[BLOCKED] 本轮内重复的 file_view 已跳过: {fv_path}"
+                                }
+                            else:
+                                self.session.log_dict_info({
+                                    "role": "system",
+                                    "content": f"[熔断] 单轮内重复 file_view 已静默跳过: {fv_path}"
+                                })
+                                continue
+                        else:
+                            fv_seen.add(fv_key)
+                            if fv_path:
+                                self._file_view_counts[fv_path] = self._file_view_counts.get(fv_path, 0) + 1
+                                count = self._file_view_counts[fv_path]
+                                if count == 3:
+                                    reminder = (
+                                        f"[系统提醒] 文件 {fv_path} 已被查看 {count} 次。"
+                                        f"这是最后一次允许的查看，下次重复查看将被系统直接拒绝。"
+                                        f"文件内容已在上下文中，请尽快基于已读内容修改或结束任务。"
+                                    )
+                                    self.api_messages.append_micro_info("system", reminder)
+                                    self._print_info(f"[file_view 提醒] {fv_path} 已查看 {count} 次，下次将拒绝执行")
+                                elif count > 3:
+                                    blocked = True
+                                    result_msg = {
+                                        "role": "user",
+                                        "content": (
+                                            f"[BLOCKED] 文件 {fv_path} 本次任务中已查看 {count} 次，本次拒绝执行。"
+                                            f"内容已在上下文中，请基于已读内容修改（str_replace）或输出 <done> 结束任务。"
+                                        )
+                                    }
+                                    self._print_info(f"[file_view 熔断] {fv_path} 已查看 {count} 次，本次拒绝执行")
+                                    self.session.log_dict_info({
+                                        "role": "system",
+                                        "content": f"[熔断] file_view {fv_path} 重复查看 {count} 次，本次拒绝执行"
+                                    })
+                    if not blocked:
+                        try:
+                            result_msg = tool_executor.execute_code_tool(t)  # 工具执行
+                        except Exception as e:
+                            logger.error(f"工具执行异常 [{t['llm_tool']}]: {e}")
+                            result_msg = {
+                                "role": "user",
+                                "content": f"[ERROR] 工具 {t['llm_tool']} 执行失败: {e}"
+                            }
 
                 self._print_tool_result(t["llm_tool"], result_msg.get("content", ""), t["params"])  # 打印：工具执行结果
                 self.session.log_tool_result(t["llm_tool"], result_msg)
@@ -876,22 +1009,11 @@ class QueryLoop:
                 # 将 tool 的执行结果，append 到 api_messages
                 self.api_messages.append_tool_exec_result(result_msg)
 
-                # ===== file_view 重复查看检测 =====
-                if t["llm_tool"] == "file_view":
-                    view_path = t["params"].get("path", "")
-                    if view_path:
-                        self._file_view_counts[view_path] = self._file_view_counts.get(view_path, 0) + 1
-                        count = self._file_view_counts[view_path]
-                        if count > 2:
-                            reminder = (
-                                f"[系统提醒] 文件 {view_path} 已被查看 {count} 次。"
-                                f"如果已掌握足够信息，建议直接开始修改；如确实需要继续查看，请忽略此提醒。"
-                            )
-                            self.api_messages.append_micro_info("system", reminder)
-                            self._print_info(f"[file_view 提醒] {view_path} 已查看 {count} 次，已注入提醒")
+                # （file_view 重复查看检测已前移至工具执行前，见上方 blocked 防护逻辑）
 
                 # ===== 延迟记忆召回：file_view 执行后用文件内容触发召回 =====
-                if t["llm_tool"] == "file_view" and self._pending_memory_recall:
+                # （被阻断/拒绝的 file_view 不触发：其 result 是 BLOCKED 提示而非文件内容）
+                if t["llm_tool"] == "file_view" and not blocked and self._pending_memory_recall:
                     self._pending_memory_recall = False
                     try:
                         file_content = result_msg.get("content", "")

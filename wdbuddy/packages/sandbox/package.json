@@ -1,0 +1,29 @@
+{
+  "name": "@wdbuddy/sandbox",
+  "version": "1.0.0",
+  "private": true,
+  "description": "WDBuddy 权限强制层：fs-guard（路径/符号链接）+ policy-engine（ADR-0004，单点强制、不可绕过）",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@wdbuddy/shared-types": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

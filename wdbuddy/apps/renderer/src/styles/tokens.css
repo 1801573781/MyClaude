@@ -1,0 +1,68 @@
+/* WDBuddy 设计变量（§4.8 视觉规格，生成样式必须基于 tokens.css） */
+:root {
+  --wb-color-primary: #0052D9;   /* 主色 */
+  --wb-color-primary-hover: #1C6FE0;
+  --wb-color-success: #2BA471;
+  --wb-color-warning: #E37318;
+  --wb-color-danger:  #D54941;
+
+  --wb-bg-base:  #FFFFFF;
+  --wb-bg-panel: #F3F5F8;
+  --wb-bg-chat-user: #E8F0FE;
+
+  --wb-border: #E1E5EB;
+
+  --wb-text-primary: rgba(0, 0, 0, .88);
+  --wb-text-secondary: rgba(0, 0, 0, .55);
+  --wb-text-disabled: rgba(0, 0, 0, .35);
+  --wb-text-inverse: rgba(255, 255, 255, .95);
+
+  --wb-radius-md: 8px;
+  --wb-radius-sm: 4px;
+  --wb-radius-lg: 12px;
+
+  --wb-space-1: 4px;
+  --wb-space-2: 8px;
+  --wb-space-3: 12px;
+  --wb-space-4: 16px;
+  --wb-space-5: 24px;
+
+  --wb-font-family: system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
+  --wb-font-size-xs: 12px;
+  --wb-font-size-sm: 13px;
+  --wb-font-size-md: 14px;
+  --wb-font-size-lg: 16px;
+  --wb-font-size-xl: 18px;
+
+  /* 布局常量（§4.8） */
+  --wb-topbar-height: 48px;
+  --wb-statusbar-height: 28px;
+  --wb-sidebar-width: 240px;
+  --wb-sidebar-collapsed-width: 64px;
+  --wb-artifact-width: 420px;
+  --wb-artifact-min: 320px;
+  --wb-artifact-max: 640px;
+  --wb-composer-min-height: 120px;
+
+  --wb-shadow-sm: 0 1px 2px rgba(0, 0, 0, .06);
+  --wb-shadow-md: 0 4px 12px rgba(0, 0, 0, .10);
+}
+
+[data-theme="dark"] {
+  --wb-color-primary: #3B7CDB;
+  --wb-color-primary-hover: #5B94E3;
+
+  --wb-bg-base:  #11151C;
+  --wb-bg-panel: #1A212B;
+  --wb-bg-chat-user: #1E2A3C;
+
+  --wb-border: #2A3341;
+
+  --wb-text-primary: rgba(255, 255, 255, .90);
+  --wb-text-secondary: rgba(255, 255, 255, .55);
+  --wb-text-disabled: rgba(255, 255, 255, .35);
+  --wb-text-inverse: rgba(0, 0, 0, .90);
+
+  --wb-shadow-sm: 0 1px 2px rgba(0, 0, 0, .30);
+  --wb-shadow-md: 0 4px 12px rgba(0, 0, 0, .45);
+}

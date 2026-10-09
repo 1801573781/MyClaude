@@ -1,0 +1,47 @@
+/* settings feature 样式（§4.7） */
+.wb-settings__body {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  min-height: 380px;
+}
+.wb-settings__nav {
+  border-right: 1px solid var(--wb-border);
+  padding: var(--wb-space-3) 0;
+}
+.wb-settings__nav-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 16px;
+  font-size: var(--wb-font-size-sm);
+  color: var(--wb-text-secondary);
+  border-left: 3px solid transparent;
+}
+.wb-settings__nav-item--active {
+  color: var(--wb-color-primary);
+  border-left-color: var(--wb-color-primary);
+  background: rgba(0, 82, 217, .04);
+  font-weight: 500;
+}
+.wb-settings__content {
+  padding: var(--wb-space-3) var(--wb-space-4);
+  overflow-y: auto;
+  max-height: 56vh;
+}
+.wb-settings__row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--wb-space-3);
+  padding: var(--wb-space-2) 0;
+  border-bottom: 1px solid var(--wb-border);
+}
+.wb-settings__row:last-child { border-bottom: none; }
+.wb-settings__row-label {
+  width: 180px;
+  flex-shrink: 0;
+  font-size: var(--wb-font-size-sm);
+  color: var(--wb-text-primary);
+  padding-top: 4px;
+}
+.wb-settings__row-value { flex: 1; }
+.wb-settings__row-value .wb-select { max-width: 280px; }

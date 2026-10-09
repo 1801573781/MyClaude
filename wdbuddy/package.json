@@ -1,0 +1,31 @@
+{
+  "name": "wdbuddy-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "WDBuddy - 全场景职场 AI 智能体桌面工作台：输入一句话，交付可验收成果",
+  "license": "Proprietary",
+  "packageManager": "pnpm@9.12.3",
+  "engines": {
+    "node": ">=20.11.0"
+  },
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "node scripts/build.mjs",
+    "test": "turbo run test --concurrency=4",
+    "e2e": "pnpm --filter @wdbuddy/e2e test",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "package": "node scripts/package.mjs",
+    "format": "prettier --write .",
+    "prepare": "husky || true"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "^19.6.0",
+    "@commitlint/config-conventional": "^19.6.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^15.2.10",
+    "prettier": "^3.4.2",
+    "turbo": "^2.3.3",
+    "typescript": "^5.7.2"
+  }
+}

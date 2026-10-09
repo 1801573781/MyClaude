@@ -342,6 +342,15 @@ def has_tool_tag_shape(text: str) -> bool:
     for tag in _SELF_CLOSING_TAGS:
         if re.search(rf'<{tag}\s+[a-zA-Z_][\w-]*\s*=', text):
             return True
+    # 方括号形态（408 现场）：[bash]cmd[/bash] 成对出现、[file_view path=..] 带属性，
+    # 或 [tag attr="v"/] 自闭合形态。修复层未能产出工具时，走格式纠错追问。
+    for tag in _CONTAINER_TAGS:
+        if re.search(rf'\[\s*{tag}(?:\s[^\[\]]*?)?\][\s\S]{{0,4000}}\[\s*/\s*{tag}\s*\]', text):
+            return True
+    for tag in _SELF_CLOSING_TAGS:
+        if re.search(rf'\[\s*{tag}\s+[a-zA-Z_][\w-]*\s*=', text) or \
+                re.search(rf'\[\s*{tag}\s[^\[\]]*?/\s*\]', text):
+            return True
     return False
 
 
@@ -445,6 +454,66 @@ def _parse_tools_lenient(response: str):
     remaining = re.sub(r'\n{3,}', '\n\n', remaining)
     return remaining, tools
 
+
+def _repair_square_bracket_tools(response: str):
+    """方括号工具标签修复层（408 现场）。
+
+    LLM 误将工具标签输出为方括号形态（如 [bash]dir ...[/bash]）时，
+    strict/loose/lenient 均无法解析：标签文本被当正文展示、工具从不执行，
+    表现为"既没有输出工具，也没有输出 done"并触发连环追问。
+
+    策略：仅在前面各层均未解析出工具时启用。把代码范围之外、成对出现的
+    方括号容器标签与带属性的自闭合方括号标签转换为标准尖括号形态，
+    再走一遍 strict 解析。只转换成对形态，避免误伤正文中孤立的
+    [bash]、[done] 等普通方括号提及。
+    """
+    code_ranges = _find_markdown_code_ranges(response)
+    replacements = []  # (start, end, new_text)，基于原始坐标从右往左回填
+    container_spans = []
+
+    # 1. 容器标签成对转换：[tag]...[/tag] / [tag attr=".."]...[/tag]
+    for tag in _CONTAINER_TAGS:
+        pair_pattern = re.compile(
+            rf'\[\s*{tag}(\s[^\[\]]*?)?\]([\s\S]*?)\[\s*/\s*{tag}\s*\]'
+        )
+        for m in pair_pattern.finditer(response):
+            if _is_position_in_code(m.start(), code_ranges):
+                continue
+            # 跳过与已收集范围重叠的匹配（嵌套方括号标签只修最外层）
+            if any(cs <= m.start() < ce for cs, ce in container_spans):
+                continue
+            attrs = m.group(1) or ''
+            content = m.group(2) or ''
+            replacements.append(
+                (m.start(), m.end(), f'<{tag}{attrs}>{content}</{tag}>')
+            )
+            container_spans.append((m.start(), m.end()))
+
+    # 2. 自闭合标签：[tag attr="v"/] → <tag attr="v"/>（要求带 /，避免误吞正文提及）
+    for tag in _SELF_CLOSING_TAGS:
+        sc_pattern = re.compile(rf'\[\s*{tag}(\s[^\[\]]*?)?\s*/\s*\]')
+        for m in sc_pattern.finditer(response):
+            if _is_position_in_code(m.start(), code_ranges):
+                continue
+            # 跳过已被容器替换覆盖的范围，避免外层回填时内层修复被冲掉
+            if any(cs <= m.start() < ce for cs, ce in container_spans):
+                continue
+            attrs = m.group(1) or ''
+            replacements.append((m.start(), m.end(), f'<{tag}{attrs}/>'))
+
+    if not replacements:
+        return None
+
+    repaired = response
+    for start, end, new_text in sorted(replacements, reverse=True):
+        repaired = repaired[:start] + new_text + repaired[end:]
+
+    remaining, tools = _parse_tools_strict(repaired)
+    if tools:
+        return remaining, tools
+    return None
+
+
 def parse_tools(response: str, reasoning_content: str = ""):
     """
     按顺序解析 AI 响应中的 XML 工具调用。
@@ -477,7 +546,14 @@ def parse_tools(response: str, reasoning_content: str = ""):
         if lenient_result is not None:
             remaining, tools = lenient_result
 
-    # 兜底3：仍无工具，且额外提供了 reasoning_content（某些 LLM 将所有内容放在思考中）
+    # 兜底3：方括号标签修复（408 现场：LLM 误用 [bash]...[/bash] 方括号形态，
+    # 工具从不执行且连环触发"既没有工具也没有 done"的追问）
+    if not tools and response.strip():
+        sq_result = _repair_square_bracket_tools(response)
+        if sq_result is not None:
+            remaining, tools = sq_result
+
+    # 兜底4：仍无工具，且额外提供了 reasoning_content（某些 LLM 将所有内容放在思考中）
     if not tools and reasoning_content:
         loose_rem, loose_tools = _parse_tools_loose(reasoning_content)
         if loose_tools:
@@ -834,7 +910,13 @@ def _build_result(response: str, all_matches: list, _is_inside_container):
         elif tool_name == "done":
             info = m
             content = info["content"].strip()
-            tools.append({"llm_tool": "done", "params": {"message": content, "_is_unclosed": info["is_unclosed"]}})
+            # 幻影 done 防护（408 现场）：正文复述提示词/文档中的 <done> 字面
+            # 示例时（如"请输出 <done> 结束本轮"），紧跟标签的标点开头内容是
+            # 引文而非真实任务总结。还原为正文展示，避免误判任务完成。
+            if content and content[0] in "。，！？；：、,.!?;:":
+                remaining_parts.append(response[start:end])
+            else:
+                tools.append({"llm_tool": "done", "params": {"message": content, "_is_unclosed": info["is_unclosed"]}})
 
         elif tool_name == "use_skill":
             tools.append({"llm_tool": "use_skill", "params": {"name": _extract_attr(m.group(1), "name") or ""}})

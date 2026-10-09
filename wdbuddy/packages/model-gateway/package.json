@@ -1,0 +1,29 @@
+{
+  "name": "@wdbuddy/model-gateway",
+  "version": "1.0.0",
+  "private": true,
+  "description": "WDBuddy 模型网关：统一流式协议 chatStream + Provider 适配器（ADR-0005：新增模型=1个文件+注册）",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run --passWithNoTests",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@wdbuddy/shared-types": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

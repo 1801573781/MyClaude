@@ -1,0 +1,250 @@
+/* WDBuddy 全局样式（基于 tokens.css） */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: var(--wb-font-family);
+  font-size: var(--wb-font-size-md);
+  color: var(--wb-text-primary);
+  background: var(--wb-bg-base);
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+  border: none;
+  background: none;
+}
+
+input,
+textarea,
+select {
+  font-family: inherit;
+  color: var(--wb-text-primary);
+}
+
+/* ─────────── 滚动条 ─────────── */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--wb-border);
+  border-radius: var(--wb-radius-sm);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--wb-text-disabled);
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ─────────── 三栏工作台骨架 ─────────── */
+.wb-workbench {
+  display: grid;
+  grid-template-rows: var(--wb-topbar-height) 1fr var(--wb-statusbar-height);
+  grid-template-columns: var(--wb-sidebar-width) 1fr var(--wb-artifact-width);
+  grid-template-areas:
+    "topbar topbar topbar"
+    "sidebar chat artifacts"
+    "statusbar statusbar statusbar";
+  height: 100%;
+  overflow: hidden;
+}
+
+.wb-workbench--sidebar-collapsed {
+  grid-template-columns: var(--wb-sidebar-collapsed-width) 1fr var(--wb-artifact-width);
+}
+
+.wb-workbench--artifacts-hidden {
+  grid-template-columns: var(--wb-sidebar-width) 1fr 0;
+}
+
+.wb-topbar { grid-area: topbar; }
+.wb-sidebar { grid-area: sidebar; min-height: 0; }
+.wb-chat { grid-area: chat; min-width: 480px; min-height: 0; overflow: hidden; }
+.wb-artifacts { grid-area: artifacts; min-width: 0; min-height: 0; }
+.wb-statusbar { grid-area: statusbar; }
+
+/* ─────────── 顶栏 ─────────── */
+.wb-topbar {
+  display: flex;
+  align-items: center;
+  gap: var(--wb-space-3);
+  padding: 0 var(--wb-space-4);
+  background: var(--wb-bg-base);
+  border-bottom: 1px solid var(--wb-border);
+}
+
+.wb-topbar__logo {
+  display: flex;
+  align-items: center;
+  gap: var(--wb-space-2);
+  font-weight: 600;
+  font-size: var(--wb-font-size-lg);
+  color: var(--wb-color-primary);
+  cursor: pointer;
+}
+
+.wb-topbar__spacer { flex: 1; }
+
+/* ─────────── 状态栏 ─────────── */
+.wb-statusbar {
+  display: flex;
+  align-items: center;
+  gap: var(--wb-space-3);
+  padding: 0 var(--wb-space-4);
+  font-size: var(--wb-font-size-xs);
+  color: var(--wb-text-secondary);
+  background: var(--wb-bg-panel);
+  border-top: 1px solid var(--wb-border);
+}
+
+.wb-statusbar__version { margin-left: auto; }
+
+.wb-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--wb-color-success);
+}
+.wb-dot--offline { background: var(--wb-color-danger); }
+.wb-dot--busy { background: var(--wb-color-warning); }
+
+/* ─────────── 通用卡片 / 按钮 ─────────── */
+.wb-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--wb-space-1);
+  border-radius: var(--wb-radius-md);
+  font-size: var(--wb-font-size-md);
+  padding: 6px 14px;
+  transition: all .15s ease;
+  border: 1px solid transparent;
+  white-space: nowrap; /* 按钮文字禁止折行（修复"选择目/录"、"打/开"两行显示） */
+}
+.wb-btn--primary { background: var(--wb-color-primary); color: var(--wb-text-inverse); }
+.wb-btn--primary:hover { background: var(--wb-color-primary-hover); }
+.wb-btn--default {
+  background: var(--wb-bg-base);
+  border-color: var(--wb-border);
+  color: var(--wb-text-primary);
+}
+.wb-btn--default:hover { border-color: var(--wb-color-primary); color: var(--wb-color-primary); }
+.wb-btn--danger { background: var(--wb-color-danger); color: var(--wb-text-inverse); }
+.wb-btn--ghost { color: var(--wb-text-secondary); }
+.wb-btn--ghost:hover { color: var(--wb-color-primary); background: var(--wb-bg-panel); }
+.wb-btn--small { font-size: var(--wb-font-size-xs); padding: 3px 8px; }
+.wb-btn--large { font-size: var(--wb-font-size-lg); padding: 8px 20px; }
+.wb-btn:disabled { opacity: .45; cursor: not-allowed; }
+
+/* ─────────── 徽标 ─────────── */
+.wb-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: var(--wb-font-size-xs);
+  line-height: 18px;
+}
+.wb-badge--neutral { background: var(--wb-bg-panel); color: var(--wb-text-secondary); }
+.wb-badge--running { background: rgba(0, 82, 217, .10); color: var(--wb-color-primary); }
+.wb-badge--success { background: rgba(43, 164, 113, .12); color: var(--wb-color-success); }
+.wb-badge--warning { background: rgba(227, 115, 24, .12); color: var(--wb-color-warning); }
+.wb-badge--danger { background: rgba(213, 73, 65, .12); color: var(--wb-color-danger); }
+.wb-badge--info { background: rgba(0, 82, 217, .08); color: var(--wb-color-primary); }
+
+/* ─────────── Spinner ─────────── */
+.wb-spinner-wrap { display: inline-flex; align-items: center; gap: var(--wb-space-1); }
+.wb-spinner {
+  display: inline-block;
+  border: 2px solid var(--wb-border);
+  border-top-color: var(--wb-color-primary);
+  border-radius: 50%;
+  animation: wb-spin .8s linear infinite;
+}
+@keyframes wb-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ─────────── 空状态 ─────────── */
+.wb-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--wb-space-2);
+  padding: var(--wb-space-5);
+  color: var(--wb-text-secondary);
+}
+.wb-empty__icon { font-size: 32px; }
+.wb-empty__title { font-size: var(--wb-font-size-md); font-weight: 500; }
+.wb-empty__desc { font-size: var(--wb-font-size-sm); }
+
+/* ─────────── 输入控件 ─────────── */
+.wb-input,
+.wb-textarea,
+.wb-select {
+  width: 100%;
+  border: 1px solid var(--wb-border);
+  border-radius: var(--wb-radius-md);
+  padding: 8px 12px;
+  font-size: var(--wb-font-size-md);
+  background: var(--wb-bg-base);
+  outline: none;
+  transition: border-color .15s;
+}
+.wb-input:focus,
+.wb-textarea:focus,
+.wb-select:focus {
+  border-color: var(--wb-color-primary);
+}
+.wb-textarea { resize: vertical; min-height: 80px; }
+
+/* ─────────── 模态 / 抽屉 ─────────── */
+.wb-modal-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, .45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.wb-modal {
+  background: var(--wb-bg-base);
+  border-radius: var(--wb-radius-lg);
+  box-shadow: var(--wb-shadow-md);
+  min-width: 480px;
+  max-width: 720px;
+  max-height: 80vh;
+  overflow: auto;
+}
+.wb-modal__header {
+  padding: var(--wb-space-4) var(--wb-space-5);
+  font-size: var(--wb-font-size-lg);
+  font-weight: 600;
+  border-bottom: 1px solid var(--wb-border);
+}
+.wb-modal__body { padding: var(--wb-space-5); }
+.wb-modal__footer {
+  padding: var(--wb-space-3) var(--wb-space-5);
+  border-top: 1px solid var(--wb-border);
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--wb-space-2);
+}

@@ -1,0 +1,31 @@
+{
+  "name": "@wdbuddy/desktop",
+  "version": "1.0.0",
+  "private": true,
+  "description": "WDBuddy Electron 应用壳：窗口/托盘/IPC/任务存储/Runtime 守护/更新",
+  "main": "dist/main/index.js",
+  "scripts": {
+    "dev": "node node_modules/electron/cli.js dist/main/index.js",
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run --passWithNoTests",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@wdbuddy/shared-types": "workspace:*",
+    "@wdbuddy/sandbox": "workspace:*",
+    "@wdbuddy/model-gateway": "workspace:*",
+    "@wdbuddy/agent-runtime": "workspace:*",
+    "@wdbuddy/skill-sdk": "workspace:*",
+    "better-sqlite3": "^12.2.0",
+    "electron-updater": "^6.3.9",
+    "pino": "^9.5.0"
+  },
+  "devDependencies": {
+    "electron": "^33.2.1",
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

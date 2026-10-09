@@ -1,5 +1,6 @@
 import math
 import os
+import re
 import time
 from contextlib import contextmanager
 from html import escape as html_escape  # 用于 HTML 转义
@@ -204,8 +205,11 @@ def print_user_input(content: str):
     # 用户消息使用简单的文本显示
     console.print(
         f"\n[{role_color}]{role_emoji} {role_name}[/{role_color}] [white]{timestamp}[/white]")
+    # 关键修复：content 用 Text 对象包裹，禁止 Rich 将用户输入解析为 markup。
+    # 用户粘贴含 [/bash]、[1] 等方括号文本时，字符串会被 Panel 当 markup 渲染，
+    # 未配对闭合标签直接抛 MarkupError 导致程序崩溃退出。
     console.print(Panel(
-        content,
+        Text(content),
         border_style=role_color,
         padding=(1, 2),
         width=console.width - 2
@@ -247,7 +251,7 @@ Welcome to MyClaude Code CLI! A beautiful terminal interface for AI Coding.
 - `/bug` - bug base相关命令，输入 /bug 查看命令列表
 - `/init` - 创建MyClaude的项目工程树
 - `/init file` - 创建函数级摘要 (简写 /init f)
-- `/cs` - 统计项目代码行数
+- `/cs [<目录>]` - 统计项目代码行数（无参数统计项目根目录；绝对路径直接使用；相对路径以项目根目录为父目录）
 - `/test` - 单元测试和系统测试，/test --help 显示test命令帮助信息
 - `/opsx` - openspec相关命令，输入 /opsx 查看命令列表
 - `/h2m <p1> <p2> [<p3>] [<p4>]` - 将 Session Log HTML 转换为 Markdown（参数值含空格请用引号）
@@ -330,7 +334,11 @@ def typewriter_print(text, delay=0.005):
     """
 
     # 1. 将 markup 解析为 Rich 内部带样式的 Text 对象
-    rich_text = Text.from_markup(text)
+    #    文本含未配对的 [/bash] 等非法 markup 时，降级为纯文本，避免 MarkupError 崩溃
+    try:
+        rich_text = Text.from_markup(text)
+    except Exception:
+        rich_text = Text(text)
 
     # 2. 逐字符提取：纯文本字符 + 该偏移位置的合成样式
     for offset, char in enumerate(rich_text.plain):
@@ -343,6 +351,70 @@ def typewriter_print(text, delay=0.005):
 
     # 3. 全部输出完后统一换行
     console.print()
+
+
+# 扫描 Markdown 代码块（三反引号）与行内代码（单反引号）的范围，供标签保护跳过。
+def _find_md_code_ranges(text: str) -> list:
+    ranges = []
+    pos = 0
+    in_fence = False
+    fence_start = 0
+    in_inline = False
+    inline_start = 0
+
+    while pos < len(text):
+        if text[pos:pos + 3] == '```':
+            if in_fence:
+                ranges.append((fence_start, pos + 3))
+                in_fence = False
+            else:
+                if in_inline:
+                    ranges.append((inline_start, pos))
+                    in_inline = False
+                in_fence = True
+                fence_start = pos
+            pos += 3
+            continue
+        if not in_fence and text[pos] == '`':
+            if in_inline:
+                ranges.append((inline_start, pos + 1))
+                in_inline = False
+            else:
+                in_inline = True
+                inline_start = pos
+            pos += 1
+            continue
+        if in_inline and text[pos] in '\n\r':
+            ranges.append((inline_start, pos))
+            in_inline = False
+            pos += 1
+            continue
+        pos += 1
+
+    if in_fence:
+        ranges.append((fence_start, len(text)))
+    if in_inline:
+        ranges.append((inline_start, len(text)))
+    return ranges
+
+
+_ANGLE_TAG_RE = re.compile(r'</?[a-zA-Z_][a-zA-Z0-9_-]*(?:\s[^<>\n]*)?/?>')
+
+
+# 保护正文中的尖括号标签文本（如 done、file_view 标签）：
+# Rich 的 Markdown 渲染器会静默丢弃 raw HTML token，正文中出现的工具标签
+# 文本直接消失，用户看到内容被一段神秘代码截断（408 现场）。
+# 将代码块/行内代码之外的标签包裹为行内代码，保证完整显示。
+def _protect_angle_tags_for_markdown(text: str) -> str:
+    ranges = _find_md_code_ranges(text)
+
+    def _sub(m):
+        for cs, ce in ranges:
+            if cs <= m.start() < ce:
+                return m.group(0)
+        return f'`{m.group(0)}`'
+
+    return _ANGLE_TAG_RE.sub(_sub, text)
 
 
 def typewriter_then_markdown(text: str, delay: float = 0.005):
@@ -372,13 +444,34 @@ def typewriter_then_markdown(text: str, delay: float = 0.005):
     use_typewriter = estimated_lines <= max_typewriter_lines
 
     def _render_final():
-        """选择最终渲染器，返回 Rich 渲染对象。"""
-        if stripped.startswith("```") or stripped.startswith("#") or "- " in stripped[:100]:
-            return Markdown(text)
+        """选择最终渲染器，返回 Rich 渲染对象。
+
+        判定顺序（Markdown 优先，防止误判为代码）：
+        1. Markdown 前置特征：```、标题#、列表-、表格| —— 命中即走 Markdown 渲染。
+           Markdown 表格/列表对长内容的处理是 wrap（内容完整），而 Syntax
+           对超宽行是水平裁剪（内容丢失）。含这些特征却走 Syntax 会导致
+           表格行被裁掉后半段，用户看到"内容没显示完整"。
+        2. 代码关键词：def/import/class/include/function/const —— 仅在无
+           Markdown 特征时判定。注意关键词是全文匹配，前端/TS 话题的普通
+           说明文字（如"这个 class 定义"）极易误命中，故只能作为兜底。
+        3. Syntax 渲染必须 word_wrap=True：Rich Syntax 默认不折行，
+           超过终端宽度的行直接水平裁剪，代码/文本内容会丢失。
+        """
+        is_markdown_like = (
+            stripped.startswith("```")
+            or stripped.startswith("#")
+            or stripped.startswith("|")
+            or "- " in stripped[:100]
+            or "* " in stripped[:100]
+        )
+        # Markdown 渲染前保护尖括号标签：Rich Markdown 会静默丢弃 raw HTML
+        # token（如 <done>、<bash>），用户看到内容被"神秘代码"截断（408 现场）
+        if is_markdown_like:
+            return Markdown(_protect_angle_tags_for_markdown(text))
         elif any(kw in text for kw in _CODE_KEYWORDS):
-            return Syntax(text, "python", theme="monokai", line_numbers=False)
+            return Syntax(text, "python", theme="monokai", line_numbers=False, word_wrap=True)
         else:
-            return Markdown(text)
+            return Markdown(_protect_angle_tags_for_markdown(text))
 
     if use_typewriter:
         buffer = ""
@@ -423,6 +516,7 @@ def show_history(messages):
     for i, msg in enumerate(messages, 1):
         preview = msg['content'][:50] + "..." if len(msg['content']) > 50 else msg['content']
         preview = preview.replace('\n', ' ')
+        preview = escape(preview)
         table.add_row(
             str(i),
             msg['role'].capitalize(),
@@ -617,7 +711,9 @@ def print_tool_call(tool_name: str, params: dict):
         detail = params.get("path", "")
 
     # 箭头用亮青色（与工具名一致），工具名亮青加粗，参数亮白
-    console.print(f"  [bold bright_cyan]→[/bold bright_cyan] [bold bright_cyan]{tool_name}[/bold bright_cyan] [white]{detail}[/white]")
+    # detail 来自 LLM 输出的 bash 命令/路径等，可能含 [INFO]、[bash] 等方括号
+    # 文本，必须 escape，否则 MarkupError 崩溃
+    console.print(f"  [bold bright_cyan]→[/bold bright_cyan] [bold bright_cyan]{escape(tool_name)}[/bold bright_cyan] [white]{escape(detail)}[/white]")
     # HTML 缓冲区
     _append_html(f'<p style="margin:4px 0 4px 20px; color:#22d3ee;">→ {html_escape(tool_name)} {html_escape(detail)}</p>')
 
@@ -645,8 +741,10 @@ def print_ask_user_question(question: str, choices: list[str] | None = None) -> 
     content = "\n".join(content_lines)
 
     # 使用 Rich Panel 渲染问题，边框亮青色
+    # content 含 "[1] 选项" 编号及 LLM 生成的任意文本，必须用 Text 对象
+    # 禁止 markup 解析，否则 [1] 会被当作样式标签抛 MarkupError
     console.print(Panel(
-        content,
+        Text(content),
         title="🤔 AI 提问",
         border_style="bright_cyan",
         padding=(1, 2),
@@ -907,7 +1005,8 @@ def print_todo_list(todo_list):
         elif item.status.value == "in_progress":
             status_icon = "[bright_cyan]▶[/bright_cyan]"
             content_style = "bold bright_cyan"
-            suffix = f" — {item.active_form}" if item.active_form else ""
+            # active_form 来自 LLM 输出，可能含方括号文本，必须转义防 MarkupError
+            suffix = f" — {escape(item.active_form)}" if item.active_form else ""
         else:
             status_icon = "[white]○[/white]"
             content_style = "white"
@@ -1144,9 +1243,15 @@ def get_input() -> str:
             #      \x1b[?7h  DECAWM on（恢复行尾自动换行）
             #      \x1b[?25h 显示光标（部分程序隐藏光标后不恢复）
             #      \x1b[r    滚动区域复位为全屏
+            #    ⚠ 关键：\x1b[r（DECSTBM）按 xterm 规范执行后光标会跳到
+            #    HOME（屏幕左上角）！裸发会把提示符写到视口顶部，覆盖启动
+            #    横幅等已有内容。必须用 DECSC(7)/DECRC(8) 保存/恢复光标位置
+            #    包裹，保证净效果为"只复位滚动区域、不移动光标"：
+            #      \x1b7    保存当前光标位置
+            #      \x1b8    恢复光标位置（在 \x1b[r 之后发送）
             if has_out_mode:
                 kernel32.SetConsoleMode(stdout_handle, out_mode_orig.value | 0x7)
-                sys.stdout.write("\x1b[?7h\x1b[?25h\x1b[r")
+                sys.stdout.write("\x1b7\x1b[?7h\x1b[?25h\x1b[r\x1b8")
                 sys.stdout.flush()
 
             # 1. 输出模式：禁用 VT(0x4)，仅保留 PROCESSED(0x1) | WRAP(0x2)

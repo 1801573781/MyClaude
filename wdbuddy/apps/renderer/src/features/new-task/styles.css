@@ -1,0 +1,43 @@
+/* new-task feature 样式（§4.6） */
+.wb-field {
+  margin-bottom: var(--wb-space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--wb-space-1);
+}
+.wb-field--row { flex-direction: row; gap: var(--wb-space-3); align-items: flex-end; }
+.wb-field--row > div { display: flex; flex-direction: column; gap: var(--wb-space-1); }
+.wb-field__label {
+  font-size: var(--wb-font-size-sm);
+  color: var(--wb-text-secondary);
+  font-weight: 500;
+}
+.wb-field__danger {
+  color: var(--wb-color-danger);
+  background: rgba(213, 73, 65, .06);
+  border: 1px solid rgba(213, 73, 65, .3);
+  border-radius: var(--wb-radius-md);
+  padding: var(--wb-space-2);
+  font-size: var(--wb-font-size-sm);
+}
+
+/* 三选一模式卡片 */
+.wb-modecards {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--wb-space-2);
+}
+.wb-modecard {
+  border: 1px solid var(--wb-border);
+  border-radius: var(--wb-radius-md);
+  padding: var(--wb-space-3);
+  text-align: left;
+  background: var(--wb-bg-base);
+}
+.wb-modecard--active {
+  border-color: var(--wb-color-primary);
+  background: rgba(0, 82, 217, .05);
+  box-shadow: 0 0 0 1px var(--wb-color-primary);
+}
+.wb-modecard__title { font-weight: 600; margin-bottom: 4px; }
+.wb-modecard__desc { font-size: var(--wb-font-size-xs); color: var(--wb-text-secondary); }

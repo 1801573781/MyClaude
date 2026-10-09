@@ -1,0 +1,166 @@
+/* artifacts feature 样式（§4.5） */
+.wb-artifacts__inner {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--wb-bg-base);
+  border-left: 1px solid var(--wb-border);
+}
+
+.wb-artifacts__tabs {
+  display: flex;
+  border-bottom: 1px solid var(--wb-border);
+}
+.wb-artifacts__tab {
+  flex: 1;
+  padding: 10px 0;
+  font-size: var(--wb-font-size-sm);
+  color: var(--wb-text-secondary);
+  border-bottom: 2px solid transparent;
+}
+.wb-artifacts__tab--active {
+  color: var(--wb-color-primary);
+  border-bottom-color: var(--wb-color-primary);
+  font-weight: 500;
+}
+.wb-artifacts__tab-count {
+  display: inline-block;
+  margin-left: 4px;
+  font-size: var(--wb-font-size-xs);
+  background: var(--wb-bg-panel);
+  border-radius: 999px;
+  padding: 0 6px;
+}
+
+.wb-artifacts__content {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.wb-artifacts__empty {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--wb-space-2);
+  color: var(--wb-text-secondary);
+}
+
+.wb-artifacts__footer {
+  display: flex;
+  gap: var(--wb-space-2);
+  padding: var(--wb-space-3);
+  border-top: 1px solid var(--wb-border);
+}
+
+/* 预览 */
+.wb-preview { height: 100%; display: flex; flex-direction: column; }
+.wb-preview__switcher {
+  display: flex;
+  gap: var(--wb-space-1);
+  padding: var(--wb-space-2);
+  overflow-x: auto;
+  border-bottom: 1px solid var(--wb-border);
+}
+.wb-preview__chip {
+  font-size: var(--wb-font-size-xs);
+  padding: 2px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--wb-border);
+  color: var(--wb-text-secondary);
+  white-space: nowrap;
+}
+.wb-preview__chip--active {
+  border-color: var(--wb-color-primary);
+  color: var(--wb-color-primary);
+  background: rgba(0, 82, 217, .06);
+}
+.wb-preview__iframe,
+.wb-browser__webview {
+  flex: 1;
+  width: 100%;
+  border: none;
+  background: #fff;
+}
+.wb-preview__image-wrap {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--wb-space-3);
+  overflow: auto;
+}
+.wb-preview__image { max-width: 100%; max-height: 100%; }
+.wb-preview__plain {
+  padding: var(--wb-space-4);
+  color: var(--wb-text-secondary);
+}
+.wb-preview__plain-title { font-size: var(--wb-font-size-sm); word-break: break-all; margin-bottom: var(--wb-space-2); }
+.wb-preview__plain-hint { font-size: var(--wb-font-size-xs); }
+
+/* 文件列表 */
+.wb-files { padding: var(--wb-space-2); }
+.wb-files__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--wb-font-size-sm);
+}
+.wb-files__table th {
+  text-align: left;
+  color: var(--wb-text-secondary);
+  font-weight: 500;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--wb-border);
+}
+.wb-files__row td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--wb-border);
+  vertical-align: top;
+}
+.wb-files__name {
+  max-width: 140px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Diff（FR-11） */
+.wb-diff { padding: var(--wb-space-2); display: flex; flex-direction: column; gap: var(--wb-space-2); }
+.wb-diff__item {
+  border: 1px solid var(--wb-border);
+  border-radius: var(--wb-radius-md);
+  overflow: hidden;
+}
+.wb-diff__item--rolled { opacity: .55; }
+.wb-diff__header {
+  display: flex;
+  align-items: center;
+  gap: var(--wb-space-2);
+  padding: var(--wb-space-2);
+  background: var(--wb-bg-panel);
+}
+.wb-diff__path {
+  flex: 1;
+  font-size: var(--wb-font-size-xs);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.wb-diff__body { padding: var(--wb-space-2); font-size: var(--wb-font-size-xs); }
+.wb-diff__line { padding: 3px 8px; border-radius: var(--wb-radius-sm); margin-bottom: 4px; }
+.wb-diff__line--old { background: rgba(213, 73, 65, .08); color: var(--wb-color-danger); }
+.wb-diff__line--new { background: rgba(43, 164, 113, .08); color: var(--wb-color-success); }
+.wb-diff__hint { color: var(--wb-text-disabled); margin-top: 4px; }
+
+/* 浏览器 */
+.wb-browser { height: 100%; display: flex; flex-direction: column; }
+.wb-browser__bar {
+  display: flex;
+  gap: var(--wb-space-2);
+  padding: var(--wb-space-2);
+  border-bottom: 1px solid var(--wb-border);
+}
+/* 按钮不参与压缩、禁止折行（修复"打开"两字被拆成两行） */
+.wb-browser__bar .wb-btn { flex-shrink: 0; white-space: nowrap; }

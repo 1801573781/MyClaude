@@ -1,0 +1,100 @@
+/* task-list feature 样式（§4.3） */
+.wb-sidebar__inner {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--wb-bg-panel);
+  border-right: 1px solid var(--wb-border);
+  overflow-y: auto;
+}
+
+.wb-sidebar__group { margin-bottom: var(--wb-space-2); }
+
+.wb-sidebar__group-header {
+  width: 100%;
+  text-align: left;
+  padding: 6px 12px;
+  font-size: var(--wb-font-size-sm);
+  color: var(--wb-text-secondary);
+  font-weight: 500;
+}
+.wb-sidebar__group-header:hover { color: var(--wb-text-primary); }
+
+.wb-sidebar__task {
+  position: relative;
+  padding: 8px 12px 8px 24px;
+  cursor: pointer;
+  border-left: 3px solid transparent;
+}
+.wb-sidebar__task:hover { background: var(--wb-bg-base); }
+.wb-sidebar__task--active {
+  background: var(--wb-bg-base);
+  border-left-color: var(--wb-color-primary);
+}
+
+.wb-sidebar__task-title {
+  font-size: var(--wb-font-size-sm);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wb-sidebar__task-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--wb-space-2);
+  margin-top: 4px;
+}
+.wb-sidebar__task-mode { font-size: var(--wb-font-size-xs); color: var(--wb-text-secondary); }
+
+.wb-sidebar__task-actions {
+  display: none;
+  position: absolute;
+  right: 8px;
+  top: 6px;
+  gap: 2px;
+  background: var(--wb-bg-base);
+  border-radius: var(--wb-radius-sm);
+  box-shadow: var(--wb-shadow-sm);
+  padding: 2px;
+}
+.wb-sidebar__task:hover .wb-sidebar__task-actions { display: flex; }
+
+.wb-sidebar__empty {
+  padding: 8px 24px;
+  font-size: var(--wb-font-size-xs);
+  color: var(--wb-text-disabled);
+}
+
+.wb-sidebar__divider {
+  height: 1px;
+  background: var(--wb-border);
+  margin: var(--wb-space-3) 0;
+}
+
+.wb-sidebar__section { padding: 0 12px; }
+.wb-sidebar__section-title {
+  font-size: var(--wb-font-size-sm);
+  color: var(--wb-text-secondary);
+  margin-bottom: var(--wb-space-2);
+  font-weight: 500;
+}
+
+.wb-sidebar__ws-item {
+  font-size: var(--wb-font-size-xs);
+  color: var(--wb-text-primary);
+  padding: 4px 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wb-sidebar__footer {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--wb-space-1);
+  padding: var(--wb-space-3);
+  border-top: 1px solid var(--wb-border);
+}
+.wb-sidebar__footer .wb-btn { justify-content: flex-start; }

@@ -1,0 +1,25 @@
+{
+  "name": "@wdbuddy/server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "WDBuddy 云端服务：账号/积分 · 模型网关代理 · 技能市场 · 多端联动推送（NestJS 风格模块化）",
+  "type": "module",
+  "main": "./src/main.ts",
+  "scripts": {
+    "start": "node --experimental-strip-types src/main.ts",
+    "dev": "node --watch --experimental-strip-types src/main.ts",
+    "build": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@wdbuddy/shared-types": "workspace:*",
+    "@wdbuddy/model-gateway": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

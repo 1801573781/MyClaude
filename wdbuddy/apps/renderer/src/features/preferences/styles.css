@@ -1,0 +1,37 @@
+/* preferences / remote-link feature 样式 */
+.wb-pref__item {
+  display: flex;
+  align-items: center;
+  gap: var(--wb-space-2);
+  padding: var(--wb-space-2) 0;
+  border-bottom: 1px solid var(--wb-border);
+}
+.wb-pref__item:last-child { border-bottom: none; }
+.wb-pref__key { font-weight: 500; min-width: 80px; }
+
+.wb-remote__qr {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--wb-space-2);
+  padding: var(--wb-space-4);
+}
+.wb-remote__qr-box {
+  width: 200px;
+  height: 200px;
+  border: 1px solid var(--wb-border);
+  border-radius: var(--wb-radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  color: var(--wb-text-disabled);
+  background: #ffffff; /* 白底保证二维码对比度可扫 */
+  overflow: hidden;
+  padding: 6px;
+}
+.wb-remote__qr-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}

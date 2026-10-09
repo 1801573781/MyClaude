@@ -1,0 +1,41 @@
+appId: com.wdbuddy.desktop
+productName: WDBuddy
+copyright: Copyright © 2026 WDBuddy
+
+directories:
+  output: release
+  buildResources: build
+
+files:
+  - dist/**/*
+  - package.json
+  - "!**/*.map"
+
+# 自动更新源（分阶段灰度，§13 兼容/i18n）
+publish:
+  - provider: generic
+    url: https://update.wdbuddy.example.com/win/${version}
+    channel: latest
+  - provider: generic
+    url: https://update.wdbuddy.example.com/mac/${version}
+    channel: latest
+
+win:
+  target:
+    - target: nsis
+      arch: [x64, arm64]
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  shortcutName: WDBuddy
+
+mac:
+  target:
+    - target: dmg
+      arch: [x64, arm64]
+  category: public.app-category.productivity
+
+asar: true
+compression: maximum

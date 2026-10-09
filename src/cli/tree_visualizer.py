@@ -32,12 +32,14 @@ summary_len = 50
 # .gitignore 解析
 # ============================================================
 
-def parse_gitignore(root_path: Path) -> list[dict]:
+def parse_gitignore(dir_path: Path, scope: str = "") -> list[dict]:
     """
-    解析项目根目录的 .gitignore 文件，返回规则列表。
-    每条规则为 dict：{"pattern": str, "is_negate": bool, "is_dir_only": bool}
+    解析指定目录下的 .gitignore 文件，返回规则列表。
+    每条规则为 dict：{"pattern": str, "is_negate": bool, "is_dir_only": bool, "scope": str}
+    scope 为该 .gitignore 所在目录相对项目根的路径（"" 表示项目根目录），
+    嵌套 .gitignore 的规则仅在其所属目录子树内生效。
     """
-    gitignore_path = root_path / ".gitignore"
+    gitignore_path = dir_path / ".gitignore"
     if not gitignore_path.is_file():
         return []
 
@@ -69,6 +71,7 @@ def parse_gitignore(root_path: Path) -> list[dict]:
             "pattern": line,
             "is_negate": is_negate,
             "is_dir_only": is_dir_only,
+            "scope": scope,
         })
 
     return rules
@@ -80,11 +83,23 @@ def is_ignored_by_gitignore(
         rules: list[dict],
 ) -> bool:
     """
-    判断相对路径是否被 .gitignore 规则忽略。
+    判断相对路径是否被 .gitignore 规则忽略（支持嵌套 .gitignore 的作用域匹配）。
+    每条规则仅在自身 scope（所属 .gitignore 所在目录）子树内生效。
     按规则顺序匹配，最后匹配的规则决定结果。
     """
     ignored = False
     for rule in rules:
+        # 作用域检查：嵌套 .gitignore 的规则仅在其所属目录子树内生效
+        scope = rule.get("scope", "")
+        if scope:
+            if rel_path == scope:
+                continue  # 规则不作用于其所属目录本身
+            if not rel_path.startswith(scope + "/"):
+                continue  # 路径不在规则作用域内
+            sub_path = rel_path[len(scope) + 1:]
+        else:
+            sub_path = rel_path
+
         pattern = rule["pattern"]
         is_negate = rule["is_negate"]
         is_dir_only = rule["is_dir_only"]
@@ -93,17 +108,17 @@ def is_ignored_by_gitignore(
         if is_dir_only and not is_dir:
             continue
 
-        # 匹配逻辑
+        # 匹配逻辑（在规则作用域内以子路径匹配）
         matched = False
         # 尝试匹配完整相对路径
-        if _match_pattern(rel_path, pattern):
+        if _match_pattern(sub_path, pattern):
             matched = True
         # 也尝试仅匹配文件名
-        elif _match_pattern(os.path.basename(rel_path), pattern):
+        elif _match_pattern(os.path.basename(sub_path), pattern):
             matched = True
         # 对于目录，也尝试匹配目录名
         if is_dir and not matched:
-            dir_name = os.path.basename(rel_path.rstrip("/").rstrip("\\"))
+            dir_name = os.path.basename(sub_path.rstrip("/").rstrip("\\"))
             if _match_pattern(dir_name, pattern):
                 matched = True
             # 也匹配带斜杠的目录名
@@ -143,6 +158,38 @@ def _match_globstar(path: str, pattern: str) -> bool:
         return bool(re.match("^" + regex_str + "$", path))
     except re.error:
         return fnmatch.fnmatch(path, pattern)
+
+
+def collect_all_gitignore_rules(root_path: Path) -> list[dict]:
+    """
+    递归收集项目中所有 .gitignore 规则（含嵌套子项目，如 wdbuddy）。
+    返回带 scope 的规则列表，嵌套规则仅在其所属目录子树内生效。
+    遍历时跳过依赖/缓存/隐藏目录，避免解析海量无关 .gitignore。
+    """
+    # 项目根目录规则（scope=""，作用于全项目）
+    all_rules: list[dict] = parse_gitignore(root_path)
+
+    # 递归查找嵌套 .gitignore（子项目自身的忽略规则）
+    for dirpath, dirnames, filenames in os.walk(root_path):
+        # 原地剪枝：不进入依赖、缓存、隐藏目录
+        dirnames[:] = [
+            d for d in dirnames
+            if d not in SKIP_DIR_NAMES
+            and d != "__pycache__"
+            and not d.startswith(".")
+        ]
+        if ".gitignore" not in filenames:
+            continue
+        dir_path = Path(dirpath)
+        if dir_path == root_path:
+            continue  # 根目录已处理
+        try:
+            scope = str(dir_path.relative_to(root_path)).replace("\\", "/")
+        except ValueError:
+            continue
+        all_rules.extend(parse_gitignore(dir_path, scope))
+
+    return all_rules
 
 
 # ============================================================
@@ -426,6 +473,10 @@ def build_tree(
 
         # 跳过 __init__.py 文件
         if entry_name == '__init__.py':
+            continue
+
+        # 兜底黑名单：依赖目录、锁文件、日志文件（.gitignore 缺失时也强制跳过）
+        if is_always_skipped(entry, entry.is_dir()):
             continue
 
         # 计算条目的相对路径
@@ -934,19 +985,80 @@ def parse_old_summary_file(summary_path: Path) -> dict[str, str]:
 # 常见虚拟环境/依赖目录名，始终跳过
 SKIP_DIR_NAMES = {"venv", ".venv", "virtualenv", "site-packages", "dist-packages", "node_modules"}
 
+# 包管理器锁文件名：生成物，对代码生成无上下文价值。
+# 仅用于 /init 扫描过滤，不写入 .gitignore —— 锁文件应当提交到 git 以保证可复现构建。
+LOCK_FILE_NAMES = {
+    "pnpm-lock.yaml", "package-lock.json", "yarn.lock", "bun.lockb",
+    "poetry.lock", "uv.lock", "Pipfile.lock", "composer.lock",
+    "Gemfile.lock", "Cargo.lock", "go.sum",
+}
 
-def _is_under_ignored_dir(file_path: Path, root_path: Path, gitignore_rules: list[dict]) -> bool:
-    """检查文件是否位于被 gitignore 忽略的目录内。"""
-    try:
-        rel = file_path.relative_to(root_path)
-    except ValueError:
-        return False
-    parts = list(rel.parent.parts)
-    for i in range(len(parts)):
-        dir_rel = "/".join(parts[:i + 1]) + "/"
-        if is_ignored_by_gitignore(dir_rel, True, gitignore_rules):
-            return True
-    return False
+
+def is_always_skipped(entry: Path, is_dir: bool) -> bool:
+    """
+    兜底黑名单过滤：无论 .gitignore 是否覆盖，以下内容一律跳过。
+    - 目录：依赖/虚拟环境/缓存目录（node_modules、venv、__pycache__ 等）
+    - 文件：包管理器锁文件、*.log 日志文件
+    仅作为 .gitignore 缺失或遗漏时的防呆兜底，主力仍是 .gitignore 规则。
+    """
+    name = entry.name
+    if is_dir:
+        return name in SKIP_DIR_NAMES or name == "__pycache__"
+    if name in LOCK_FILE_NAMES:
+        return True
+    return name.endswith(".log")
+
+
+def collect_python_files(root_path: Path, gitignore_rules: list[dict]) -> list[Path]:
+    """
+    剪枝式收集项目中所有 Python 文件（含嵌套子项目，如 wdbuddy）。
+    过滤规则与 build_tree 保持一致：
+      - 隐藏目录、__pycache__、依赖/虚拟环境目录
+      - 兜底黑名单（is_always_skipped）
+      - 嵌套 .gitignore 规则（按 scope 生效）
+    遍历时对被忽略目录剪枝（不深入 node_modules 等巨型目录），
+    替代 root.rglob("*.py") 的先全量扫描后过滤，避免性能劣化。
+    """
+    py_files: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root_path):
+        dir_path = Path(dirpath)
+        try:
+            rel_dir = str(dir_path.relative_to(root_path)).replace("\\", "/")
+        except ValueError:
+            continue
+
+        # 原地剪枝：被忽略的子目录不深入
+        pruned = []
+        for d in dirnames:
+            if d.startswith("."):
+                continue
+            if d == "__pycache__" or d in SKIP_DIR_NAMES:
+                continue
+            sub_rel = f"{rel_dir}/{d}" if rel_dir != "." else d
+            if is_ignored_by_gitignore(sub_rel + "/", True, gitignore_rules):
+                continue
+            pruned.append(d)
+        dirnames[:] = pruned
+
+        # 收集当前目录下的 Python 文件
+        for fname in filenames:
+            if not fname.endswith(".py"):
+                continue
+            if fname.startswith("."):
+                continue
+            entry = dir_path / fname
+            if is_always_skipped(entry, False):
+                continue
+            sub_rel = f"{rel_dir}/{fname}" if rel_dir != "." else fname
+            if is_ignored_by_gitignore(sub_rel, False, gitignore_rules):
+                continue
+            py_files.append(entry)
+
+    py_files.sort()
+    return py_files
+
+
+
 
 
 # ============================================================
@@ -1022,6 +1134,8 @@ def _prescan_recursive(
             continue
         if entry_name == '__init__.py':
             continue
+        if is_always_skipped(entry, entry.is_dir()):
+            continue
 
         if rel_path:
             entry_rel = f"{rel_path}/{entry_name}"
@@ -1080,22 +1194,8 @@ def _prescan_python_files(
       - 否则 → new（需调用 LLM 生成）
     返回 {"total_files": N, "total_funcs": N, "new": N, "cached": N, "skipped": N}
     """
-    py_files: list[Path] = []
-    for entry in root_path.rglob("*.py"):
-        entry_rel = str(entry.relative_to(root_path)).replace("\\", "/")
-        if any(part.startswith('.') for part in entry.parts):
-            continue
-        if "__pycache__" in entry.parts:
-            continue
-        if any(part in SKIP_DIR_NAMES for part in entry.parts):
-            continue
-        if _is_under_ignored_dir(entry, root_path, gitignore_rules):
-            continue
-        if is_ignored_by_gitignore(entry_rel, False, gitignore_rules):
-            continue
-        py_files.append(entry)
-
-    py_files.sort()
+    # 剪枝式收集 Python 文件，避免 rglob 全量深入 node_modules 等巨型目录
+    py_files = collect_python_files(root_path, gitignore_rules)
 
     result = {"total_files": len(py_files), "total_funcs": 0, "new": 0, "cached": 0, "skipped": 0}
 
@@ -1156,8 +1256,8 @@ def create_project_tree(root_path: Path | None = None, mode: str = "init") -> bo
 
     console.print(f"\n[bold]🔍 正在扫描项目: {root_path}[/bold]\n")
 
-    # 解析 .gitignore
-    gitignore_rules = parse_gitignore(root_path)
+    # 解析 .gitignore（含嵌套子项目自身的 .gitignore，如 wdbuddy）
+    gitignore_rules = collect_all_gitignore_rules(root_path)
 
     # 加载缓存和增量记录
     cache_data_path = root_path / ".tree_cache_data.md"
@@ -1242,28 +1342,8 @@ def create_project_tree(root_path: Path | None = None, mode: str = "init") -> bo
         # 解析旧摘要文件（用于保留未变更文件的内容）
         old_summaries = parse_old_summary_file(summary_output_path)
 
-        # 收集所有 Python 文件
-        py_files: list[Path] = []
-        for entry in root_path.rglob("*.py"):
-            entry_rel = str(entry.relative_to(root_path)).replace("\\", "/")
-            # 跳过隐藏目录中的文件
-            if any(part.startswith('.') for part in entry.parts):
-                continue
-            # 跳过 __pycache__
-            if "__pycache__" in entry.parts:
-                continue
-            # 跳过虚拟环境/依赖目录
-            if any(part in SKIP_DIR_NAMES for part in entry.parts):
-                continue
-            # 跳过位于 gitignore 忽略目录内的文件
-            if _is_under_ignored_dir(entry, root_path, gitignore_rules):
-                continue
-            # 跳过 gitignore 忽略的文件
-            if is_ignored_by_gitignore(entry_rel, False, gitignore_rules):
-                continue
-            py_files.append(entry)
-
-        py_files.sort()
+        # 剪枝式收集 Python 文件，避免 rglob 全量深入 node_modules 等巨型目录
+        py_files = collect_python_files(root_path, gitignore_rules)
 
         # 预扫描：统计函数级摘要的文件和函数数量
         summary_file_exists = summary_output_path.is_file() and summary_output_path.stat().st_size > 0

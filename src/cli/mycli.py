@@ -1628,16 +1628,46 @@ class MyClaudeCLI:
                 self.query_loop.append_cli_result(f"h2m 完成: {result[1:].strip()}")
             return True
 
-        elif cmd == '/cs':
-            # /cs — 统计项目代码行数
+        elif cmd == '/cs' or cmd.startswith('/cs '):
+            # /cs [<目录>] — 统计代码行数
+            # 无参数：统计默认目录（config 中 base_path.project_root）
+            # 有参数：统计指定目录；绝对路径直接使用，相对路径以默认目录为父目录解析
             # 直接让 code_statistics 通过 Rich Console 渲染表格，避免 stdout 重定向导致 ANSI 乱码
+            from pathlib import Path as _Path
             from src.cli.code_statistics import code_statistics
-            grand = code_statistics()
+            from src.utility.config_loader import global_cfg as _global_cfg
+
+            parts = command.strip().split(maxsplit=1)
+            target_arg = parts[1].strip().strip('"').strip("'") if len(parts) > 1 else ""
+
+            root_dir: str | None = None
+            if target_arg:
+                target_path = _Path(target_arg)
+                if not target_path.is_absolute():
+                    # 相对路径：以默认统计目录（项目根目录）为父目录解析
+                    target_path = _Path(_global_cfg.base_path.project_root) / target_path
+                if not target_path.exists():
+                    cli_print.print_error(f"目录不存在: {target_path}")
+                    cli_print.print_info(
+                        "用法: /cs [<目录>] — 无参数统计默认项目根目录；\n"
+                        "  绝对路径直接使用；相对路径以项目根目录为父目录解析"
+                    )
+                    return True
+                if not target_path.is_dir():
+                    cli_print.print_error(f"目标不是目录: {target_path}")
+                    return True
+                root_dir = str(target_path)
+
+            grand = code_statistics(root_dir)
 
             # 组装纯文本摘要供对话上下文使用
             if grand:
+                if root_dir is None:
+                    stat_desc = "项目代码统计"
+                else:
+                    stat_desc = f"代码统计({_Path(root_dir)})"
                 summary_text = (
-                    f"项目代码统计: 文件 {grand.get('files', 0)} 个, "
+                    f"{stat_desc}: 文件 {grand.get('files', 0)} 个, "
                     f"总行数 {grand.get('total', 0)}, "
                     f"代码行 {grand.get('code', 0)}, "
                     f"空行 {grand.get('blank', 0)}, "
