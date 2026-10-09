@@ -12,6 +12,7 @@ import { openDatabase } from './db/database.js';
 import { TaskStore } from './services/task-store.js';
 import { SettingsService } from './services/settings.js';
 import { RuntimeBridge } from './services/runtime-bridge.js';
+import { SkillStore } from './services/skill-store.js';
 import { AuthService } from './services/auth.js';
 import { UpdaterService } from './services/updater.js';
 import { NotificationService } from './services/notification.js';
@@ -209,6 +210,7 @@ async function bootstrap(): Promise<void> {
     getProviderKey,
     setProviderKey,
     clearProviderKey,
+    skillStore: new SkillStore(),
     getWindow: () => mainWindow,
   });
 

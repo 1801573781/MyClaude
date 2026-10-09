@@ -43,6 +43,12 @@ const api = {
     ipcRenderer.invoke('task:accept', { taskId }),
   chatExport: (taskId: string, format: 'md' | 'html'): Promise<{ ok: boolean; path: string }> =>
     ipcRenderer.invoke('chat:export', { taskId, format }),
+  skillsList: (): Promise<{ skills: Array<import('@wdbuddy/shared-types').Skill & { instruction: string }> }> =>
+    ipcRenderer.invoke('skills:list', {}),
+  skillsCreate: (input: { name: string; description: string; icon: string; category: string; instruction: string; permissions: string[] }): Promise<{ ok: boolean; id?: string; error?: string }> =>
+    ipcRenderer.invoke('skills:create', { input }),
+  skillsRemove: (id: string): Promise<{ ok: true }> =>
+    ipcRenderer.invoke('skills:remove', { id }),
 
   // ─────────── 提示词 / 工作空间 / 文件 ───────────
   promptEnhance: (text: string): Promise<PromptEnhanceResult> =>

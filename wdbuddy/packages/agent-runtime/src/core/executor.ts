@@ -266,23 +266,26 @@ function buildStepSystemPrompt(
 输出约定：
 - 需要调用工具时，输出一个 JSON 对象（可放在 \`json 代码块中）：
   {"tool": "fs.write", "args": {"path": "绝对路径", "content": "..."}}
-- 生成 PPT/演示文稿【必须】使用 office.generate（纯 JS 秒级完成，禁止用 Python/shell 方案）：
-  {"tool": "office.generate", "args": {"path": "D:/xxx.pptx", "title": "总标题", "slides": [
-    {"layout": "cover", "title": "封面主标题", "bullets": ["副标题"]},
-    {"layout": "section", "title": "章节页标题"},
-    {"layout": "content", "title": "内容页标题", "bullets": ["要点1", "要点2", "要点3"]},
-    {"layout": "chart", "title": "图表页标题", "chart": {"type": "bar", "series": [
-      {"name": "系列名", "labels": ["一月", "二月", "三月"], "values": [100, 200, 150]}
-    ]}},
-    {"layout": "closing", "title": "谢谢观看"}
-  ]}}
-  版式说明：cover=封面（深底白字大标题）；section=章节页（大编号+标题）；
-  content=内容页（标题+要点列表）；chart=图表页（可编辑的原生柱状/饼/折线图，
-  type 取 bar/pie/line，series 可多组）；closing=结束页（深底白字）。
-  需要数据图表时用 chart 版式，不要用文字列表模拟图表。
-  slides 数组一次传全部页面即可；用户给的保存路径在工作空间外也没关系（系统会请求用户确认）。
-  生成完成后必须用真实输出向用户汇报文件路径，严禁谎报成功。
-- 需要联网查资料时使用：{"tool": "search.web", "args": {"query": "搜索词"}}
+- 生成演示文稿【必须】使用 office.generate（秒级完成，禁止用 Python/shell 方案，禁止只写设计稿 md 文件）：
+  {"tool": "office.generate", "args": {"path": "输出路径.pptx 或 .html", "title": "总标题", "theme": "主题id或auto", "slides": [...]}}
+  【输出格式】.html=网页幻灯片（现代视觉，浏览器放映，优先推荐）；.pptx=可编辑 PowerPoint。
+  【主题 theme】（auto=自动匹配）：tech-dark深空科技|business-blue商务蓝|minimal-light极简白|
+  warm-energy活力暖橙|academic学术庄重|red-gold汇报红金|fresh-mint清新薄荷|
+  purple-elegant优雅紫|sunset-gradient日落渐变|ink-wash水墨中国
+  【14 种版式 layout】（混合使用，不要全用 content）：
+  cover=封面{title,subtitle} | toc=目录{items:[{label,desc}]} | section=章节页{subtitle:"01",title} |
+  content=要点{title,bullets} | two-col=左要点右卡片{bullets,items} | cards=三卡片{cards:[{icon,title,desc}]} |
+  timeline=流程{steps:[{label,desc}]} | grid-2x2=四宫格{cards:[{title,desc}]} | quote=金句{quote:{text,author}} |
+  compare=对比{compare:{leftLabel,leftPoints,rightLabel,rightPoints}} | big-number=数据大屏{metrics:[{value,label,desc}]} |
+  chart=图表{chart:{type:bar/pie/line,series:[{name,labels,values}]}} | image-text=图文{image:{side,caption},bullets} |
+  closing=结尾{title,subtitle}
+  示例：{"tool":"office.generate","args":{"path":"D:/x.html","title":"产品介绍","theme":"tech-dark","slides":[
+    {"layout":"cover","title":"产品名","subtitle":"一句话定位"},
+    {"layout":"toc","title":"目录","items":[{"label":"背景","desc":"为什么"}]},
+    {"layout":"chart","title":"趋势","chart":{"type":"bar","series":[{"name":"销量","labels":["Q1","Q2"],"values":[100,200]}]}},
+    {"layout":"closing","title":"谢谢观看"}]}}
+  slides 一次传全部页面；路径在工作空间外没关系（系统会请求确认）。
+  生成完成后必须用真实输出汇报文件路径，严禁谎报成功。
 - 需要用户补充信息（主题、保存路径、偏好等关键决策）时，先用自然语言向用户清晰说明，
   然后输出：{"tool": "user.ask", "args": {"question": "一句话概括的问题"}}
   任务将暂停等待用户回复后再继续；严禁自行假设用户答案往下执行

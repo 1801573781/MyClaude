@@ -17,31 +17,14 @@ const KIND_ICON: Record<string, string> = {
   'image/svg+xml': '🖼',
 };
 
-/** MIME → 用户可读类型名（"类型"列不再显示原始 MIME 串） */
-const KIND_LABEL: Record<string, string> = {
-  'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'PPT 演示文稿',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'Word 文档',
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'Excel 表格',
-  'application/pdf': 'PDF 文档',
-  'text/html': '网页',
-  'text/markdown': 'Markdown',
-  'text/plain': '文本',
-  'application/json': 'JSON 数据',
-  'image/png': 'PNG 图片',
-  'image/jpeg': 'JPEG 图片',
-  'image/svg+xml': 'SVG 矢量图',
-  'application/zip': 'ZIP 压缩包',
-};
-
-/** 类型显示名：已知 MIME 用友好名，未知按扩展名大写兜底 */
-function kindLabel(mimeType: string, path?: string): string {
-  if (KIND_LABEL[mimeType]) return KIND_LABEL[mimeType];
+/** 类型显示：直接用文件扩展名（.pptx / .html / .md），最简洁直观 */
+function kindLabel(_mimeType: string, path?: string): string {
   const p = path ?? '';
   const dot = p.lastIndexOf('.');
   if (dot >= 0 && dot > p.lastIndexOf('/') && dot > p.lastIndexOf('\\')) {
-    return p.slice(dot + 1).toUpperCase();
+    return p.slice(dot);
   }
-  return mimeType;
+  return '文件';
 }
 
 function formatTime(ts: number): string {

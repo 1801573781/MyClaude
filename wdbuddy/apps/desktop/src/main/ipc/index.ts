@@ -22,6 +22,7 @@ import { BUILTIN_MODEL_IDS } from '@wdbuddy/shared-types';
 import type { TaskStore } from '../services/task-store.js';
 import type { SettingsService } from '../services/settings.js';
 import type { RuntimeBridge } from '../services/runtime-bridge.js';
+import type { SkillStore } from '../services/skill-store.js';
 
 export interface IpcDeps {
   store: TaskStore;
@@ -31,6 +32,8 @@ export interface IpcDeps {
   getProviderKey: (modelId: string) => string;
   setProviderKey: (modelId: string, apiKey: string) => void;
   clearProviderKey: (modelId: string) => void;
+  /** 自定义技能存储 */
+  skillStore: SkillStore;
   getWindow: () => BrowserWindow | null;
 }
 
@@ -236,6 +239,22 @@ export function registerIpc(deps: IpcDeps): void {
   ipcMain.handle('task:accept', (_e, payload: { taskId: string }) => {
     // 验收闭环（FR-11）：任务进入已完成
     store.updateStatus(payload.taskId, 'completed');
+    return { ok: true };
+  });
+
+  // ─────────── 自定义技能（FR-17） ───────────
+
+  ipcMain.handle('skills:list', () => {
+    return { skills: deps.skillStore.list() };
+  });
+
+  ipcMain.handle('skills:create', (_e, payload: { input: { name: string; description: string; icon: string; category: string; instruction: string; permissions: string[] } }) => {
+    const r = deps.skillStore.create(payload.input);
+    return r;
+  });
+
+  ipcMain.handle('skills:remove', (_e, payload: { id: string }) => {
+    deps.skillStore.remove(payload.id);
     return { ok: true };
   });
 
