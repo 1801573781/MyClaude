@@ -68,7 +68,12 @@ export function RemoteLinkPanel({ onClose }: { onClose: () => void }): React.Rea
       <div className="wb-modal">
         <div className="wb-modal__header">📱 手机联动</div>
         <div className="wb-modal__body">
-          {/* 桌面端在线状态（FR-20：离线时明确提示） */}
+          {/* 服务状态诚实标注：云端服务与手机端 APP 均未上线，避免用户空扫码 */}
+          <div className="wb-badge wb-badge--warning" style={{ marginBottom: 12 }}>
+            ⚠ 服务暂未开放：手机端 APP 与云端服务尚未上线，扫码暂无法完成绑定
+          </div>
+
+          {/* 桌面端在线状态（FR-20：离线时明确提示；服务上线后生效） */}
           <div className={`wb-badge ${desktopOnline ? 'wb-badge--success' : 'wb-badge--danger'}`}>
             {desktopOnline ? '● 桌面端在线，可接收指令' : '● 桌面端离线，手机指令将无法送达'}
           </div>

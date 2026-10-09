@@ -49,6 +49,10 @@ interface AppStore {
   activeTaskId: string | null;
   setActiveTaskId(id: string | null): void;
 
+  /** 跨面板指令注入（技能中心"一点即用"→ Composer 输入框草稿；消费后置 null） */
+  composerDraft: string | null;
+  setComposerDraft(text: string | null): void;
+
   // 事件桥接（chat/artifacts 经此分发，feature 间不直接通信）
   dispatchRuntimeEvent(e: RuntimeEvent): void;
   eventListeners: Set<(e: RuntimeEvent) => void>;
@@ -84,6 +88,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   activeTaskId: null,
   setActiveTaskId: (id) => set({ activeTaskId: id }),
+
+  composerDraft: null,
+  setComposerDraft: (text) => set({ composerDraft: text }),
 
   dispatchRuntimeEvent: (e) => {
     // 状态栏更新

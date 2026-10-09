@@ -32,6 +32,15 @@ export function Composer(): React.ReactElement {
   useEffect(() => {
     if (awaitingInput) textareaRef.current?.focus();
   }, [awaitingInput]);
+  // 技能中心"一点即用"注入的指令草稿：填入输入框并聚焦（用户可补充细节后发送）
+  const composerDraft = useAppStore((s) => s.composerDraft);
+  useEffect(() => {
+    if (composerDraft) {
+      setText(composerDraft);
+      useAppStore.getState().setComposerDraft(null);
+      textareaRef.current?.focus();
+    }
+  }, [composerDraft]);
 
   /** 提示词增强（FR-07）：结果回填输入框并高亮新增内容 */
   const enhance = async (): Promise<void> => {
