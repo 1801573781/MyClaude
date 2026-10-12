@@ -1,0 +1,10 @@
+import * as fs from 'node:fs';
+const p = 'D:/AI/MyClaude/code_output_test/probe_chain.txt';
+const b = fs.readFileSync(p);
+const t = b.toString('utf8');
+console.log('--- 磁盘真实状态（str_replace 声称成功后）---');
+console.log('含BBBB2222(修改生效):', t.includes('BBBB2222'));
+console.log('含AAAA1111(仍是旧版):', t.includes('AAAA1111'));
+console.log('字节长度:', b.length, '| 含CR回车符:', t.includes('\r'));
+console.log('--- 原文 ---');
+console.log(t);

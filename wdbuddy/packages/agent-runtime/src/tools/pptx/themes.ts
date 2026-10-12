@@ -29,6 +29,8 @@ export interface SlideTheme {
   textMuted: string;
   /** 卡片底色 */
   cardBg: string;
+  /** 深色模式：内容页也用深色背景，全篇统一深色（如深空科技全深底） */
+  dark?: boolean;
   /** 标题字体（HTML 引擎用；pptx 用系统字体兜底） */
   fontTitle: string;
   /** 正文字体 */
@@ -42,7 +44,7 @@ export const THEMES: readonly SlideTheme[] = [
     vibe: '科技酷炫：深蓝黑底+霓虹青紫，适合产品发布、技术分享、面向学生的酷炫培训',
     primary: '1E2A52', secondary: '3D4F8A', accent: '00E5FF',
     bgDark: '0A0E27', bgLight: 'F4F6FB', textDark: '1F2430', textLight: 'EAF0FF',
-    textMuted: '8A93B5', cardBg: 'FFFFFF',
+    textMuted: '8A93B5', cardBg: 'FFFFFF', dark: true,
     fontTitle: '"Segoe UI", "Microsoft YaHei", sans-serif',
     fontBody: '"Segoe UI", "Microsoft YaHei", sans-serif',
   },
@@ -137,6 +139,33 @@ export const THEMES: readonly SlideTheme[] = [
     fontBody: '"Microsoft YaHei", sans-serif',
   },
 ];
+
+/** 16进制色混合：a 与 b 按 ratio 混合（ratio=1 全取 b）。深色模式卡片/分隔线派生用 */
+export function mixHex(a: string, b: string, ratio: number): string {
+  const norm = (h: string): [number, number, number] => {
+    const s = h.replace('#', '');
+    const full = s.length === 3 ? s.split('').map((c) => c + c).join('') : s;
+    return [parseInt(full.slice(0, 2), 16), parseInt(full.slice(2, 4), 16), parseInt(full.slice(4, 6), 16)];
+  };
+  const [r1, g1, b1] = norm(a);
+  const [r2, g2, b2] = norm(b);
+  const mixCh = (x: number, y: number): number => Math.round(x + (y - x) * ratio);
+  return [mixCh(r1, r2), mixCh(g1, g2), mixCh(b1, b2)]
+    .map((c) => c.toString(16).padStart(2, '0'))
+    .join('')
+    .toUpperCase();
+}
+
+/** 深底可读化：偏暗颜色提亮（供深色模式的标题/边框使用） */
+export function liftOnDark(hex: string): string {
+  const s = hex.replace('#', '');
+  const full = s.length === 3 ? s.split('').map((c) => c + c).join('') : s;
+  const r = parseInt(full.slice(0, 2), 16);
+  const g = parseInt(full.slice(2, 4), 16);
+  const b = parseInt(full.slice(4, 6), 16);
+  const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+  return lum < 100 ? mixHex(hex, 'FFFFFF', 0.45) : hex;
+}
 
 /** 按主题 id 取主题；未知 id 回落商务蓝 */
 export function getTheme(id: string | undefined): SlideTheme {

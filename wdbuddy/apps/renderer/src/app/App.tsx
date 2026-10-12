@@ -6,6 +6,7 @@ import { SettingsPage } from '../features/settings/SettingsPage';
 import { SkillsCenter } from '../features/skills/SkillsCenter';
 import { PreferencesPanel } from '../features/preferences/PreferencesPanel';
 import { RemoteLinkPanel } from '../features/remote-link/RemoteLinkPanel';
+import { TemplateGallery } from '../features/templates/TemplateGallery';
 import { CustomProviderModal } from '../shared/CustomProviderModal';
 import { requireApi } from '../shared/ipc';
 import type { CustomProvider, ModelId } from '@wdbuddy/shared-types';
@@ -63,6 +64,7 @@ export function App(): React.ReactElement {
       {openPanel === 'skills' && <SkillsCenter onClose={close} />}
       {openPanel === 'preferences' && <PreferencesPanel onClose={close} />}
       {openPanel === 'remote-link' && <RemoteLinkPanel onClose={close} />}
+      {openPanel === 'templates' && <TemplateGallery />}
       {customModal !== null && (
         <CustomProviderModal
           initial={customModal.initial}

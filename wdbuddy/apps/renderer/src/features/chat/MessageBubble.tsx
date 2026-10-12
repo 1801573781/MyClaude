@@ -7,7 +7,15 @@ export function MessageBubble({ message }: { message: Message }): React.ReactEle
   const isSystem = message.role === 'system';
 
   if (isSystem) {
-    return <div className="wb-msg wb-msg--system">{message.content}</div>;
+    // 系统消息分级：✅ 成功（绿色醒目卡片）/ ⚠ 失败（红色）/ 其他（中性）
+    const isSuccess = message.content.trimStart().startsWith('✅');
+    const isError = message.content.trimStart().startsWith('⚠');
+    const cls = isSuccess
+      ? 'wb-msg wb-msg--system wb-msg--done'
+      : isError
+        ? 'wb-msg wb-msg--system wb-msg--error'
+        : 'wb-msg wb-msg--system';
+    return <div className={cls}>{message.content}</div>;
   }
 
   return (

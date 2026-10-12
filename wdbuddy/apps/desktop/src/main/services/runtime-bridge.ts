@@ -284,8 +284,13 @@ export class RuntimeBridge extends EventEmitter {
         this.opts.onEvent({ type: 'task.cancelled', taskId, reason: String(p['reason'] ?? '用户取消') });
         break;
       case 'task/awaiting.input':
-        // user.ask：Agent 提问后暂停，渲染层展示醒目等待卡片
-        this.opts.onEvent({ type: 'task.awaiting.input', taskId, question: String(p['question'] ?? '') });
+        // user.ask：Agent 提问后暂停，渲染层展示醒目等待卡片（options=可点选项）
+        this.opts.onEvent({
+          type: 'task.awaiting.input',
+          taskId,
+          question: String(p['question'] ?? ''),
+          options: Array.isArray(p['options']) ? (p['options'] as string[]) : undefined,
+        });
         break;
       default:
         break;

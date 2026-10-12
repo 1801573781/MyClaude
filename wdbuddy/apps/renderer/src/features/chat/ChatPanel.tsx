@@ -44,6 +44,23 @@ export function ChatPanel(): React.ReactElement {
   }, [messages.length, steps]);
 
   /** 导出当前任务对话为 .md / .html：主进程弹原生保存对话框并生成文件 */
+  /** 选项按钮点击 → 作为回复直接发送（复用跟进链路：task.control start + instruction） */
+  const sendOptionReply = async (option: string): Promise<void> => {
+    if (!activeTaskId) return;
+    const api = requireApi();
+    useChatStore.getState().appendUserMessage(activeTaskId, option);
+    useChatStore.getState().clearAwaiting();
+    useChatStore.getState().resetSteps();
+    await api.taskControl({
+      taskId: activeTaskId,
+      action: 'start',
+      modelId: useAppStore.getState().currentModel,
+      mode: 'craft',
+      instruction: option,
+    });
+    useAppStore.getState().setRuntimeState('running');
+  };
+
   const exportChat = async (format: 'md' | 'html'): Promise<void> => {
     if (!task) return;
     const api = requireApi();
@@ -112,14 +129,28 @@ export function ChatPanel(): React.ReactElement {
         {/* 权限确认卡片（FR-04） */}
         {permissionRequest && <PermissionRequestCard request={permissionRequest} />}
 
-        {/* 等待用户回复卡片（user.ask：Agent 提问后暂停，醒目提示） */}
+        {/* 等待用户回复卡片（user.ask：Agent 提问后暂停，醒目提示；
+            options 存在时渲染可点选项按钮，点击即作为回复发送） */}
         {awaitingInput && (
           <div className="wb-await" role="status">
             <div className="wb-await__header">⏸ 等待你的回复</div>
             {awaitingInput.question && (
               <div className="wb-await__question">{awaitingInput.question}</div>
             )}
-            <div className="wb-await__hint">请在下方输入框回复，我会接着继续执行</div>
+            {awaitingInput.options && awaitingInput.options.length > 0 && (
+              <div className="wb-await__options">
+                {awaitingInput.options.map((opt) => (
+                  <button
+                    key={opt}
+                    className="wb-await__option"
+                    onClick={() => void sendOptionReply(opt)}
+                  >
+                    {opt}
+                  </button>
+                ))}
+              </div>
+            )}
+            <div className="wb-await__hint">点击选项或在下 方输入框回复，我会接着继续执行</div>
           </div>
         )}
       </div>

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * office.generate — 文档生成工具（双引擎：pptx / html）
  * pptx：pptxgenjs 原生演示文稿（可编辑，14 版式 + 10 主题）
  * html：单文件 HTML 幻灯片（现代 CSS 表现力上限，浏览器直接放映）
@@ -11,6 +11,7 @@ import { makeArtifact } from './registry.js';
 import { getTheme, pickThemeByVibe } from './pptx/themes.js';
 import { renderSlidesTo, type SlideSpec } from './pptx/pptx-engine.js';
 import { buildHtmlDeck } from './pptx/html-engine.js';
+import { mdToSlides } from './pptx/md-to-slides.js';
 
 const nodeRequire = createRequire(import.meta.url);
 
@@ -28,54 +29,204 @@ function guessMime(p: string): string {
   return 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
 }
 
+/** 生成幻灯片产物（双引擎共享核心）。
+ *  base 不含扩展名的输出基路径；formats 决定产出格式：
+ *  - ['html']  仅网页幻灯片；['pptx'] 仅 PowerPoint
+ *  - ['html','pptx'] 双出（显式要求时才用）
+ *  pptx 失败时降级仅 html（不阻断交付）。
+ *  @returns 写盘的产物列表（含 artifact 构造所需的 path/buf）；写盘失败抛错。 */
+export async function generateDeckOutputs(
+  base: string,
+  title: string,
+  themeId: string,
+  slides: SlideSpec[],
+  fsWrite: (p: string, data: Buffer) => void,
+  formats: Array<'html' | 'pptx'> = ['html', 'pptx']
+): Promise<Array<{ path: string; buf: Buffer; mime: string }>> {
+  const theme =
+    themeId === 'auto'
+      ? pickThemeByVibe(title + ' ' + JSON.stringify(slides).slice(0, 500))
+      : getTheme(themeId);
+
+  const outputs: Array<{ path: string; buf: Buffer; mime: string }> = [];
+
+  // HTML 引擎（浏览器放映）
+  if (formats.includes('html')) {
+    const htmlBuf = Buffer.from(buildHtmlDeck(title, slides, theme), 'utf8');
+    const htmlPath = `${base}.html`;
+    fsWrite(htmlPath, htmlBuf);
+    outputs.push({ path: htmlPath, buf: htmlBuf, mime: 'text/html' });
+  }
+
+  // PPTX 引擎（可编辑 PowerPoint；失败降级 html，不阻断交付）
+  if (formats.includes('pptx')) {
+    try {
+      const mod = nodeRequire('pptxgenjs') as { default?: new () => any } & Record<string, any>;
+      const PptxGenJS = mod.default ?? (mod as unknown as new () => any);
+      const pptx = new PptxGenJS();
+      pptx.layout = 'LAYOUT_WIDE'; // 13.33×7.5 英寸标准宽屏（对齐 PowerPoint 默认）
+      // 主题级默认字体（双保险：未显式指定 fontFace 的文本也走微软雅黑）
+      pptx.theme = { headFontFace: 'Microsoft YaHei', bodyFontFace: 'Microsoft YaHei' };
+      pptx.title = title;
+      renderSlidesTo(pptx, slides, theme);
+      const pptxBuf0 = (await (pptx as any).write({ outputType: 'nodebuffer' })) as Buffer;
+      // 字体后处理：补 <a:ea>（中文路径）+ 主题空 ea 填充——修复图表轴
+      // 标签等中文字符回退等线的结构性缺陷
+      const pptxBuf = await postprocessPptxFonts(pptxBuf0);
+      const pptxPath = `${base}.pptx`;
+      fsWrite(pptxPath, pptxBuf);
+      outputs.push({
+        path: pptxPath,
+        buf: pptxBuf,
+        mime: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      });
+    } catch {
+      // pptxgenjs 异常不阻断；若 html 也未要求则补产出 html 保底
+      if (!formats.includes('html')) {
+        const htmlBuf = Buffer.from(buildHtmlDeck(title, slides, theme), 'utf8');
+        fsWrite(`${base}.html`, htmlBuf);
+        outputs.push({ path: `${base}.html`, buf: htmlBuf, mime: 'text/html' });
+      }
+    }
+  }
+  return outputs;
+}
+
+/** 路径 → 双格式输出基路径（去扩展名） */
+function deckBase(p: string): string {
+  return p.replace(/\.(html?|pptx)$/i, '');
+}
+
+/** XML 级字体补丁（导出供测试）：给 latin 字体标签补 East-Asian 定义。
+ *  根因：pptxgenjs 的 fontFace 只写 latin 标签，中文字符按 ea 标签查找，
+ *  缺失时 PowerPoint 回退主题默认（等线/DengXian）——图表轴标签
+ *  显示等线的元凶。已有 ea 标签的不重复注入。
+ *  实现用 split-join 而非正则：标签串含引号与斜杠，正则转义易踩坑 */
+export function injectEaFont(xml: string, font = 'Microsoft YaHei'): string {
+  const selfClose = '<a:latin typeface="' + font + '"/>';
+  const eaTag = '<a:ea typeface="' + font + '"/>';
+  const pair = selfClose + eaTag;
+  return xml
+    .split(pair)
+    .join('\u0000PAIR\u0000') // 已有 latin+ea 完整对：先保护
+    .split(selfClose)
+    .map((seg, i) => (i === 0 ? seg : pair + seg))
+    .join('')
+    .split('\u0000PAIR\u0000')
+    .join(pair);
+}
+
+/** theme XML 补丁：Office 默认主题 minor 与 major 的 ea 字体为空串时，
+ *  中文一律回退系统等线。填充为指定字体（全局兜底，含所有主题变体） */
+export function patchThemeEa(xml: string, font = 'Microsoft YaHei'): string {
+  const emptyEa = '<a:ea typeface=""/>';
+  const filledEa = '<a:ea typeface="' + font + '"/>';
+  return xml.split(emptyEa).join(filledEa);
+}
+
+/** pptx 二进制后处理：解压 → 全部 slide/chart/theme XML 注入 ea 字体 → 重打包。
+ *  pptxgenjs 依赖树内含 jszip，从其模块路径解析加载；失败原样返回（降级不阻断） */
+async function postprocessPptxFonts(pptxBuf: Buffer): Promise<Buffer> {
+  try {
+    const { createRequire: cr } = await import('node:module');
+    const reqFromPptx = cr(nodeRequire.resolve('pptxgenjs'));
+    const JSZip = reqFromPptx('jszip') as { loadAsync: (b: Buffer) => Promise<any> };
+    const zip = await JSZip.loadAsync(pptxBuf);
+    let patched = 0;
+    for (const name of Object.keys(zip.files)) {
+      const isXml =
+        /^ppt\/(slides|slideMasters|notesSlides|charts)\/[^/]+\.xml$/.test(name) ||
+        /^ppt\/theme\/theme\d+\.xml$/.test(name);
+      if (!isXml) continue;
+      let xml: string = await zip.files[name]!.async('string');
+      const before = xml;
+      xml = injectEaFont(xml);
+      if (/^ppt\/theme\//.test(name)) xml = patchThemeEa(xml);
+      if (xml !== before) {
+        zip.file(name, xml);
+        patched++;
+      }
+    }
+    if (patched === 0) return pptxBuf;
+    return (await zip.generateAsync({ type: 'nodebuffer' })) as Buffer;
+  } catch {
+    return pptxBuf;
+  }
+}
+
 export const officeGenerateTool: AgentTool = {
   name: 'office.generate',
   description:
-    '生成演示文稿：.pptx（可编辑 PowerPoint）或 .html（浏览器放映，视觉更现代）。支持 10 主题与 14 版式',
+    '生成演示文稿：默认按 path 扩展名输出单一格式（.pptx=可编辑 PowerPoint 13.33×7.5 宽屏 / .html=浏览器放映）；传 formats:"html,pptx" 可双格式。10 主题 16 版式，每页自动讲者备注',
   sensitivity: 'write',
   async execute(args, ctx: ToolContext): Promise<ToolResult> {
     const p = argString(args, 'path');
     const title = argString(args, 'title') || 'WDBuddy 演示文稿';
     const themeId = argString(args, 'theme') || 'auto';
-    const slides = Array.isArray(args['slides']) ? (args['slides'] as SlideSpec[]) : [];
+    // fromMarkdown：内容稿 md 路径（此前已落盘的逐页文案）→ 程序化转 slides。
+    // 反截断治本方案：LLM 只需输出 ~100 字符的短 JSON，物理上不可能被输出上限
+    // 截断；长内容由已写好的 md 承载，转换由确定性代码完成
+    const fromMd = argString(args, 'fromMarkdown');
 
-    if (!p) return { ok: false, output: '缺少 path 参数（输出路径，.pptx 或 .html）', artifacts: [] };
+    if (!p) return { ok: false, output: '缺少 path 参数（输出路径，.html 或 .pptx）', artifacts: [] };
     const isHtml = p.toLowerCase().endsWith('.html');
     const isPptx = p.toLowerCase().endsWith('.pptx');
     if (!isHtml && !isPptx) {
-      return { ok: false, output: 'path 必须以 .pptx 或 .html 结尾（html=网页幻灯片，pptx=PowerPoint）', artifacts: [] };
-    }
-    if (slides.length === 0) {
-      return { ok: false, output: '缺少 slides 参数（幻灯片数组）', artifacts: [] };
+      return { ok: false, output: 'path 必须以 .html 或 .pptx 结尾（会自动同时生成两种格式）', artifacts: [] };
     }
 
-    const theme = themeId === 'auto' ? pickThemeByVibe(title + ' ' + JSON.stringify(slides).slice(0, 500)) : getTheme(themeId);
-
-    let buf: Buffer;
-    if (isPptx) {
-      const mod = nodeRequire('pptxgenjs') as { default?: new () => any } & Record<string, any>;
-      const PptxGenJS = mod.default ?? (mod as unknown as new () => any);
-      const pptx = new PptxGenJS();
-      pptx.layout = 'LAYOUT_16x9';
-      pptx.title = title;
-      renderSlidesTo(pptx, slides, theme);
-      buf = (await (pptx as any).write({ outputType: 'nodebuffer' })) as Buffer;
+    let slides: SlideSpec[];
+    if (fromMd) {
+      let md = '';
+      try {
+        md = ctx.fsGuard.readFile(fromMd);
+      } catch (err) {
+        return { ok: false, output: `读取内容稿 ${fromMd} 失败：${String(err)}`, artifacts: [] };
+      }
+      slides = mdToSlides(md, title);
     } else {
-      buf = Buffer.from(buildHtmlDeck(title, slides, theme), 'utf8');
+      slides = Array.isArray(args['slides']) ? (args['slides'] as SlideSpec[]) : [];
+      if (slides.length === 0) {
+        return { ok: false, output: '缺少 slides 参数（幻灯片数组）；或改用 fromMarkdown 传内容稿路径', artifacts: [] };
+      }
     }
 
+    // formats：默认按 path 扩展名单格式输出（.pptx → 仅 pptx；.html → 仅 html）；
+    // 显式传 formats 数组（"html,pptx" / ["html","pptx"]）才双出
+    let formats: Array<'html' | 'pptx'> = p.toLowerCase().endsWith('.pptx')
+      ? ['pptx']
+      : ['html'];
+    if (args['formats']) {
+      const raw = String(args['formats']);
+      const want = raw
+        .split(/[,，\s]+/)
+        .map((s) => s.trim().toLowerCase())
+        .filter((s): s is 'html' | 'pptx' => s === 'html' || s === 'pptx');
+      if (want.length > 0) formats = want;
+    }
+
+    const base = deckBase(p);
+    let outputs: Array<{ path: string; buf: Buffer; mime: string }>;
     try {
-      ctx.fsGuard.writeFile(p, buf);
+      outputs = await generateDeckOutputs(base, title, themeId, slides, (fp, data) =>
+        ctx.fsGuard.writeFile(fp, data)
+      , formats);
     } catch (err) {
-      return { ok: false, output: `写入 ${p} 失败：${String(err)}`, artifacts: [] };
+      return { ok: false, output: `写入 ${base}.${formats.join('/')} 失败：${String(err)}`, artifacts: [] };
     }
 
-    const art = makeArtifact(ctx.taskId, 'file', p, guessMime(p), sha256(buf));
-    ctx.onArtifact?.(art);
-    return {
-      ok: true,
-      output: `已生成${isHtml ? ' HTML 幻灯片' : ' PPT'}：${p}（${slides.length} 页，主题：${theme.name}，${buf.length} 字节）${isHtml ? '——双击用浏览器打开，←→ 键翻页，F 全屏' : ''}`,
-      artifacts: [art],
-    };
+    const arts = outputs.map((o) =>
+      makeArtifact(ctx.taskId, 'file', o.path, o.mime, sha256(o.buf))
+    );
+    for (const a of arts) ctx.onArtifact?.(a);
+    const pptxOut = outputs.find((o) => o.path.endsWith('.pptx'));
+    const lines = [
+      `已生成 ${slides.length} 页幻灯片（主题：${themeId === 'auto' ? '自动匹配' : themeId}${fromMd ? `，内容来自 ${fromMd}` : ''}，格式：${formats.join(' + ')}）：`,
+      ...outputs.map((o) => `  📄 ${o.path}（${o.buf.length} 字节${o.path.endsWith('.html') ? '，双击浏览器放映，←→ 翻页，F 全屏' : '，可用 PowerPoint/WPS 打开编辑'}）`),
+    ];
+    if (!pptxOut && formats.includes('pptx')) {
+      lines.push('  ⚠ .pptx 生成失败（引擎异常），已交付 .html 版本');
+    }
+    return { ok: true, output: lines.join('\n'), artifacts: arts };
   },
 };

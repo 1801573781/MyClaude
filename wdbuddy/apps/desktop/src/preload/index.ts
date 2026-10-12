@@ -57,6 +57,8 @@ const api = {
     ipcRenderer.invoke('workspace:grant', { uri: '' }),
   fsReveal: (path: string): Promise<{ ok: true }> =>
     ipcRenderer.invoke('fs:reveal', { path }),
+  templatesPreview: (): Promise<import('@wdbuddy/shared-types').TemplatesPreviewResult> =>
+    ipcRenderer.invoke('templates:preview', {}),
 
   // ─────────── 设置 ───────────
   settingsGet: (): Promise<AppSettings> => ipcRenderer.invoke('settings:get'),

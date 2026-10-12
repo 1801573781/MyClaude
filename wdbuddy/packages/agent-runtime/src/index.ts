@@ -27,6 +27,7 @@ import { fsReadTool, fsWriteTool, fsListTool, fsDeleteTool } from './tools/fs.js
 import { shellExecTool } from './tools/shell.js';
 import { webSearchTool } from './tools/search.js';
 import { officeGenerateTool } from './tools/office.js';
+import { buildTemplatesPreview } from './tools/templates-preview.js';
 import { ddgSearch } from './tools/search-backend.js';
 import { InMemoryCheckpointStore } from './checkpoint/store.js';
 import { createLogger } from './logger.js';
@@ -242,6 +243,13 @@ async function handleRequest(req: RpcRequest): Promise<void> {
       const loop = runningLoops.get(taskId);
       const snap = loop ? null : null;
       sendResult(id, { taskId, hasCheckpoint: snap !== null });
+      return;
+    }
+
+    case 'templates/preview': {
+      // 模版库预览：main 经 JSON-RPC 调用（agent-runtime 为 ESM，main 进程
+      // 无法直接 require；本进程加载自家渲染引擎零障碍，静态数据缓存复用）
+      sendResult(id, buildTemplatesPreview());
       return;
     }
 

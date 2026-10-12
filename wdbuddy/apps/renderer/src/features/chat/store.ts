@@ -28,7 +28,7 @@ interface ChatStore {
   plan: PlanStep[] | null;          // 待审批计划（PlanCard）
   permissionRequest: PermissionRequest | null;
   /** Agent 提问等待用户回复（user.ask）：消息流中醒目卡片展示 */
-  awaitingInput: { question: string } | null;
+  awaitingInput: { question: string; options?: string[] } | null;
   streaming: StreamingState;
 
   loadTask(taskId: string): Promise<void>;
@@ -242,7 +242,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           // Agent 提问完毕，暂停等待用户回复：醒目卡片展示问题原文，
           // 输入框自动聚焦并更换 placeholder（用户跟进后自动唤醒继续）
           set((s) => ({
-            awaitingInput: { question: e.question },
+            awaitingInput: { question: e.question, options: e.options },
             streaming: { ...s.streaming, active: false, bufferedText: '' },
           }));
           void useTaskListRefresher();

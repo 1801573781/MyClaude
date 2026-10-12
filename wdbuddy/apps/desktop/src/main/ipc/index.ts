@@ -258,6 +258,15 @@ export function registerIpc(deps: IpcDeps): void {
     return { ok: true };
   });
 
+  // ─────────── 模版库预览（10 主题 × 真实渲染 + 14 版式演示） ───────────
+
+  ipcMain.handle('templates:preview', async () => {
+    // 渲染逻辑在 Runtime 子进程完成（agent-runtime 为 ESM 包且 exports 只暴露"."，
+    // main 进程无法直接 require——经 JSON-RPC 调用；runtime 离线时由渲染层显示错误提示）
+    await runtime.ensureStarted();
+    return (await runtime.request('templates/preview', {})) as import('@wdbuddy/shared-types').TemplatesPreviewResult;
+  });
+
   // ─────────── 对话导出（.md / .html） ───────────
 
   ipcMain.handle(

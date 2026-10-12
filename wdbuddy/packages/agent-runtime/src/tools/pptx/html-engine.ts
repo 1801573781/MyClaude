@@ -10,18 +10,65 @@ function esc(t: string): string {
   return t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-/** 主题 → CSS 变量（键名与 themes 字段一一映射，加 # 前缀） */
+/** 主题 → CSS 变量（键名与 themes 字段一一映射，加 # 前缀）。
+ *  字体链微软雅黑置顶（用户指定：其他字体渲染效果不佳），主题原字体仅作回退。
+ *  dark 主题：--bg-light/--text-dark 等浅色变量重映射为深色系，内容页与封面全篇统一 */
 function themeCssVars(th: SlideTheme): string {
+  if (th.dark) {
+    const mix = (a: string, b: string, r: number): string => {
+      const n = (h: string): [number, number, number] => {
+        const s = h.replace('#', '');
+        const f = s.length === 3 ? s.split('').map((c) => c + c).join('') : s;
+        return [parseInt(f.slice(0, 2), 16), parseInt(f.slice(2, 4), 16), parseInt(f.slice(4, 6), 16)];
+      };
+      const [r1, g1, b1] = n(a);
+      const [r2, g2, b2] = n(b);
+      return [r1 + (r2 - r1) * r, g1 + (g2 - g1) * r, b1 + (b2 - b1) * r]
+        .map((c) => Math.round(c).toString(16).padStart(2, '0'))
+        .join('');
+    };
+    const lift = (h: string): string => {
+      const s = h.replace('#', '');
+      const f = s.length === 3 ? s.split('').map((c) => c + c).join('') : s;
+      const r = parseInt(f.slice(0, 2), 16);
+      const g = parseInt(f.slice(2, 4), 16);
+      const b = parseInt(f.slice(4, 6), 16);
+      return 0.299 * r + 0.587 * g + 0.114 * b < 100 ? mix(h, 'FFFFFF', 0.45) : h;
+    };
+    return `:root{
+  --primary:#${lift(th.primary)};--secondary:#${th.secondary};--accent:#${th.accent};
+  --bg-dark:#${th.bgDark};--bg-light:#${th.bgDark};
+  --text-dark:#${th.textLight};--text-light:#${th.textLight};
+  --text-muted:#${th.textMuted};--card-bg:#${mix(th.bgDark, 'FFFFFF', 0.07)};
+  --glass-bg:rgba(255,255,255,.08);--glass-line:rgba(255,255,255,.22);
+  --font-title:"Microsoft YaHei",${th.fontTitle};--font-body:"Microsoft YaHei",${th.fontBody};
+}`;
+  }
   return `:root{
   --primary:#${th.primary};--secondary:#${th.secondary};--accent:#${th.accent};
   --bg-dark:#${th.bgDark};--bg-light:#${th.bgLight};
   --text-dark:#${th.textDark};--text-light:#${th.textLight};
   --text-muted:#${th.textMuted};--card-bg:#${th.cardBg};
-  --font-title:${th.fontTitle};--font-body:${th.fontBody};
+  --font-title:"Microsoft YaHei",${th.fontTitle};--font-body:"Microsoft YaHei",${th.fontBody};
 }`;
 }
 
 /* ───────────── 单页 HTML 渲染 ───────────── */
+
+/** 通用 N 列网格（grid-3x2 六卡 / grid-4x2 八卡） */
+function gridNHtml(s: SlideSpec, cols: number, max: number): string {
+  const cards = (s.cards ?? []).slice(0, max);
+  return `
+      <h2 class="page-title">${esc(s.title ?? '')}</h2><div class="title-underline"></div>
+      <div class="grid-n" style="grid-template-columns:repeat(${cols},1fr)">${cards
+        .map(
+          (c, i) => `
+        <div class="grid-item"><span class="grid-badge">${c.icon ? esc(c.icon) : i + 1}</span>
+          <div class="grid-title">${esc(c.title)}</div>
+          ${c.desc ? `<div class="grid-desc">${esc(c.desc)}</div>` : ''}</div>`
+        )
+        .join('')}</div>`;
+}
 
 function slideHtml(s: SlideSpec, idx: number, total: number, th: SlideTheme): string {
   const layout = s.layout ?? 'content';
@@ -177,7 +224,7 @@ html,body{height:100%;background:#111;font-family:var(--font-body);overflow:hidd
 .mini-desc{font-size:12.5px;color:var(--text-muted);margin-top:4px}
 /* 卡片行 */
 .cards-row{display:grid;grid-template-columns:repeat(3,1fr);gap:28px;height:68%}
-.glass-card{background:rgba(255,255,255,.6);backdrop-filter:blur(14px);border:1px solid rgba(255,255,255,.85);border-radius:18px;padding:34px 26px;display:flex;flex-direction:column;align-items:center;gap:14px;box-shadow:0 12px 34px rgba(0,0,0,.09);transition:transform .25s,box-shadow .25s}
+.glass-card{background:var(--glass-bg,rgba(255,255,255,.6));backdrop-filter:blur(14px);border:1px solid var(--glass-line,rgba(0,0,0,.08));border-radius:18px;padding:34px 26px;display:flex;flex-direction:column;align-items:center;gap:14px;box-shadow:0 12px 34px rgba(0,0,0,.09);transition:transform .25s,box-shadow .25s}
 .glass-card:hover{transform:translateY(-6px);box-shadow:0 18px 44px rgba(0,0,0,.14)}
 .card-accent{background:linear-gradient(160deg,rgba(255,255,255,.75),color-mix(in srgb,var(--accent) 16%,white));border-top:4px solid var(--accent)}
 .card-icon{font-size:44px}
@@ -193,6 +240,11 @@ html,body{height:100%;background:#111;font-family:var(--font-body);overflow:hidd
 .tl-desc{font-size:11.5px;color:var(--text-muted);text-align:center;line-height:1.45}
 /* 网格 */
 .grid-2x2{display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:22px;height:68%}
+.grid-n{display:grid;grid-template-rows:auto;gap:16px;height:68%;align-items:stretch}
+.grid-n .grid-item{flex-direction:column;gap:10px;padding:18px}
+.grid-n .grid-badge{font-size:22px;width:auto;height:auto;background:none;border-radius:0;padding:0}
+.grid-n .grid-title{font-size:15.5px}
+.grid-n .grid-desc{font-size:12px}
 .grid-item{background:var(--card-bg);border:1px solid rgba(0,0,0,.07);border-radius:14px;padding:20px 22px;display:flex;gap:16px;box-shadow:0 3px 14px rgba(0,0,0,.05)}
 .grid-badge{flex:none;width:34px;height:34px;border-radius:50%;background:var(--primary);color:#fff;font-weight:800;font-size:16px;display:flex;align-items:center;justify-content:center}
 .grid-title{font-size:16.5px;font-weight:700;color:var(--primary)}

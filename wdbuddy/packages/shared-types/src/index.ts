@@ -282,6 +282,7 @@ export interface IpcRequestMap {
   'providerKey:set': { modelId: ModelId; apiKey: string };
   'runtime:event': { event: RuntimeEvent };
   'chat:export': { taskId: string; format: 'md' | 'html' };
+  'templates:preview': Record<string, never>;
 }
 
 export type IpcResponseMap = {
@@ -298,7 +299,23 @@ export type IpcResponseMap = {
   'providerKey:set': { ok: true };
   'runtime:event': { ok: true };
   'chat:export': { ok: true; path: string };
+  'templates:preview': TemplatesPreviewResult;
 };
+
+/** 模版库预览（10 主题 × 真实渲染 deck + 14 版式演示） */
+export interface TemplatesPreviewResult {
+  themes: Array<{
+    id: string;
+    name: string;
+    vibe: string;
+    /** 核心色板（带 #） */
+    colors: string[];
+  }>;
+  /** themeId → 迷你 deck HTML（封面/目录/要点/时间线/数据大屏 5 版式） */
+  htmls: Record<string, string>;
+  /** 14 种版式演示 deck（用商务蓝主题渲染，每页一种版式） */
+  layoutsHtml: string;
+}
 
 // ─────────────────────────── Runtime JSON-RPC 协议（§11.2 main ↔ runtime，stdio） ───────────────────────────
 
@@ -306,7 +323,8 @@ export type RuntimeRequestMethod =
   | 'runtime/initialize'
   | 'task/run'
   | 'task/control'
-  | 'task/loadCheckpoint';
+  | 'task/loadCheckpoint'
+  | 'templates/preview';
 
 export interface RpcRequest {
   jsonrpc: '2.0';
@@ -364,7 +382,7 @@ export type RuntimeEvent =
   | { type: 'task.error'; taskId: string; stepId?: string; cause: string }
   | { type: 'task.rejected'; taskId: string; reason: string }
   | { type: 'task.cancelled'; taskId: string; reason: string }
-  | { type: 'task.awaiting.input'; taskId: string; question: string }
+  | { type: 'task.awaiting.input'; taskId: string; question: string; options?: string[] }
   | { type: 'checkpoint.recovery'; taskId: string; hint: string }
   | { type: 'runtime.offline'; reason: string };
 

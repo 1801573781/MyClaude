@@ -58,10 +58,42 @@
 .wb-msg--system {
   align-self: center;
   font-size: var(--wb-font-size-xs);
-  color: var(--wb-color-danger);
-  background: rgba(213, 73, 65, .06);
+  color: var(--wb-text-secondary);
+  background: var(--wb-bg-panel);
   padding: 4px 12px;
   border-radius: 999px;
+}
+
+/* ✅ 任务完成：绿色醒目卡片（区别于错误红字，横向全宽、加粗、左侧强调条） */
+.wb-msg--done {
+  align-self: stretch;
+  margin: var(--wb-space-1) 0;
+  padding: var(--wb-space-3) var(--wb-space-4);
+  background: rgba(47, 133, 90, .08);
+  border: 1px solid rgba(47, 133, 90, .35);
+  border-left: 4px solid var(--wb-color-success);
+  border-radius: var(--wb-radius-md);
+  color: var(--wb-text-primary);
+  font-size: var(--wb-font-size-sm);
+  font-weight: 500;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* ⚠ 任务失败/警告：红色醒目卡片 */
+.wb-msg--error {
+  align-self: stretch;
+  margin: var(--wb-space-1) 0;
+  padding: var(--wb-space-3) var(--wb-space-4);
+  background: rgba(213, 73, 65, .08);
+  border: 1px solid rgba(213, 73, 65, .35);
+  border-left: 4px solid var(--wb-color-danger);
+  border-radius: var(--wb-radius-md);
+  color: var(--wb-text-primary);
+  font-size: var(--wb-font-size-sm);
+  font-weight: 500;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 
 .wb-msg__avatar { font-size: 20px; margin-top: 2px; }

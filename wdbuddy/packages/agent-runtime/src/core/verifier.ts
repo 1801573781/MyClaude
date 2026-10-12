@@ -45,6 +45,45 @@ export class Verifier {
     };
   }
 
+  /** 意图-产物匹配（交付前防假成功）：任务要求生成 PPT/演示文稿，但产物中
+   *  没有任何 .pptx/.html 幻灯片文件（如只交付了 md 设计稿）时返回缺口描述。
+   *  逐条独立判定（标题/指令/各条用户消息按行拆分）：任何一行同时命中"演示
+   *  类名词 + 生成动词、且非疑问、非纯文字子任务"即视为交付型诉求。
+   *  严禁拼接整段后判定——真实会话中用户回复会引用 Agent 的提问（含"？"），
+   *  拼接后 questionLike 会误杀整段，导致补救机制漏触发（假成功复现）。 */
+  intentGap(
+    task: Task,
+    instruction: string,
+    artifacts: Artifact[]
+  ): { title: string; detail: string } | null {
+    const lines = `${task.title}\n${instruction}`
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
+    const wantsDeck = (l: string): boolean => /(ppt|幻灯片|演示文稿|slides?)/i.test(l);
+    // 生成动词：中英双语（467 事故：英文指令 "create a ppt, please" 因纯中文
+    // 动词正则不命中 → 意图缺口漏判 → 补救/兜底均不触发 → 假成功复发）
+    const wantsCreate = (l: string): boolean =>
+      /(生成|制作|创建|做|写|导出|输出|create|make|generate|build|produce|export|design|draft|write)/i.test(l);
+    // 纯文字子任务（大纲/文案/讲稿/文章等）与疑问句排除，避免误伤问答/写作类任务
+    const docOnly = (l: string): boolean =>
+      /(大纲|文案|讲稿|脚本|素材|模板|目录|标题|文章|博客|论文|blog)/i.test(l);
+    const questionLike = (l: string): boolean => /[?？]|怎么|如何|为什么|什么/.test(l);
+    const wantsDeckFile = lines.some(
+      (l) => wantsDeck(l) && wantsCreate(l) && !docOnly(l) && !questionLike(l)
+    );
+    if (!wantsDeckFile) return null;
+    const deckArts = artifacts.filter((a) => a.path !== undefined && /\.(pptx|html)$/i.test(a.path));
+    if (deckArts.length > 0) return null;
+    const files = artifacts.filter((a) => a.path !== undefined).map((a) => a.path as string);
+    const fileList =
+      files.length > 0 ? `（当前仅有：${files.slice(0, 5).join('、')}）` : '（当前没有任何文件产物）';
+    return {
+      title: '生成幻灯片文件',
+      detail: `任务要求生成 PPT/演示文稿，但交付产物中没有 .pptx 或 .html 幻灯片文件${fileList}`,
+    };
+  }
+
   private readArt(art: Artifact): string {
     if (!art.path) return '';
     try {

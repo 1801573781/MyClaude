@@ -239,6 +239,33 @@ export class TaskStore {
       .run(step.status, step.summary ?? null, step.startedAt ?? null, step.endedAt ?? null, step.id, taskId);
   }
 
+  /** 步骤 upsert：行不存在则插入（craft 模式无 plan.ready，首个 step.update
+   *  到达时表为空，UPDATE 是 no-op → 步骤时间线重进任务即消失、导出缺
+   *  "执行过程"——467 事故根因之一） */
+  upsertStep(taskId: string, step: PlanStep): void {
+    const existing = this.db
+      .prepare('SELECT id FROM steps WHERE task_id = ? AND id = ?')
+      .get(taskId, step.id) as { id: string } | undefined;
+    if (existing) {
+      this.updateStep(taskId, step);
+      return;
+    }
+    this.db
+      .prepare(
+        'INSERT INTO steps (id, task_id, seq, title, status, summary, started_at, ended_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+      )
+      .run(
+        step.id,
+        taskId,
+        step.seq,
+        step.title,
+        step.status,
+        step.summary ?? null,
+        step.startedAt ?? null,
+        step.endedAt ?? null
+      );
+  }
+
   listSteps(taskId: string): PlanStep[] {
     const rows = this.db
       .prepare('SELECT * FROM steps WHERE task_id = ? ORDER BY seq')

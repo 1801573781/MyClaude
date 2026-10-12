@@ -2,7 +2,7 @@
  * WDBuddy 主进程入口（§10.1）
  * 职责：窗口/托盘生命周期、IPC 路由、任务持久化与调度、Runtime 子进程管理（看门狗）、更新。
  */
-import { app, BrowserWindow, ipcMain, safeStorage } from 'electron';
+import { app, BrowserWindow, ipcMain, protocol, safeStorage } from 'electron';
 import * as path from 'node:path';
 import { existsSync } from 'node:fs';
 import { createMainWindow, ensureSingleInstance } from './window.js';
@@ -23,6 +23,65 @@ let mainWindow: BrowserWindow | null = null;
 let runtimeBridge: RuntimeBridge | null = null;
 /** 退出标志（Electron App 类型无 isQuitting 属性，用模块级标志替代） */
 let isQuitting = false;
+
+// ─────────── wb-preview:// 协议（模版库预览，修复 iframe srcDoc 黑屏） ───────────
+// 背景：srcdoc iframe 继承页面 CSP（script-src 'self'），deck 内联翻页脚本被
+// 阻止 → 所有 .slide 保持 display:none → 预览只剩 #111 黑底。协议响应是独立
+// 文档，不受父页面 CSP 约束，内联脚本正常执行。
+// URL 形如 wb-preview://templates/{themeId|layouts}，HTML 缓存自 Runtime RPC。
+const previewHtmlCache = new Map<string, string>();
+
+// registerSchemesAsPrivileged 必须在 app ready 之前调用（模块加载即执行）
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: 'wb-preview',
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+    },
+  },
+]);
+
+/** 注册协议 handler（app ready 后调用一次） */
+function registerWbPreviewHandler(): void {
+  protocol.handle('wb-preview', async (request) => {
+    // 标准协议 URL 解析：wb-preview://templates/business-blue →
+    //   hostname='templates'，pathname='/business-blue' → key='business-blue'
+    //   wb-preview://templates/layouts → key='layouts'
+    const url = new URL(request.url);
+    const key = decodeURIComponent(url.pathname.replace(/^\//, '')) || 'layouts';
+    let html = previewHtmlCache.get(key);
+    if (!html) {
+      // 惰性刷新：启动预取失败/未完成时，首次请求触发补拉
+      await refreshPreviewCache();
+      html = previewHtmlCache.get(key);
+    }
+    return new Response(html ?? '', {
+      headers: { 'Content-Type': 'text/html; charset=utf-8' },
+    });
+  });
+}
+
+/** 拉取模版预览数据并填充协议缓存（templates:preview IPC 首次调用时触发） */
+async function refreshPreviewCache(): Promise<void> {
+  if (!runtimeBridge) return;
+  try {
+    await runtimeBridge.ensureStarted();
+    const r = (await runtimeBridge.request('templates/preview', {})) as {
+      themes: Array<{ id: string }>;
+      htmls: Record<string, string>;
+      layoutsHtml: string;
+    };
+    previewHtmlCache.clear();
+    for (const t of r.themes) {
+      previewHtmlCache.set(t.id, r.htmls[t.id] ?? '');
+    }
+    previewHtmlCache.set('layouts', r.layoutsHtml);
+  } catch (err) {
+    console.error('[wb-preview] 预览缓存刷新失败：', err);
+  }
+}
 
 async function bootstrap(): Promise<void> {
   // 1. 数据库
@@ -164,17 +223,37 @@ async function bootstrap(): Promise<void> {
       if (event.type === 'task.done') {
         store.updateStatus(event.taskId, 'completed');
         for (const a of event.artifacts) store.insertArtifact(a);
+        // 完成提示落库（修复：此前仅渲染层内存显示，导出/回看任务时
+        // "✅ 任务已完成…"整段消失）
+        const files = [
+          ...new Set(event.artifacts.filter((a) => a.kind === 'file' && a.path).map((a) => a.path)),
+        ];
+        const fileList = files.length > 0 ? files.map((f) => `\n📄 ${f}`).join('') : '';
+        store.appendMessage(
+          event.taskId,
+          'system',
+          files.length > 0
+            ? `✅ 任务已完成！生成的成果文件：${fileList}\n\n👉 已同步到右侧"文件"栏，可点击查看/预览；点右栏"打开目录"直达文件位置。`
+            : '✅ 任务已完成！（本次任务无文件产物，回答内容见上方对话）'
+        );
       } else if (event.type === 'task.error') {
         store.updateStatus(event.taskId, 'failed');
+        store.appendMessage(event.taskId, 'system', `⚠ 任务失败：${event.cause}`);
       } else if (event.type === 'task.rejected') {
         store.updateStatus(event.taskId, 'draft');
       } else if (event.type === 'task.cancelled') {
         store.updateStatus(event.taskId, 'cancelled');
+        store.appendMessage(event.taskId, 'system', '⏹ 任务已停止');
       } else if (event.type === 'task.awaiting.input') {
         // 等待用户补充信息：任务暂停（用户在输入框跟进后自动唤醒继续）
         store.updateStatus(event.taskId, 'paused');
+        // Agent 提问落库（修复：提问仅存在于前端卡片，导出/回看时提问记录
+        // 消失，对话呈现"用户自问自答"的错乱观感）
+        store.appendMessage(event.taskId, 'assistant', event.question);
       } else if (event.type === 'step.update') {
-        store.updateStep(event.taskId, event.step);
+        // upsert（修复：craft 模式无 plan.ready，UPDATE 空表 no-op →
+        // 步骤时间线重进任务即消失、导出缺"执行过程"）
+        store.upsertStep(event.taskId, event.step);
       } else if (event.type === 'artifact.created') {
         store.insertArtifact(event.artifact);
       } else if (event.type === 'plan.ready') {
@@ -236,9 +315,15 @@ async function bootstrap(): Promise<void> {
 
   // 10. 拉起 Agent Runtime 子进程（ADR-0001：主进程拉起守护）
   // 非阻塞、非致命：失败仅记录日志，任务操作时经 ensureStarted() 惰性重试
-  void runtimeBridge.start().catch((err: unknown) => {
-    console.error('[main] Runtime 初始启动失败（任务运行时将自动重试）：', err);
-  });
+  // 启动完成后预取模版预览缓存（wb-preview:// 协议数据源；失败时协议
+  // handler 惰性刷新兜底，不阻塞应用启动）
+  registerWbPreviewHandler();
+  void runtimeBridge
+    .start()
+    .then(() => refreshPreviewCache())
+    .catch((err: unknown) => {
+      console.error('[main] Runtime 初始启动失败（任务运行时将自动重试）：', err);
+    });
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) mainWindow = createMainWindow();

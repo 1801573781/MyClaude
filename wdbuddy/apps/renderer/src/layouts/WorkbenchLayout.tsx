@@ -98,8 +98,8 @@ export function WorkbenchLayout(): React.ReactElement {
           </span>
         )}
         <div className="wb-topbar__spacer" />
-        <button className="wb-btn wb-btn--ghost" onClick={() => openPanel('skills')}>
-          🧩 技能
+        <button className="wb-btn wb-btn--ghost" onClick={() => openPanel('templates')} title="10 套主题 × 14 种版式，真实渲染预览">
+          🎨 模版库
         </button>
         <button className="wb-btn wb-btn--ghost" onClick={() => openPanel('settings')}>
           ⚙ 设置

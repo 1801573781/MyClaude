@@ -1,0 +1,3 @@
+LINE-1 original content
+LINE-2 marker-after: BBBB2222 (modified by str_replace at same turn)
+LINE-3 end

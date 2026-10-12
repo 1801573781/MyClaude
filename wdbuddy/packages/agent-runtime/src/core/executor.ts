@@ -31,20 +31,54 @@ export interface ToolCall {
 
 /** 从 LLM 输出解析工具调用（支持 ```json 代码块或裸 JSON） */
 export function parseToolCall(text: string): ToolCall | null {
-  const patterns = [/\{[\s\S]*"tool"[\s\S]*\}/];
-  for (const re of patterns) {
-    const m = text.match(re);
-    if (!m) continue;
+  const tryParse = (s: string): ToolCall | null => {
     try {
-      const obj = JSON.parse(m[0]) as { tool?: unknown; args?: unknown };
+      const obj = JSON.parse(s) as { tool?: unknown; args?: unknown };
       if (typeof obj['tool'] === 'string' && typeof obj['args'] === 'object' && obj['args']) {
         return { tool: obj['tool'] as ToolName, args: obj['args'] as Record<string, unknown> };
       }
     } catch {
-      /* continue */
+      /* 非法 JSON */
+    }
+    return null;
+  };
+
+  // 三级解析（json 围栏内容 → 全文贪婪匹配 → 逐个 tool 起点兜底），
+  // 提升对围栏包裹、正文含杂散花括号、轻微畸形输出的容错
+  const fence = new RegExp('`'.repeat(3) + '(?:json)?\\s*(\\{[\\s\\S]*?)' + '`'.repeat(3)).exec(text);
+  if (fence && fence[1]!.includes('"tool"')) {
+    const c = tryParse(fence[1]!.trim());
+    if (c) return c;
+  }
+  const m = /\{[\s\S]*"tool"[\s\S]*\}/.exec(text);
+  if (m) {
+    const c = tryParse(m[0]);
+    if (c) return c;
+  }
+  for (let idx = text.indexOf('{"tool"'); idx >= 0; idx = text.indexOf('{"tool"', idx + 1)) {
+    const sub = text.slice(idx);
+    const last = sub.lastIndexOf('}');
+    if (last > 0) {
+      const c = tryParse(sub.slice(0, last + 1));
+      if (c) return c;
     }
   }
   return null;
+}
+
+/** 文本中是否含工具调用痕迹（出现 tool 字段但整体解析失败 → 疑似截断/畸形，
+ *  用于区分纯文本回答与想调工具但 JSON 坏了，后者严禁视为步骤成功） */
+export function hasToolCallTrace(text: string): boolean {
+  return /\{\s*"tool"\s*:/.test(text);
+}
+
+/** 强提问意图检测：≥2 个问号 + "请告诉/提供/确认"类引导语。
+ *  LLM 在文字里向用户提出关键问题（主题/受众等）却没有输出 user.ask 工具
+ *  调用、反而继续自跑——历史事故：Agent 问了主题没等回答，凭工作空间
+ *  历史遗留文件自作主张复用并跑失败。命中即应强制暂停等用户回复。 */
+export function detectQuestionIntent(text: string): boolean {
+  const qCount = (text.match(/？|\?/g) ?? []).length;
+  return qCount >= 2 && /请(告诉|提供|确认|说明|回复|补充)/.test(text);
 }
 
 export class Executor {
@@ -56,84 +90,219 @@ export class Executor {
 
     // 1. 构造步骤执行提示
     const system = buildStepSystemPrompt(task, step, ctx);
-    let llmText = '';
     // 步骤入口取消检查（运行中点 ⏹ 立即中断本步）
     if (ctx.signal.aborted) throw new TaskCancelledError();
-    // 流式外发守卫：工具调用 JSON（{"tool": ...）不发给用户——一旦检测到即永久
-    // 截断（连带紧前的 ```json 围栏头一并剔除）；末尾 60 字符内的 { 或 ` 暂扣待判
-    //（可能是即将成形的工具调用开头）；流结束确认无工具调用则全文放行。
-    // 修复：{"tool": "user.ask", ...} 等裸露在对话气泡里
-    let emitted = 0;
-    let toolCut = -1;
-    const detectCut = (): void => {
-      if (toolCut >= 0) return;
-      const m = /\{\s*"tool"\s*:/.exec(llmText);
-      if (!m) return;
-      let cut = m.index;
-      const fence = /(```[a-zA-Z]*[ \t]*)$/.exec(llmText.slice(0, cut));
-      if (fence) cut -= fence[1]!.length;
-      toolCut = Math.max(emitted, cut);
-    };
-    const safeEnd = (): number => {
-      detectCut();
-      if (toolCut >= 0) return toolCut;
-      const winStart = Math.max(0, llmText.length - 60);
-      let safe = llmText.length;
-      for (const mark of ['{', '`']) {
-        const idx = llmText.lastIndexOf(mark);
-        if (idx >= winStart && idx < safe) safe = idx;
+
+    // 截断重试：LLM 输出的工具调用 JSON 超长被截断（或格式非法）时，反馈失败
+    // 原因并要求精简后重新输出（本步骤内最多重试 2 次）。
+    // 根因：10 页 PPT 的 slides JSON 一次输出极易触达输出上限被截断，
+    // parseToolCall 返回 null 后旧逻辑把整段当"纯文本回答"标记步骤成功，
+    // 造成"说要调用 office.generate 实际什么都没生成"的假成功。
+    const MAX_MALFORMED_RETRIES = 2;
+    // 补救步骤（loop 交付前自检构造，标题前缀"补救："）：语义是"必须真正生成
+    // 文件"，纯文字计划（"我将写入…"却无任何工具调用）严禁判成功
+    const isRemedy = step.title.startsWith('补救：');
+    const extraMsgs: Array<{ role: 'assistant' | 'user'; content: string }> = [];
+    let call: ToolCall | null = null;
+    let llmText = '';
+
+    for (let attempt = 0; attempt <= MAX_MALFORMED_RETRIES; attempt++) {
+      llmText = '';
+      // 流式外发守卫：工具调用 JSON（{"tool": ...）不发给用户——一旦检测到即永久
+      // 截断（连带紧前的 ```json 围栏头一并剔除）；末尾 60 字符内的 { 或 ` 暂扣待判
+      //（可能是即将成形的工具调用开头）；流结束确认无工具调用则全文放行。
+      // 修复：{"tool": "user.ask", ...} 等裸露在对话气泡里
+      let emitted = 0;
+      let toolCut = -1;
+      const detectCut = (): void => {
+        if (toolCut >= 0) return;
+        const m = /\{\s*"tool"\s*:/.exec(llmText);
+        if (!m) return;
+        let cut = m.index;
+        const fence = /(```[a-zA-Z]*[ \t]*)$/.exec(llmText.slice(0, cut));
+        if (fence) cut -= fence[1]!.length;
+        toolCut = Math.max(emitted, cut);
+      };
+      const safeEnd = (): number => {
+        detectCut();
+        if (toolCut >= 0) return toolCut;
+        // 窗口 120 且逐级匹配围栏标记：覆盖 "```json\n" 围栏头到 {"tool" 的间距
+        //（60 偶尔不够，导致孤零零的 ```json 围栏头裸露在对话气泡里）
+        const winStart = Math.max(0, llmText.length - 120);
+        let safe = llmText.length;
+        for (const mark of ['{', '```json', '```', '`']) {
+          const idx = llmText.lastIndexOf(mark);
+          if (idx >= winStart && idx < safe) safe = idx;
+        }
+        return safe;
+      };
+      const emitUpTo = (end: number): void => {
+        if (end <= emitted) return;
+        this.deps.emitter.emit({
+          method: 'task/token.delta',
+          params: { taskId: task.id, text: llmText.slice(emitted, end) },
+        });
+        emitted = end;
+      };
+      for await (const delta of this.deps.llm({
+        model: task.modelId,
+        messages: [
+          { role: 'system', content: system },
+          ...ctx.history.slice(-10),
+          { role: 'user', content: `当前步骤：${step.title}\n请决策下一步动作。` },
+          ...extraMsgs,
+        ],
+        signal: ctx.signal,
+      })) {
+        if (ctx.signal.aborted) throw new TaskCancelledError();
+        llmText += delta.text;
+        emitUpTo(safeEnd());
       }
-      return safe;
-    };
-    const emitUpTo = (end: number): void => {
-      if (end <= emitted) return;
-      this.deps.emitter.emit({
-        method: 'task/token.delta',
-        params: { taskId: task.id, text: llmText.slice(emitted, end) },
+      // 流结束：按最终裁剪点补发（无工具调用则放行全文）
+      detectCut();
+      emitUpTo(toolCut >= 0 ? toolCut : llmText.length);
+
+      // 2. 解析工具调用
+      call = parseToolCall(llmText);
+      if (call) break;
+
+      // 无任何工具调用痕迹 → 纯文本输出
+      if (!hasToolCallTrace(llmText)) {
+        // 2a. 强提问意图：LLM 用文字向用户提了关键问题 → 强制暂停等回复
+        //（严禁问完自答/问完继续跑）
+        if (detectQuestionIntent(llmText)) {
+          const answer = await this.askUserAndAwait(task, ctx, llmText.slice(0, 1000));
+          if (answer !== null) {
+            return {
+              stepId: step.id,
+              ok: true,
+              output: `已向用户提问并收到回复：${answer.slice(0, 200)}。请结合回复在后续步骤决策。`,
+              artifacts: [],
+            };
+          }
+        }
+        // 2b. 补救步骤禁止"只说不做"：纯文字计划无工具调用 → 重试强制真调用
+        if (isRemedy) {
+          log.warn('补救步骤仅输出文字计划，未调用工具，强制重试', { attempt });
+          if (attempt < MAX_MALFORMED_RETRIES) {
+            this.deps.emitter.emit({
+              method: 'task/token.delta',
+              params: { taskId: task.id, text: '\n\n> ⚠ 补救步骤未调用任何工具（仅文字说明），正在要求实际执行…\n\n' },
+            });
+            extraMsgs.push(
+              { role: 'assistant', content: llmText.slice(0, 1000) },
+              {
+                role: 'user',
+                content:
+                  '[系统反馈] 补救步骤必须实际调用工具，纯文字无效。请立即输出工具调用 JSON：先用 fs.write 把逐页文案写入工作空间 md 文件，或直接输出 {"tool": "office.generate", "args": {"path": "输出.html", "fromMarkdown": "md路径"}}。不要再输出计划说明。',
+              }
+            );
+            continue;
+          }
+          return {
+            stepId: step.id,
+            ok: false,
+            output: '补救步骤连续未调用任何工具（仅输出了文字计划），无法生成交付文件。',
+            artifacts: [],
+            error: 'remedy-no-tool-call',
+          };
+        }
+        // 2c. 普通步骤的纯文本回答：视为步骤产出说明
+        return { stepId: step.id, ok: true, output: llmText, artifacts: [] };
+      }
+
+      // 有工具调用痕迹但解析失败（截断/畸形）：严禁当作纯文本成功
+      log.warn('工具调用 JSON 解析失败（疑似截断）', { attempt, len: llmText.length });
+      if (attempt < MAX_MALFORMED_RETRIES) {
+        // 重试提示（用户可见）：输出被截断，正在精简重试
+        this.deps.emitter.emit({
+          method: 'task/token.delta',
+          params: { taskId: task.id, text: '\n\n> ⚠ 上次工具调用输出疑似被截断，正在要求精简后重试…\n\n' },
+        });
+        extraMsgs.push(
+          { role: 'assistant', content: llmText.slice(0, 1500) },
+          {
+            role: 'user',
+            content: `[系统反馈] 你上一次输出的工具调用 JSON 解析失败（共 ${llmText.length} 字符，疑似被截断或含非法字符）。请重新输出【完整的】工具调用 JSON。为避免再次被截断，必须大幅精简：office.generate 的 slides 每页 bullets 不超过 3 条、每条不超过 15 字；删除一切解释文字，只输出工具调用 JSON 本身。`,
+          }
+        );
+        continue;
+      }
+      // 重试耗尽 → 步骤失败（交由上层重规划），并把教训写入历史供后续步骤吸取
+      ctx.history.push({
+        role: 'user',
+        content: `[系统] 步骤「${step.title}」的工具调用 JSON 连续 ${MAX_MALFORMED_RETRIES + 1} 次解析失败（疑似输出超长被截断）。后续执行时请大幅精简工具调用内容。`,
       });
-      emitted = end;
-    };
-    for await (const delta of this.deps.llm({
-      model: task.modelId,
-      messages: [
-        { role: 'system', content: system },
-        ...ctx.history.slice(-10),
-        { role: 'user', content: `当前步骤：${step.title}\n请决策下一步动作。` },
-      ],
-      signal: ctx.signal,
-    })) {
-      if (ctx.signal.aborted) throw new TaskCancelledError();
-      llmText += delta.text;
-      emitUpTo(safeEnd());
+      return {
+        stepId: step.id,
+        ok: false,
+        output: `工具调用 JSON 连续 ${MAX_MALFORMED_RETRIES + 1} 次解析失败（输出 ${llmText.length} 字符，疑似超长被截断）。`,
+        artifacts: [],
+        error: `malformed-tool-call: 输出 ${llmText.length} 字符未解析出合法工具调用`,
+      };
     }
-    // 流结束：按最终裁剪点补发（无工具调用则放行全文）
-    detectCut();
-    emitUpTo(toolCut >= 0 ? toolCut : llmText.length);
 
-    // 2. 解析工具调用
-    const call = parseToolCall(llmText);
     if (!call) {
-      // 无工具调用 → 纯文本回答，视为步骤产出说明
-      return { stepId: step.id, ok: true, output: llmText, artifacts: [] };
+      // 理论不可达（循环内必 return 或 break）；防御性兜底
+      return { stepId: step.id, ok: false, output: '内部错误：工具调用解析异常', artifacts: [], error: 'internal-parse-error' };
     }
 
-    // 2.1 向用户提问（user.ask）：在 policy 之前拦截（提问非敏感操作）。
+    // 2.0 强提问意图拦截（优先于工具执行）：LLM 文字里向用户提出多个关键问题
+    // 却同时/接着调用工具自跑（如提问主题后自己 fs.list 翻旧文件）。命中即
+    // 暂停等用户回复；本轮工具调用不执行，答复入历史后由后续步骤重新决策。
+    if (call.tool !== 'user.ask' && detectQuestionIntent(llmText)) {
+      const answer = await this.askUserAndAwait(task, ctx, llmText.slice(0, 1000));
+      if (answer !== null) {
+        return {
+          stepId: step.id,
+          ok: true,
+          output: `已向用户提问并收到回复：${answer.slice(0, 200)}。工具调用暂未执行，请结合回复在后续步骤重新决策。`,
+          artifacts: [],
+        };
+      }
+    }
+
+    // 2.1 显式 user.ask 工具：在 policy 之前拦截（提问非敏感操作）。
     // 任务暂停等待用户回复，回复写入对话历史后本步骤完成、后续步骤据此继续。
-    // 修复：此前无提问机制，LLM"说要确认"却直接自问自答往下跑
     if (call.tool === 'user.ask') {
       const question = String(call.args['question'] ?? '').trim() || llmText.slice(0, 500);
-      if (this.deps.askWaiter) {
-        const answer = await Promise.race([
-          this.deps.askWaiter(task.id, question),
-          new Promise<never>((_, rej) => {
-            ctx.signal.addEventListener('abort', () => rej(new TaskCancelledError()), { once: true });
-          }),
-        ]);
-        ctx.history.push({ role: 'assistant', content: question });
-        ctx.history.push({ role: 'user', content: answer });
+      const answer = await this.askUserAndAwait(task, ctx, question);
+      if (answer !== null) {
         return { stepId: step.id, ok: true, output: `用户回复：${answer}`, artifacts: [] };
       }
       return { stepId: step.id, ok: true, output: question, artifacts: [] };
+    }
+
+    // 2.2 复用历史遗留内容稿确认：office.generate 的 fromMarkdown 指向
+    // 非本任务产物（工作空间历史遗留 md）时，必须征得用户同意。
+    // 修复：Agent fs.list 看到旧文件后幻觉"上一步已产出内容稿"自作主张复用
+    if (call.tool === 'office.generate' && String(call.args['fromMarkdown'] ?? '') !== '') {
+      const fromMd = String(call.args['fromMarkdown']);
+      const norm = (p: string): string => path.normalize(p).replace(/\\/g, '/').toLowerCase();
+      const owned = ctx.artifacts.some((a) => a.path !== undefined && norm(a.path) === norm(fromMd));
+      if (!owned) {
+        const answer = await this.askUserAndAwait(
+          task,
+          ctx,
+          `检测到内容稿 ${fromMd} 不是本任务生成的文件（可能是工作空间历史遗留）。\n- 回复「复用」：直接用它生成幻灯片\n- 回复其他内容（如新主题/新要求）：我将重新撰写内容稿再生成`
+        );
+        // 判定规则：否定表述优先（“不要复用/重新写”含“复用”字样但语义为拒绝，
+        // 旧正则会误判同意）；仅明确的肯定答复才放行复用
+        if (answer !== null) {
+          const a = answer.trim();
+          const negative = /(不要|不用|别|重新|改|换|拒绝|否|new|rewrite)/i.test(a);
+          const affirmative = !negative && /^(复用|继续|用它|同意|可以|确定|ok|yes|use it)/i.test(a);
+          if (!affirmative) {
+            return {
+              stepId: step.id,
+              ok: false,
+              output: `用户未确认复用历史内容稿（回复：${answer.slice(0, 200)}）。请根据用户回复重新撰写内容稿：先用 fs.write 写入新的 md 文件，再调用 office.generate 的 fromMarkdown 生成。`,
+              artifacts: [],
+              error: 'reuse-not-confirmed',
+            };
+          }
+        }
+      }
     }
 
     // 3. 权限检查（policy-engine 单点裁决）
@@ -245,6 +414,26 @@ export class Executor {
       error: result.ok ? undefined : `tool-failed: ${result.output.slice(0, 200)}`,
     };
   }
+
+  /** 向用户提问并等待回复（user.ask 与强提问拦截共用）。
+   *  问题与回复写入对话历史供后续步骤决策；无 askWaiter（未注入）返回
+   *  null，调用方按无提问能力处理。取消信号触发时抛 TaskCancelledError。 */
+  private async askUserAndAwait(
+    task: Task,
+    ctx: import('./types.js').LoopContext,
+    question: string
+  ): Promise<string | null> {
+    if (!this.deps.askWaiter) return null;
+    const answer = await Promise.race([
+      this.deps.askWaiter(task.id, question),
+      new Promise<never>((_, rej) => {
+        ctx.signal.addEventListener('abort', () => rej(new TaskCancelledError()), { once: true });
+      }),
+    ]);
+    ctx.history.push({ role: 'assistant', content: question.slice(0, 1200) });
+    ctx.history.push({ role: 'user', content: answer });
+    return answer;
+  }
 }
 
 function buildStepSystemPrompt(
@@ -267,28 +456,55 @@ function buildStepSystemPrompt(
 - 需要调用工具时，输出一个 JSON 对象（可放在 \`json 代码块中）：
   {"tool": "fs.write", "args": {"path": "绝对路径", "content": "..."}}
 - 生成演示文稿【必须】使用 office.generate（秒级完成，禁止用 Python/shell 方案，禁止只写设计稿 md 文件）：
+  【推荐·短JSON】先把逐页文案写入 md 内容稿（fs.write 可分多次追加，避免单次超长），
+  再调用：{"tool": "office.generate", "args": {"path": "输出路径.html", "fromMarkdown": "内容稿.md路径", "theme": "主题id或auto"}}
+  —— fromMarkdown 模式 JSON 极短（约100字符），绝不会被截断；系统自动把 md 转成幻灯片。
+  【内容稿格式·必须逐页小节】每页一个 ## 小节，结构如下（示例）：
+  ## P1 封面
+  - 标题：WorkBuddy 介绍
+  - 副标题：你的 AI 智能工作伙伴
+  > 备注一句话讲稿，讲解本页要点
+  ## P2 目录
+  1. 认识产品：它是什么
+  2. 核心能力：能做什么
+  ## P3 核心能力
+  - 徽章：02 · 核心能力
+  - 🚀 任务执行：一句话搞定复杂工作
+  - 💡 智能建议：结合场景给出最优解
+  > 重点讲任务执行，举一个具体例子
+  要点行支持行首 emoji 图标（🚀💡🎯 等）；引用行（> 开头）= 讲者备注，每页都写；
+  kv 行支持：标题/副标题/徽章/版式/备注；含冒号的要点自动变卡片，4 条→四宫格、
+  6 条→六宫格（3x2）、8 条→八宫格（4x2）；"传统 vs 新方式"两组冒号子块自动变对比页。
+  【直传模式】小规模（≤5页）也可直接传 slides 数组：
   {"tool": "office.generate", "args": {"path": "输出路径.pptx 或 .html", "title": "总标题", "theme": "主题id或auto", "slides": [...]}}
-  【输出格式】.html=网页幻灯片（现代视觉，浏览器放映，优先推荐）；.pptx=可编辑 PowerPoint。
+  【输出格式】path 以 .pptx 结尾 → 仅生成可编辑 PowerPoint；以 .html 结尾 → 仅生成网页放映版。
+  需要两种格式时传 formats:"html,pptx"（默认单格式，不额外产出 html）。
   【主题 theme】（auto=自动匹配）：tech-dark深空科技|business-blue商务蓝|minimal-light极简白|
   warm-energy活力暖橙|academic学术庄重|red-gold汇报红金|fresh-mint清新薄荷|
   purple-elegant优雅紫|sunset-gradient日落渐变|ink-wash水墨中国
-  【14 种版式 layout】（混合使用，不要全用 content）：
+  【16 种版式 layout】（混合使用，不要全用 content）：
   cover=封面{title,subtitle} | toc=目录{items:[{label,desc}]} | section=章节页{subtitle:"01",title} |
-  content=要点{title,bullets} | two-col=左要点右卡片{bullets,items} | cards=三卡片{cards:[{icon,title,desc}]} |
-  timeline=流程{steps:[{label,desc}]} | grid-2x2=四宫格{cards:[{title,desc}]} | quote=金句{quote:{text,author}} |
-  compare=对比{compare:{leftLabel,leftPoints,rightLabel,rightPoints}} | big-number=数据大屏{metrics:[{value,label,desc}]} |
+  content=要点{title,bullets,notes} | two-col=左要点右卡片{bullets,items} | cards=三卡片{cards:[{icon,title,desc}]} |
+  timeline=流程{steps:[{label,desc}]} | grid-2x2=四宫格 | grid-3x2=六宫格 | grid-4x2=八宫格{cards:[{icon,title,desc}]} |
+  quote=金句{quote:{text,author}} | compare=对比{compare:{leftLabel,leftPoints,rightLabel,rightPoints}} |
+  big-number=数据大屏{metrics:[{value,label,desc}]} |
   chart=图表{chart:{type:bar/pie/line,series:[{name,labels,values}]}} | image-text=图文{image:{side,caption},bullets} |
   closing=结尾{title,subtitle}
-  示例：{"tool":"office.generate","args":{"path":"D:/x.html","title":"产品介绍","theme":"tech-dark","slides":[
-    {"layout":"cover","title":"产品名","subtitle":"一句话定位"},
-    {"layout":"toc","title":"目录","items":[{"label":"背景","desc":"为什么"}]},
-    {"layout":"chart","title":"趋势","chart":{"type":"bar","series":[{"name":"销量","labels":["Q1","Q2"],"values":[100,200]}]}},
-    {"layout":"closing","title":"谢谢观看"}]}}
-  slides 一次传全部页面；路径在工作空间外没关系（系统会请求确认）。
+  【内容质量红线】严禁空泛口号（如"智能高效、提升效率"无信息量）；每个要点必须有具体信息
+  （做什么/怎么做/效果数字）；能力≥4 项用宫格页、能力 3 项用 cards、流程用 timeline、
+  新旧方式用 compare、数字效果用 big-number；每页写 notes 讲者备注（未写则系统自动生成）。
+  slides 一次传全部页面，但每页内容必须精炼（bullets ≤ 4 条、每条 ≤ 20 字），
+  严禁堆砌长句——整段 JSON 超长会被截断导致工具调用失败；
+  路径在工作空间外没关系（系统会请求确认）。
   生成完成后必须用真实输出汇报文件路径，严禁谎报成功。
-- 需要用户补充信息（主题、保存路径、偏好等关键决策）时，先用自然语言向用户清晰说明，
-  然后输出：{"tool": "user.ask", "args": {"question": "一句话概括的问题"}}
-  任务将暂停等待用户回复后再继续；严禁自行假设用户答案往下执行
+- 需要用户补充信息（主题、受众、偏好等关键决策）时，【必须】输出工具调用：
+  {"tool": "user.ask", "args": {"question": "一句话概括的问题"}}
+  任务将暂停等待用户回复后再继续；严禁自行假设用户答案往下执行；
+  严禁只在文字里提问后继续调用其他工具自跑（系统检测到提问意图会强制暂停等回复）
+- 工作空间中已存在的文件可能是历史任务遗留（非本任务产出）。基于此类文件
+  生成最终交付物（尤其 office.generate 的 fromMarkdown 复用旧内容稿）前，
+  必须先经用户确认（user.ask），严禁自作主张复用；
+  本任务自己的产物以对话历史中"已写入 xxx"的记录为准，不可凭空声称某文件是本任务产出
 - 写入大文件（超过约 200 行）时必须拆分：分多次 fs.write 追加或拆成多个文件，
   避免单次超长输出（极慢且易截断）
 - 无需工具时直接输出给用户看的文字说明。`;

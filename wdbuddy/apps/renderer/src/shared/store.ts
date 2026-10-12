@@ -8,7 +8,7 @@ import { create } from 'zustand';
 import type { CustomProvider, ModelId, RuntimeEvent } from '@wdbuddy/shared-types';
 import { useEffect } from 'react';
 
-export type SidePanelName = 'tasks' | 'skills' | 'preferences' | 'settings' | 'remote-link' | 'new-task' | null;
+export type SidePanelName = 'tasks' | 'skills' | 'preferences' | 'settings' | 'remote-link' | 'new-task' | 'templates' | null;
 
 export type RuntimeState = 'idle' | 'running' | 'offline';
 
