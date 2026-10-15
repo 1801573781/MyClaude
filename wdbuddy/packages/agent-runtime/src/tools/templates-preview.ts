@@ -6,10 +6,14 @@
  * 本进程（ESM 入口，import 自家模块零障碍）完成，经 stdio RPC 回传。
  * 主题/版式是静态设计系统：一次生成全量缓存，终身复用。
  */
-import type { TemplatesPreviewResult } from '@wdbuddy/shared-types';
+import type { TemplatesPreviewResult, CloneTemplateInfo } from '@wdbuddy/shared-types';
 import { THEMES } from './pptx/themes.js';
 import { buildHtmlDeck } from './pptx/html-engine.js';
 import type { SlideSpec } from './pptx/pptx-engine.js';
+import { CLONE_TEMPLATES, templatesDir } from './pptx/clone-registry.js';
+import { dumpTemplateVisual, buildColorPreviewHtml } from './pptx/template-preview.js';
+import * as path from 'node:path';
+import * as fs from 'node:fs';
 
 let cache: TemplatesPreviewResult | null = null;
 
@@ -71,6 +75,30 @@ function layoutsDeck(): SlideSpec[] {
   ];
 }
 
+/* ───────────── 克隆模板预览（内置第三方 pptx → 真彩 SVG deck） ───────────── */
+
+/** 扫描全部内置克隆模板 → CloneTemplateInfo[]（文件缺失/扫描失败跳过，不阻断） */
+function buildCloneTemplateInfos(): CloneTemplateInfo[] {
+  const out: CloneTemplateInfo[] = [];
+  for (const def of CLONE_TEMPLATES) {
+    const file = path.join(templatesDir(), def.file);
+    if (!fs.existsSync(file)) continue;
+    const dump = dumpTemplateVisual(file);
+    if (!dump.ok || dump.slides.length === 0) continue;
+    const previewHtml = buildColorPreviewHtml(def.name, dump);
+    out.push({
+      id: def.id,
+      name: def.name,
+      vibe: def.vibe,
+      tags: def.tags,
+      pages: dump.slides.length,
+      kinds: { '全页预览': dump.slides.length },
+      previewHtml,
+    });
+  }
+  return out;
+}
+
 export function buildTemplatesPreview(): TemplatesPreviewResult {
   if (cache) return cache;
   const htmls: Record<string, string> = {};
@@ -85,6 +113,7 @@ export function buildTemplatesPreview(): TemplatesPreviewResult {
   });
   const bizBlue = THEMES.find((t) => t.id === 'business-blue') ?? THEMES[0]!;
   const layoutsHtml = buildHtmlDeck('14 种版式演示', layoutsDeck(), bizBlue);
-  cache = { themes, htmls, layoutsHtml };
+  const cloneTemplates = buildCloneTemplateInfos();
+  cache = { themes, htmls, layoutsHtml, cloneTemplates };
   return cache;
 }

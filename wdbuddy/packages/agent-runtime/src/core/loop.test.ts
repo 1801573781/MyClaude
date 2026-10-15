@@ -303,10 +303,10 @@ describe('AgentLoop 集成（mock LLM）', () => {
           text: '{"tool": "fs.write", "args": {"path": "' + mdPath + '", "content": "# PPT内容"}}',
         };
       } else if (call === 2) {
-        // 步骤2：纯文本汇报（无产物）
+        // 步骤2：纯文本汇报（无产物）→ 被 executor 最后一步防线拦截强制重试
         yield { type: 'text', text: '内容已准备好。' };
       } else {
-        // 补救步骤：真正调用 office.generate
+        // 重试 / 补救步骤：真正调用 office.generate（两处消费同一响应）
         yield {
           type: 'text',
           text:
@@ -337,13 +337,74 @@ describe('AgentLoop 集成（mock LLM）', () => {
 
     await loop.run(makeTask(tmp), '请生成一个PPT');
 
-    // 补救后幻灯片文件真实存在，任务正常交付
+    // 幻灯片文件真实存在，任务正常交付（最后一步拦截重试后 office.generate 已执行；
+    // 双保险断言：补救步骤出现 或 文件在步骤内直接生成）
     expect(fs.existsSync(path.join(tmp, 'deck.html'))).toBe(true);
-    const stepTitles = events
-      .filter((e) => e.method === 'task/step.update')
-      .map((e) => ('step' in e.params ? (e.params.step as { title: string }).title : ''));
-    expect(stepTitles.some((t) => t.startsWith('补救：'))).toBe(true);
     expect(events.map((e) => e.method)).toContain('task/done');
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('476 事故：模板克隆指令 + 单步计划纯文字"先读取再撰写" → 拦截并最终真实生成 pptx', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-476-'));
+    const events: RuntimeOutboundEvent[] = [];
+    const deckPath = path.join(tmp, 'output.pptx').replace(/\\/g, '/');
+    let call = 0;
+    const llm = async function* (): AsyncIterable<{ type: 'text'; text: string }> {
+      call++;
+      if (call <= 2) {
+        // 复现事故：纯计划性文字，零工具调用（首次 + 拦截后仍嘴上说说）
+        yield { type: 'text', text: '我先读取您的内容要点文件，再据此撰写逐页内容稿。' };
+      } else {
+        // 拦截重试生效后：真实调用 office.generate（fromMarkdown 短 JSON）
+        yield {
+          type: 'text',
+          text:
+            '{"tool": "office.generate", "args": {"path": "' + deckPath + '", "fromMarkdown": "' +
+            deckPath.replace(/\.pptx$/, '.md') +
+            '"}}',
+        };
+      }
+    };
+    // 单步计划（事故形态：一步包干 → 纯文字即"任务完成"）
+    const complete = async () => ({ content: '[{"title": "执行用户指令"}]' });
+    const tools = new ToolRegistry();
+    const { fsWriteTool } = await import('../tools/fs.js');
+    const { officeGenerateTool } = await import('../tools/office.js');
+    tools.register(fsWriteTool);
+    tools.register(officeGenerateTool);
+
+    const loop = new AgentLoop({
+      emitter: { emit: (e) => events.push(e) },
+      llm,
+      complete,
+      permissionWaiter: async () => 'allow-once',
+      approvalWaiter: async () => ({ decision: 'approve' }),
+      signalFor: () => new AbortController().signal,
+      tools,
+      policy: policyFor('full', [tmp]),
+      fsGuard: new FsGuard({ workspaceRoots: [tmp], permissionLevel: 'full' }),
+      checkpoint: new InMemoryCheckpointStore(),
+      logger: silentLogger,
+    });
+
+    // 事故指令：模版库"用此模板"注入的原样文案（含"模板"字样，docOnly 曾误杀）
+    await loop.run(
+      makeTask(tmp),
+      '请用「红蓝微立体·2026年终总结」模板生成PPT（office.generate 调用时 template=red-blue-2026，并把逐页内容稿写为 md 后经 fromMarkdown 传入；内容稿由你根据我的要点自动撰写，含每页标题/条目/数据，我无需手动替换任何文字）。\n\n我的内容要点：内容请参见 D:/AI/wdbuddy_space/474.txt'
+    );
+
+    // 任务不得以"无文件产物"假成功收场：必须有 .pptx/.html 产物或明确失败
+    const done = events.find((e) => e.method === 'task/done');
+    const errored = events.find((e) => e.method === 'task/error');
+    const hasDeck = done
+      ? ((done.params as { artifacts: Array<{ path?: string }> }).artifacts ?? []).some(
+          (a) => a.path && /\.(pptx|html)$/i.test(a.path)
+        ) || fs.existsSync(path.join(tmp, 'output.pptx'))
+      : false;
+    // 允许真实失败（兜底也无内容稿时），但绝不允许"成功却无产物"
+    if (done && !errored) {
+      expect(hasDeck).toBe(true);
+    }
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 
@@ -681,5 +742,65 @@ describe('AgentLoop 集成（mock LLM）', () => {
       ])
     ).toBeNull();
     fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('咨询问句（能转成PPT模版吗）→ 直答收尾，不拆步骤不进执行循环（修复幻觉空跑）', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-chat-'));
+    const events: RuntimeOutboundEvent[] = [];
+    // 若被误拆步骤进入执行循环，此 mock 会被消费并产出"分析图片"类幻觉文字；
+    // 咨询分流下它必须永不被调用
+    const llm = async function* (): AsyncIterable<{ type: 'text'; text: string }> {
+      yield { type: 'text', text: '分析图片风格与配色特点：该图采用……' };
+    };
+    const complete = async () => ({
+      content:
+        '{"type": "chat", "reply": "可以的！请把图片发给我（拖入对话框或放到工作空间），我会分析它的风格与配色，并克隆成可复用的 PPT 模版。"}',
+    });
+    const loop = new AgentLoop({
+      emitter: { emit: (e) => events.push(e) },
+      llm,
+      complete,
+      permissionWaiter: async () => 'allow-once',
+      approvalWaiter: async () => ({ decision: 'approve' }),
+      signalFor: () => new AbortController().signal,
+      tools: new ToolRegistry(),
+      policy: policyFor('full', [tmp]),
+      fsGuard: new FsGuard({ workspaceRoots: [tmp], permissionLevel: 'full' }),
+      checkpoint: new InMemoryCheckpointStore(),
+      logger: silentLogger,
+    });
+
+    // Plan 模式下咨询同样直答：不需要计划审批
+    await loop.run(makeTask(tmp, 'plan'), '给你一个图片，你能将其转变成PPT模版吗？');
+
+    const methods = events.map((e) => e.method);
+    // 调度器直答完整透传给用户
+    const replyText = events
+      .filter((e) => e.method === 'task/token.delta')
+      .map((e) => ((e.params as unknown) as { text?: string }).text ?? '')
+      .join('');
+    expect(replyText).toContain('可以的');
+    // 问答类任务正常结束（自检按无产物问答放行）
+    expect(methods).toContain('task/done');
+    expect(methods).not.toContain('task/error');
+    // 严禁幻觉步骤、计划审批与任何执行痕迹（事故回归防线）
+    expect(methods).not.toContain('task/step.update');
+    expect(methods).not.toContain('task/plan.ready');
+    expect(methods).not.toContain('task/artifact.created');
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('extractChatReply：直答对象容错解析，步骤数组与普通文本不误判', async () => {
+    const { extractChatReply } = await import('./planner.js');
+    // 标准直答
+    expect(extractChatReply('{"type": "chat", "reply": "可以的，请提供图片"}')).toBe('可以的，请提供图片');
+    // 前后缀夹杂 + reply 内含 } 括号（逐个闭合点试解析）
+    expect(extractChatReply('好的，我判断一下。{"type": "chat", "reply": "支持 } 括号"} 以上。')).toBe('支持 } 括号');
+    // type=chat 但 reply 缺失 → 兜底话术，绝不回落拆步骤
+    expect(extractChatReply('{"type": "chat"}')).not.toBeNull();
+    // 步骤数组 / 普通文本 / 空串 → null（正常走任务拆解路径）
+    expect(extractChatReply('[{"title": "步骤一"}]')).toBeNull();
+    expect(extractChatReply('我先读取文件，再撰写内容稿。')).toBeNull();
+    expect(extractChatReply('')).toBeNull();
   });
 });

@@ -6,6 +6,36 @@ import type { Artifact, Task, VerifyCheck, VerifyReport } from '@wdbuddy/shared-
 import type { FsGuard } from '@wdbuddy/sandbox';
 import type { Logger } from '../logger.js';
 
+/** 行级"交付幻灯片文件"意图判定（intentGap 与 Executor 最后一步防线共用）。
+ *  逐条独立判定（标题/指令按行拆分）：任何一行同时命中"演示类名词 + 生成
+ *  动词、且非疑问、非纯文字子任务"即视为交付型诉求。
+ *  严禁拼接整段后判定——真实会话中用户回复会引用 Agent 的提问（含"？"），
+ *  拼接后 questionLike 会误杀整段，导致补救机制漏触发（假成功复现）。
+ *  476 事故修正：「模板」在"用/按/套…模板生成PPT"中是工具引用而非交付物，
+ *  docOnly 不得误杀；仅"写PPT模板/设计模板"（模板本身是交付物）才排除 */
+export function hasDeckFileIntent(instruction: string, title: string): boolean {
+  const lines = `${title}\n${instruction}`
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+  const wantsDeck = (l: string): boolean => /(ppt|幻灯片|演示文稿|slides?)/i.test(l);
+  // 生成动词：中英双语（467 事故：英文指令 "create a ppt, please" 因纯中文
+  // 动词正则不命中 → 意图缺口漏判 → 补救/兜底均不触发 → 假成功复发）
+  const wantsCreate = (l: string): boolean =>
+    /(生成|制作|创建|做|写|导出|输出|create|make|generate|build|produce|export|design|draft|write)/i.test(l);
+  const docOnly = (l: string): boolean => {
+    if (/模板/.test(l)) {
+      // 工具引用形态：用/按/套/选/基于/参照…模板（「」引用亦然），或"模板…生成"
+      const toolRef = /(用|套|按|选|基于|参照|使用)[^，。；]{0,26}模板/.test(l);
+      const genAfter = /模板[^。；]{0,12}(生成|制作|创建|做)/.test(l);
+      if (toolRef || genAfter) return false;
+    }
+    return /(大纲|文案|讲稿|脚本|素材|模板|目录|标题|文章|博客|论文|blog)/i.test(l);
+  };
+  const questionLike = (l: string): boolean => /[?？]|怎么|如何|为什么|什么/.test(l);
+  return lines.some((l) => wantsDeck(l) && wantsCreate(l) && !docOnly(l) && !questionLike(l));
+}
+
 export class Verifier {
   constructor(
     private readonly fsGuard: FsGuard,
@@ -46,33 +76,13 @@ export class Verifier {
   }
 
   /** 意图-产物匹配（交付前防假成功）：任务要求生成 PPT/演示文稿，但产物中
-   *  没有任何 .pptx/.html 幻灯片文件（如只交付了 md 设计稿）时返回缺口描述。
-   *  逐条独立判定（标题/指令/各条用户消息按行拆分）：任何一行同时命中"演示
-   *  类名词 + 生成动词、且非疑问、非纯文字子任务"即视为交付型诉求。
-   *  严禁拼接整段后判定——真实会话中用户回复会引用 Agent 的提问（含"？"），
-   *  拼接后 questionLike 会误杀整段，导致补救机制漏触发（假成功复现）。 */
+   *  没有任何 .pptx/.html 幻灯片文件（如只交付了 md 设计稿）时返回缺口描述。 */
   intentGap(
     task: Task,
     instruction: string,
     artifacts: Artifact[]
   ): { title: string; detail: string } | null {
-    const lines = `${task.title}\n${instruction}`
-      .split('\n')
-      .map((l) => l.trim())
-      .filter((l) => l.length > 0);
-    const wantsDeck = (l: string): boolean => /(ppt|幻灯片|演示文稿|slides?)/i.test(l);
-    // 生成动词：中英双语（467 事故：英文指令 "create a ppt, please" 因纯中文
-    // 动词正则不命中 → 意图缺口漏判 → 补救/兜底均不触发 → 假成功复发）
-    const wantsCreate = (l: string): boolean =>
-      /(生成|制作|创建|做|写|导出|输出|create|make|generate|build|produce|export|design|draft|write)/i.test(l);
-    // 纯文字子任务（大纲/文案/讲稿/文章等）与疑问句排除，避免误伤问答/写作类任务
-    const docOnly = (l: string): boolean =>
-      /(大纲|文案|讲稿|脚本|素材|模板|目录|标题|文章|博客|论文|blog)/i.test(l);
-    const questionLike = (l: string): boolean => /[?？]|怎么|如何|为什么|什么/.test(l);
-    const wantsDeckFile = lines.some(
-      (l) => wantsDeck(l) && wantsCreate(l) && !docOnly(l) && !questionLike(l)
-    );
-    if (!wantsDeckFile) return null;
+    if (!hasDeckFileIntent(instruction, task.title)) return null;
     const deckArts = artifacts.filter((a) => a.path !== undefined && /\.(pptx|html)$/i.test(a.path));
     if (deckArts.length > 0) return null;
     const files = artifacts.filter((a) => a.path !== undefined).map((a) => a.path as string);

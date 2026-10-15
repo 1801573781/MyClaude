@@ -15,6 +15,7 @@ import type {
 } from '@wdbuddy/shared-types';
 import type { ExecutorDeps, StepResult } from './types.js';
 import { randomId } from '../tools/registry.js';
+import { hasDeckFileIntent } from './verifier.js';
 
 /** 中断异常：任务取消时抛出，由循环层捕获并优雅收尾 */
 export class TaskCancelledError extends Error {
@@ -207,7 +208,44 @@ export class Executor {
             error: 'remedy-no-tool-call',
           };
         }
-        // 2c. 普通步骤的纯文本回答：视为步骤产出说明
+        // 2c. 普通步骤的纯文本回答：视为步骤产出说明。
+        // 交付型任务最后一步防线（476 事故）：意图要求生成幻灯片文件、本任务
+        // 无任何 .pptx/.html 产物、且本步骤之后没有其他待执行步骤时，纯文字 =
+        // "只说不做"（如"我先读取文件，再撰写内容稿"的计划性表态），严禁判成功
+        const hasPendingAfter = ctx.steps.some(
+          (s) => s.id !== step.id && (s.status === 'pending' || s.status === 'running')
+        );
+        const hasDeckArtifact = ctx.artifacts.some(
+          (a) => a.path !== undefined && /\.(pptx|html)$/i.test(a.path)
+        );
+        if (!hasPendingAfter && !hasDeckArtifact && hasDeckFileIntent(ctx.instruction, task.title)) {
+          log.warn('交付型任务最后一步仅输出文字且无幻灯片产物，强制重试', { attempt });
+          if (attempt < MAX_MALFORMED_RETRIES) {
+            this.deps.emitter.emit({
+              method: 'task/token.delta',
+              params: {
+                taskId: task.id,
+                text: '\n\n> ⚠ 任务要求生成幻灯片文件但尚未产出，正在要求实际执行…\n\n',
+              },
+            });
+            extraMsgs.push(
+              { role: 'assistant', content: llmText.slice(0, 1000) },
+              {
+                role: 'user',
+                content:
+                  '[系统反馈] 任务要求生成 PPT/演示文稿文件，但至今没有任何 .pptx/.html 产物，纯文字说明无效。请立即实际调用工具：先把逐页内容稿用 fs.write 写入 md 文件，再调用 {"tool": "office.generate", "args": {"path": "输出路径.pptx", "fromMarkdown": "md文件路径"}}。不要再输出计划或说明文字。',
+              }
+            );
+            continue;
+          }
+          return {
+            stepId: step.id,
+            ok: false,
+            output: '交付型任务最后一步未生成幻灯片文件（仅输出了文字说明，无工具调用）。',
+            artifacts: [],
+            error: 'deck-not-generated',
+          };
+        }
         return { stepId: step.id, ok: true, output: llmText, artifacts: [] };
       }
 
@@ -479,6 +517,14 @@ function buildStepSystemPrompt(
   {"tool": "office.generate", "args": {"path": "输出路径.pptx 或 .html", "title": "总标题", "theme": "主题id或auto", "slides": [...]}}
   【输出格式】path 以 .pptx 结尾 → 仅生成可编辑 PowerPoint；以 .html 结尾 → 仅生成网页放映版。
   需要两种格式时传 formats:"html,pptx"（默认单格式，不额外产出 html）。
+  【模板克隆模式】用户指定用某个"模板"（如「红蓝微立体·2026年终总结」模板）时：
+  把模板名原样传给 template 参数 + path 必须 .pptx 结尾——系统自动匹配内置模板，
+  视觉 100% 复刻模板风格，文字由内容稿填充，theme 参数忽略：
+  {"tool": "office.generate", "args": {"path": "输出路径.pptx", "fromMarkdown": "内容稿.md路径", "template": "用户指令中的模板名"}}
+  模板克隆模式下内容稿照常按上述 md 格式撰写（逐页 ## 小节），且必须额外精炼：
+  【克隆文案红线】模板槽位窄（标题框常只有 2-4 英寸宽），超长文字会破坏模板排版——
+  每页标题 ≤ 12 字；条目标题 ≤ 8 字；说明 ≤ 25 字；数值只写"12.6亿元"这类短值（不带长句解释）；
+  目录条目每条 ≤ 10 字。宁可拆页也不塞长文。
   【主题 theme】（auto=自动匹配）：tech-dark深空科技|business-blue商务蓝|minimal-light极简白|
   warm-energy活力暖橙|academic学术庄重|red-gold汇报红金|fresh-mint清新薄荷|
   purple-elegant优雅紫|sunset-gradient日落渐变|ink-wash水墨中国

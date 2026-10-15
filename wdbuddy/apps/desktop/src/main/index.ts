@@ -72,12 +72,16 @@ async function refreshPreviewCache(): Promise<void> {
       themes: Array<{ id: string }>;
       htmls: Record<string, string>;
       layoutsHtml: string;
+      cloneTemplates?: Array<{ id: string; previewHtml: string }>;
     };
     previewHtmlCache.clear();
     for (const t of r.themes) {
       previewHtmlCache.set(t.id, r.htmls[t.id] ?? '');
     }
     previewHtmlCache.set('layouts', r.layoutsHtml);
+    for (const c of r.cloneTemplates ?? []) {
+      previewHtmlCache.set(`clone-${c.id}`, c.previewHtml);
+    }
   } catch (err) {
     console.error('[wb-preview] 预览缓存刷新失败：', err);
   }

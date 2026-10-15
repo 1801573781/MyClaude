@@ -4,6 +4,8 @@
  * html：单文件 HTML 幻灯片（现代 CSS 表现力上限，浏览器直接放映）
  */
 import * as path from 'node:path';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import type { AgentTool, ToolContext, ToolResult } from './registry.js';
@@ -12,6 +14,8 @@ import { getTheme, pickThemeByVibe } from './pptx/themes.js';
 import { renderSlidesTo, type SlideSpec } from './pptx/pptx-engine.js';
 import { buildHtmlDeck } from './pptx/html-engine.js';
 import { mdToSlides } from './pptx/md-to-slides.js';
+import { scanTemplate, planClone, executeClone, type ClonePlan } from './pptx/template-clone.js';
+import { resolveCloneTemplate, cloneTemplateList } from './pptx/clone-registry.js';
 
 const nodeRequire = createRequire(import.meta.url);
 
@@ -157,7 +161,7 @@ async function postprocessPptxFonts(pptxBuf: Buffer): Promise<Buffer> {
 export const officeGenerateTool: AgentTool = {
   name: 'office.generate',
   description:
-    '生成演示文稿：默认按 path 扩展名输出单一格式（.pptx=可编辑 PowerPoint 13.33×7.5 宽屏 / .html=浏览器放映）；传 formats:"html,pptx" 可双格式。10 主题 16 版式，每页自动讲者备注',
+    '生成演示文稿：默认按 path 扩展名输出单一格式（.pptx=可编辑 PowerPoint 13.33×7.5 宽屏 / .html=浏览器放映）；传 formats:"html,pptx" 可双格式。10 主题 16 版式，每页自动讲者备注；传 template 进入克隆模式——以模板页为画布视觉 100% 复刻、仅替换文字：template 可传内置模板 id（如 red-blue-2026，内置' + cloneTemplateList().length + '套）或 .pptx 绝对路径（内容经 fromMarkdown 或 slides 提供，输出必须 .pptx）',
   sensitivity: 'write',
   async execute(args, ctx: ToolContext): Promise<ToolResult> {
     const p = argString(args, 'path');
@@ -189,6 +193,69 @@ export const officeGenerateTool: AgentTool = {
       if (slides.length === 0) {
         return { ok: false, output: '缺少 slides 参数（幻灯片数组）；或改用 fromMarkdown 传内容稿路径', artifacts: [] };
       }
+    }
+
+    // ── 模板克隆模式（路线B：第三方模板视觉 100% 复刻，仅替换文字）──
+    const templateArg = argString(args, 'template');
+    if (templateArg) {
+      if (!isPptx) {
+        return { ok: false, output: 'template 克隆模式仅支持输出 .pptx（模板视觉无法复刻为 html），请把 path 改为 .pptx 结尾', artifacts: [] };
+      }
+      // template 三态解析：内置 id / 内置名 / 绝对路径
+      const resolved = resolveCloneTemplate(templateArg);
+      if (!resolved.path) {
+        const list = cloneTemplateList()
+          .map((t) => `  - ${t.id}（${t.name}）`)
+          .join('\n');
+        return {
+          ok: false,
+          output: `模板「${templateArg}」未找到。可传内置模板 id（${templateArg === 'red-blue-2026' ? '已注册但文件缺失' : '见下'}）、模板名或 .pptx 绝对路径。内置模板：\n${list}`,
+          artifacts: [],
+        };
+      }
+      const templatePath = resolved.path;
+      const scan = scanTemplate(templatePath);
+      if (!scan.ok || scan.pages.length === 0) {
+        return { ok: false, output: `模板扫描失败（${templatePath}）：${scan.error ?? '模板内无可读文本页'}。请确认是有效 .pptx，且本机 python + python-pptx 可用`, artifacts: [] };
+      }
+      const usedPages = new Set<number>();
+      const plans: Array<ClonePlan> = [];
+      for (const s of slides) {
+        const plan = planClone(s, scan.pages, usedPages);
+        if (plan) plans.push(plan);
+      }
+      if (plans.length === 0) {
+        return { ok: false, output: '克隆计划生成失败：内容稿无可映射到模板页的幻灯片', artifacts: [] };
+      }
+      const tmpOut = path.join(os.tmpdir(), `wd_clone_out_${Date.now()}.pptx`);
+      const res = executeClone(templatePath, tmpOut, plans);
+      if (!res.ok) {
+        return { ok: false, output: `模板克隆执行失败（python 侧）：${res.output}`, artifacts: [] };
+      }
+      let buf: Buffer;
+      try {
+        buf = fs.readFileSync(tmpOut);
+      } finally {
+        try { fs.unlinkSync(tmpOut); } catch { /* */ }
+      }
+      const outPath = `${deckBase(p)}.pptx`;
+      try {
+        ctx.fsGuard.writeFile(outPath, buf);
+      } catch (err) {
+        return { ok: false, output: `写入 ${outPath} 失败：${String(err)}`, artifacts: [] };
+      }
+      const art = makeArtifact(ctx.taskId, 'file', outPath, 'application/vnd.openxmlformats-officedocument.presentationml.presentation', sha256(buf));
+      ctx.onArtifact?.(art);
+      const kinds = [...new Set(scan.pages.filter((pg) => usedPages.has(pg.page)).map((pg) => pg.kind))];
+      return {
+        ok: true,
+        output: [
+          `已按模板克隆生成 ${plans.length} 页幻灯片（模板 ${scan.pages.length} 页 → 输出 ${plans.length} 页，视觉 100% 继承模板${resolved.def ? `「${resolved.def.name}」` : ''}）：`,
+          `  📄 ${outPath}（${buf.length} 字节，可用 PowerPoint/WPS 打开编辑）`,
+          `  使用模板页：${[...usedPages].sort((a, b) => a - b).join(', ')}；版式：${kinds.join(' / ')}`,
+        ].join('\n'),
+        artifacts: [art],
+      };
     }
 
     // formats：默认按 path 扩展名单格式输出（.pptx → 仅 pptx；.html → 仅 html）；

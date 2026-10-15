@@ -29,25 +29,35 @@ interface DlgRect {
 export function TemplateGallery(): React.ReactElement {
   const [data, setData] = useState<TemplatesPreviewResult | null>(null);
   const [error, setError] = useState('');
-  const [tab, setTab] = useState<'themes' | 'layouts'>('themes');
+  const [tab, setTab] = useState<'themes' | 'layouts' | 'clones'>('themes');
   const [toast, setToast] = useState('');
 
   // ─────────── 对话框几何：拖动 / 调大小 / 最大化 ───────────
   const [maximized, setMaximized] = useState(false);
   const [dlg, setDlg] = useState<DlgRect>(() => {
-    const w = Math.min(1240, Math.max(760, window.innerWidth - 160));
-    const h = Math.min(820, Math.max(460, window.innerHeight - 140));
+    // 默认近全屏（用户反馈：小窗+放大镜交互多余）；仍可拖动/缩放/还原
+    const w = Math.min(1440, Math.max(980, window.innerWidth - 120));
+    const h = Math.min(920, Math.max(560, window.innerHeight - 90));
     return {
       w,
       h,
       x: Math.round((window.innerWidth - w) / 2),
-      y: Math.round((window.innerHeight - h) / 2) - 16,
+      y: Math.round((window.innerHeight - h) / 2),
     };
   });
   const dragRef = useRef<{ mode: 'move' | 'resize'; sx: number; sy: number; orig: DlgRect } | null>(null);
 
-  // ─────────── 主题放大预览（null = 未打开） ───────────
+  // ─────────── 主题/克隆模板放大预览（null = 未打开） ───────────
   const [zoomId, setZoomId] = useState<string | null>(null);
+  /** zoomId 以 clone: 前缀标记克隆模板（预览 key 与主题不同源） */
+  const zoomClone =
+    zoomId?.startsWith('clone:') && data
+      ? data.cloneTemplates?.find((c) => c.id === zoomId.slice(6))
+      : undefined;
+
+  // ─────────── 克隆模板：左列表选中项 ───────────
+  const [selClone, setSelClone] = useState<string>('');
+  const selCloneInfo = data?.cloneTemplates?.find((c) => c.id === (selClone || data?.cloneTemplates?.[0]?.id));
 
   useEffect(() => {
     void requireApi()
@@ -56,11 +66,19 @@ export function TemplateGallery(): React.ReactElement {
       .catch((e: unknown) => setError(String(e)));
   }, []);
 
-  /** “用此主题”：把主题名注入输入框草稿（用户补充任务后发送） */
+  /** “用此主题/模板”：把主题名或模板 id 注入输入框草稿（用户补充任务后发送） */
   const useTheme = (name: string): void => {
     useAppStore.getState().setComposerDraft(`请用「${name}」主题帮我生成PPT：`);
     setToast(`已把「${name}」填入输入框，补充内容后发送即可`);
     setTimeout(() => setToast(''), 2500);
+  };
+  /** “用此模板”（克隆模式）：关闭模版库 + 填引导式草稿（纯用户视角文案，
+   *  不暴露内部实现术语；模板 id 由 Agent 从模板名自行解析） */
+  const useCloneTemplate = (_id: string, name: string): void => {
+    useAppStore.getState().setOpenPanel(null);
+    useAppStore.getState().setComposerDraft(
+      `请用「${name}」这个模板帮我制作一套PPT，风格保持模板原样。我的内容要点：`
+    );
   };
 
   /** 标题栏拖动 / 右下角拖拽调大小（参照 WorkbenchLayout 右栏拖宽实现） */
@@ -132,6 +150,14 @@ export function TemplateGallery(): React.ReactElement {
                 10 套主题
               </button>
               <button
+                className={`wb-btn ${tab === 'clones' ? 'wb-btn--primary' : 'wb-btn--ghost'}`}
+                onClick={() => setTab('clones')}
+                role="tab"
+                aria-selected={tab === 'clones'}
+              >
+                克隆模板{data?.cloneTemplates?.length ? ` ${data.cloneTemplates.length}` : ''}
+              </button>
+              <button
                 className={`wb-btn ${tab === 'layouts' ? 'wb-btn--primary' : 'wb-btn--ghost'}`}
                 onClick={() => setTab('layouts')}
                 role="tab"
@@ -200,6 +226,56 @@ export function TemplateGallery(): React.ReactElement {
             </div>
           )}
 
+          {data && tab === 'clones' && (
+            <div className="wb-clone">
+              <aside className="wb-clone__list">
+                {(data.cloneTemplates ?? []).map((c, i) => (
+                  <button
+                    key={c.id}
+                    className={`wb-clone__item${selClone === c.id ? ' wb-clone__item--on' : ''}`}
+                    onClick={() => setSelClone(c.id)}
+                  >
+                    <strong>{c.name}</strong>
+                    <span>
+                      {c.pages} 页 · {c.tags.join(' / ')}
+                    </span>
+                  </button>
+                ))}
+                {(data.cloneTemplates ?? []).length === 0 && (
+                  <p className="wb-gallery__hint">
+                    暂无内置克隆模板。可将第三方 .pptx 放入 agent-runtime/templates/ 并在 clone-registry.ts 登记。
+                  </p>
+                )}
+              </aside>
+              <div className="wb-clone__main">
+                {selCloneInfo && (
+                  <>
+                    <div className="wb-clone__bar">
+                      <div>
+                        <strong>{selCloneInfo.name}</strong>
+                        <span className="wb-gallery__vibe">　{selCloneInfo.vibe}</span>
+                      </div>
+                      <span className="wb-clone__meta">{selCloneInfo.pages} 页</span>
+                      <div className="wb-gallery__spacer" />
+                      <button
+                        className="wb-btn wb-btn--primary"
+                        onClick={() => useCloneTemplate(selCloneInfo.id, selCloneInfo.name)}
+                      >
+                        用此模板生成 PPT
+                      </button>
+                    </div>
+                    <iframe
+                      title={`${selCloneInfo.name} 真彩预览`}
+                      src={previewUrl(`clone-${selCloneInfo.id}`)}
+                      sandbox="allow-scripts"
+                      className="wb-clone__frame"
+                    />
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+
           {data && tab === 'layouts' && (
             <div className="wb-gallery__layouts">
               <p className="wb-gallery__hint">
@@ -244,6 +320,41 @@ export function TemplateGallery(): React.ReactElement {
           </div>
           <div className="wb-gallery-zoom__body">
             <iframe title={`${zoomTheme.name} 放大预览`} src={previewUrl(zoomTheme.id)} sandbox="allow-scripts" />
+          </div>
+        </div>
+      )}
+
+      {zoomClone && (
+        <div
+          className="wb-gallery-zoom"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setZoomId(null);
+          }}
+        >
+          <div className="wb-gallery-zoom__bar">
+            <span className="wb-gallery-zoom__title">
+              🧬 {zoomClone.name} · {zoomClone.pages} 页 · {Object.entries(zoomClone.kinds)
+                .map(([k, n]) => `${k}×${n}`)
+                .join(' ')}
+            </span>
+            <span className="wb-gallery-zoom__hint">滚动查看全部页面线框 · ESC 退出</span>
+            <div className="wb-gallery__spacer" />
+            <button
+              className="wb-btn wb-btn--small wb-btn--primary"
+              onClick={() => useCloneTemplate(zoomClone.id, zoomClone.name)}
+            >
+              用此模板
+            </button>
+            <button className="wb-btn wb-btn--ghost" onClick={() => setZoomId(null)}>
+              ✕
+            </button>
+          </div>
+          <div className="wb-gallery-zoom__body">
+            <iframe
+              title={`${zoomClone.name} 放大预览`}
+              src={previewUrl(`clone-${zoomClone.id}`)}
+              sandbox="allow-scripts"
+            />
           </div>
         </div>
       )}

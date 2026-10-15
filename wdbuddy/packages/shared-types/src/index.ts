@@ -302,7 +302,7 @@ export type IpcResponseMap = {
   'templates:preview': TemplatesPreviewResult;
 };
 
-/** 模版库预览（10 主题 × 真实渲染 deck + 14 版式演示） */
+/** 模版库预览（10 主题 × 真实渲染 deck + 14 版式演示 + 克隆模板） */
 export interface TemplatesPreviewResult {
   themes: Array<{
     id: string;
@@ -315,6 +315,26 @@ export interface TemplatesPreviewResult {
   htmls: Record<string, string>;
   /** 14 种版式演示 deck（用商务蓝主题渲染，每页一种版式） */
   layoutsHtml: string;
+  /** 克隆模板（内置第三方 pptx，视觉 100% 复刻仅换文字） */
+  cloneTemplates?: CloneTemplateInfo[];
+}
+
+/** 模版库"克隆模板"分区条目（templates-preview 由扫描模板生成） */
+export interface CloneTemplateInfo {
+  /** 模板 id（生成时 template 参数直接引用） */
+  id: string;
+  /** 展示名 */
+  name: string;
+  /** 一句话风格描述 */
+  vibe: string;
+  /** 适配场景标签 */
+  tags: string[];
+  /** 模板总页数 */
+  pages: number;
+  /** 版式构成（kind → 页数），如 { cover: 2, toc: 1, section: 5 } */
+  kinds: Record<string, number>;
+  /** 线框预览 deck HTML（每页缩略线框：标题/条目卡/编号槽位示意） */
+  previewHtml: string;
 }
 
 // ─────────────────────────── Runtime JSON-RPC 协议（§11.2 main ↔ runtime，stdio） ───────────────────────────

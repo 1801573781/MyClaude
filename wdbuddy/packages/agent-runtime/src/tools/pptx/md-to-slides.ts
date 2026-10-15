@@ -17,7 +17,7 @@ const MAX_BULLET_LEN = 100;
  *  closing 含"开启…之旅/篇章"类收尾语；grid-2x2 含"四大"（四要点宫格语义）。 */
 const LAYOUT_HINTS: Array<{ layout: string; re: RegExp }> = [
   { layout: 'cover', re: /封面|cover|首页|开篇/i },
-  { layout: 'toc', re: /目录|contents?|toc|总览/i },
+  { layout: 'toc', re: /目录|contents?|toc/i },
   { layout: 'closing', re: /结尾|谢谢|致谢|thank|closing|结束|开启.*(?:之旅|篇章)/i },
   { layout: 'timeline', re: /流程|步骤|时间线|timeline|roadmap|四步/i },
   { layout: 'compare', re: /对比|versus|\bvs\b|比较/i },

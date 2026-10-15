@@ -188,6 +188,73 @@
   background: #fff;
 }
 
+/* ─────────── 克隆模板：左列表 + 右大预览 ─────────── */
+.wb-clone {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  gap: var(--wb-space-2);
+  padding: var(--wb-space-3);
+}
+.wb-clone__list {
+  width: 260px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--wb-space-1);
+  overflow-y: auto;
+}
+.wb-clone__item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+  padding: 10px 12px;
+  border: 1px solid var(--wb-border);
+  border-radius: var(--wb-radius-md);
+  background: var(--wb-bg-panel);
+  cursor: pointer;
+  color: var(--wb-text-primary);
+  transition: border-color 0.15s, background 0.15s;
+}
+.wb-clone__item span {
+  font-size: var(--wb-font-size-xs);
+  color: var(--wb-text-secondary);
+}
+.wb-clone__item--on {
+  border-color: var(--wb-color-primary);
+  background: color-mix(in srgb, var(--wb-color-primary) 10%, var(--wb-bg-panel));
+}
+.wb-clone__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--wb-space-2);
+}
+.wb-clone__bar {
+  display: flex;
+  align-items: center;
+  gap: var(--wb-space-3);
+  padding: var(--wb-space-2) var(--wb-space-3);
+  border: 1px solid var(--wb-border);
+  border-radius: var(--wb-radius-md);
+  background: var(--wb-bg-panel);
+}
+.wb-clone__bar strong { font-size: var(--wb-font-size-md); }
+.wb-clone__meta {
+  font-size: var(--wb-font-size-xs);
+  color: var(--wb-text-secondary);
+  white-space: nowrap;
+}
+.wb-clone__frame {
+  flex: 1;
+  width: 100%;
+  border: 1px solid var(--wb-border);
+  border-radius: var(--wb-radius-md);
+  background: #E9EBF0;
+}
+
 /* 等待回复卡片的选项按钮（user.ask options） */
 .wb-await__options {
   display: flex;

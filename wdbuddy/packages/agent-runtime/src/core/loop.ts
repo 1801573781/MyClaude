@@ -123,9 +123,19 @@ export class AgentLoop {
       // 单条指令导致上下文丢失、任务"从头再来一遍"）
       const pending = carry?.pendingSteps ?? [];
       const hasPending = pending.some((s) => s.status === 'pending' || s.status === 'running');
-      const steps = hasPending
-        ? pending.map((s) => (s.status === 'running' ? { ...s, status: 'pending' as const } : s))
-        : await this.planner.makePlan(task, instruction);
+      let steps: PlanStep[];
+      if (hasPending) {
+        steps = pending.map((s) => (s.status === 'running' ? { ...s, status: 'pending' as const } : s));
+      } else {
+        const outcome = await this.planner.makePlan(task, instruction);
+        // 咨询/问答：调度器直答，透传给用户后收尾，不进执行循环
+        //（修复：咨询被强拆成幻觉步骤、对不存在的图片空跑数分钟）
+        if (outcome.kind === 'answer') {
+          await this.answerAndFinish(task, outcome.reply);
+          return;
+        }
+        steps = outcome.steps;
+      }
       ctx = {
         task,
         instruction,
@@ -349,6 +359,21 @@ export class AgentLoop {
       params: { taskId: task.id, report, artifacts: ctx.artifacts },
     });
     log.info('Agent 循环结束', { passed: report.passed, artifacts: ctx.artifacts.length });
+  }
+
+  /** 咨询/问答直答收尾：回答经 token.delta 流式透传给用户，task/done 正常
+   *  结束（无文件产物，自检按问答类任务放行）。调度器判定为咨询时不进执行
+   *  循环——修复"能否转成PPT模版"类问句被强拆成"分析图片风格"幻觉步骤、
+   *  对不存在的图片空跑数分钟的事故。 */
+  private async answerAndFinish(task: Task, reply: string): Promise<void> {
+    const log = this.deps.logger.child({ taskId: task.id });
+    this.deps.emitter.emit({ method: 'task/token.delta', params: { taskId: task.id, text: reply } });
+    const report = await this.verifier.selfCheck(task, []);
+    this.deps.emitter.emit({
+      method: 'task/done',
+      params: { taskId: task.id, report, artifacts: [] },
+    });
+    log.info('咨询直答收尾，未进入执行循环');
   }
 
   /** 程序化兜底（零 LLM）：md 内容稿 → 幻灯片（.html + .pptx 双格式）。
