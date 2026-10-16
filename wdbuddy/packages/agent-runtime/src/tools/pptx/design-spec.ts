@@ -175,7 +175,85 @@ export function parseSpec(rawJson: unknown): DesignSpec {
   };
 }
 
-/** 文本 →（extractJson + parseSpec）。视觉模型输出容错入口 */
+/** 剥离 markdown 围栏/杂文 → 提取最外层 {...} 文本片段（不 JSON.parse） */
+function extractJsonRaw(text: string): string | null {
+  const fence = /```(?:json)?\s*([\s\S]*?)```/.exec(text);
+  const raw = fence ? fence[1]! : text;
+  // 优先截取首个 { 到最后一个 }（跨围栏兜底）
+  const start = raw.indexOf('{');
+  const end = raw.lastIndexOf('}');
+  if (start >= 0 && end > start) return raw.slice(start, end + 1);
+  return null;
+}
+
+/** 宽松修复视觉模型常见 JSON 畸形（修复后再 parse，失败返回 null）
+ *  1. 尾逗号：[1,2,] / {"a":1,} → 去除
+ *  2. 中文引号：键值两侧 “ ” ‘ ’ → 英文引号
+ *  3. 单引号键/值 → 双引号（仅在键名与值边界，避免破坏内文单引号）
+ *  4. 键名裸写：{name: "..."} → {"name": "..."}
+ *  5. 控制字符/零宽字符剔除（\u0000-\u001F 除外 \n 换行语义由 parse 处理）
+ *  6. 未闭合：结尾缺 } 或 ] 时按嵌套深度补齐（截断兜底）
+ */
+export function looseParseJson(text: string): unknown | null {
+  let raw = extractJsonRaw(text);
+  if (!raw) return null;
+  // 5. 控制字符与零宽字符剔除
+  raw = raw.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u200B-\u200D\uFEFF]/g, '');
+  // 2. 中文引号 → 英文
+  raw = raw.replace(/[“”«»]/g, '"').replace(/[‘’]/g, "'");
+  // 1. 尾逗号
+  raw = raw.replace(/,\s*([\]}])/g, '$1');
+  // 4. 键名裸写：{ name: "x" } 或 [换行] name: → "name":
+  raw = raw.replace(/([{,]\s*)([A-Za-z_][\w-]*)\s*:/g, '$1"$2":');
+  // 3. 单引号字符串 → 双引号（保守：仅处理 'xxx' 整段，内部无单引号才转）
+  raw = raw.replace(/'([^'\\]*)'/g, '"$1"');
+  try {
+    return JSON.parse(raw);
+  } catch {
+    /* 继续修复 */
+  }
+  // 6. 未闭合补齐：统计嵌套深度（字符串外），补齐缺失的 ] }
+  let depth2 = 0; // {
+  let depthArr = 0; // [
+  let inStr = false;
+  let esc = false;
+  for (const ch of raw) {
+    if (esc) { esc = false; continue; }
+    if (ch === '\\') { if (inStr) esc = true; continue; }
+    if (ch === '"') { inStr = !inStr; continue; }
+    if (inStr) continue;
+    if (ch === '{') depth2++;
+    else if (ch === '}') depth2 = Math.max(0, depth2 - 1);
+    else if (ch === '[') depthArr++;
+    else if (ch === ']') depthArr = Math.max(0, depthArr - 1);
+  }
+  let fixed = raw;
+  if (inStr) fixed += '"'; // 字符串截断：先闭合引号
+  fixed += ']'.repeat(depthArr) + '}'.repeat(depth2);
+  if (fixed !== raw) {
+    try {
+      return JSON.parse(fixed);
+    } catch {
+      /* 兜底失败 */
+    }
+  }
+  return null;
+}
+
+/** 文本 →（宽松解析 + parseSpec）。视觉模型输出容错入口：
+ *  先严格提取，失败则宽松修复（尾逗号/引号/截断），再失败抛出带原始片段的错误 */
 export function parseSpecFromText(text: string): DesignSpec {
-  return parseSpec(extractJson(text));
+  let json: unknown;
+  try {
+    json = extractJson(text);
+  } catch (err) {
+    json = looseParseJson(text);
+    if (json === null) {
+      const preview = text.slice(0, 500).replace(/\s+/g, ' ');
+      throw new Error(
+        `JSON 解析失败（严格与宽松修复均不可用）：${err instanceof Error ? err.message : String(err)}。原始输出前 500 字符：${preview}`
+      );
+    }
+  }
+  return parseSpec(json);
 }

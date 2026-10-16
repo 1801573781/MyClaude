@@ -531,6 +531,11 @@ function buildStepSystemPrompt(
   视觉模型分析图片 → 自动生成 .pptx 模板并注册到模版库 → 返回模板 id，
   随后正常用 office.generate + template="返回的id" 克隆生成。
   前置条件：设置中已配置视觉模型；未配置时工具会返回指引，转告用户即可。
+  【视觉失败排查红线】template.from_image 解析失败时：工具会把原始响应落盘为
+  vision-response-*.md 并在报错里给出路径——直接 fs.read 该文件确认模型输出形态，
+  严禁在工作空间里按时间戳/大小猜测"原始响应文件"（10/16 事故：猜错文件空转 1 小时）；
+  若原始响应是长文字说明而非 JSON，属模型不匹配，直接建议用户换视觉模型
+  （glm-4v-plus / gpt-4o / qwen-vl-plus），严禁本地反复解析重试。
   【主题 theme】（auto=自动匹配）：tech-dark深空科技|business-blue商务蓝|minimal-light极简白|
   warm-energy活力暖橙|academic学术庄重|red-gold汇报红金|fresh-mint清新薄荷|
   purple-elegant优雅紫|sunset-gradient日落渐变|ink-wash水墨中国

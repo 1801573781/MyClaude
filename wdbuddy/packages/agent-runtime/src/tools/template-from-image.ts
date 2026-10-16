@@ -25,6 +25,11 @@ function sha256(data: Buffer | string): string {
   return createHash('sha256').update(data).digest('hex');
 }
 
+/** 工作空间根（响应落盘位置；无工作空间时退化为系统临时目录） */
+function workspaceRootOf(ctx: ToolContext): string {
+  return ctx.workspaceRoots[0] ?? os.tmpdir();
+}
+
 /** 图片 mime 推断（data URL 组装用） */
 function imageMime(p: string): string {
   const ext = path.extname(p).toLowerCase();
@@ -76,12 +81,16 @@ export const templateFromImageTool: AgentTool = {
     }
     const dataUrl = `data:${imageMime(image)};base64,${buf.toString('base64')}`;
 
-    // 2) 视觉模型提取 DesignSpec（最多 2 次重试：JSON 解析失败反馈重试）
+    // 2) 视觉模型提取 DesignSpec（最多 2 次重试：JSON 解析失败反馈重试）。
+    //    每次原始响应都落盘存档（workspace/vision-response-*.md）：失败时
+    //    Agent/用户可直接读原始输出排查，不再"黑盒报错+去工作空间猜文件"
+    //    （10/16 事故：Agent 找不到原始响应，被开发残留 .txt 误导空转 1 小时）
     const userName = typeof args['name'] === 'string' ? (args['name'] as string).trim() : '';
     let spec: DesignSpec | null = null;
     let lastErr = '';
+    let lastRawFile = '';
     for (let attempt = 0; attempt < 2; attempt++) {
-      const extra = attempt === 0 ? '' : `\n上次输出解析失败：${lastErr}。请严格按 JSON 格式重新输出，不要遗漏必填字段。`;
+      const extra = attempt === 0 ? '' : `\n上次输出解析失败：${lastErr.slice(0, 300)}。请严格按 JSON 格式重新输出：直接以 { 开头、} 结尾，不要 markdown 围栏、不要注释、字符串内不要出现未转义引号，不要遗漏必填字段。`;
       const text = await ctx.visionChat(
         [
           { role: 'system', content: buildSpecPrompt() },
@@ -93,6 +102,18 @@ export const templateFromImageTool: AgentTool = {
         ],
         { maxTokens: 8192 }
       );
+      // 落盘存档（工作空间根，一次一份带时间戳；fsGuard 写入失败不阻断主流程）
+      const stamp = Date.now().toString(36);
+      const dumpPath = path.join(workspaceRootOf(ctx), `vision-response-${stamp}.md`);
+      try {
+        ctx.fsGuard.writeFile(
+          dumpPath,
+          `# 视觉模型原始响应（template.from_image 第 ${attempt + 1} 次调用）\n\n图片：${image}\n\n---\n\n${text}\n`
+        );
+        lastRawFile = dumpPath;
+      } catch {
+        /* 落盘失败不阻断：报错信息里已含 500 字符预览 */
+      }
       try {
         spec = parseSpecFromText(text);
         break;
@@ -101,7 +122,17 @@ export const templateFromImageTool: AgentTool = {
       }
     }
     if (!spec) {
-      return { ok: false, output: `视觉模型输出解析失败（重试 2 次）：${lastErr}`, artifacts: [] };
+      return {
+        ok: false,
+        output: [
+          `视觉模型输出解析失败（重试 2 次）：${lastErr}`,
+          lastRawFile
+            ? `原始响应已存档：${lastRawFile}（可直接 fs.read 查看模型到底输出了什么；若为纯文字描述而非 JSON，说明该模型不适合此任务，请建议用户更换视觉模型，如 glm-4v-plus / gpt-4o / qwen-vl-plus）`
+            : '（原始响应落盘失败，见上方 500 字符预览）',
+          '排查指引：① 读原始响应确认模型输出形态；② 若模型反复输出长文字说明，属模型能力不匹配，不要在本地反复解析——建议用户换用视觉模型后重试。',
+        ].join('\n'),
+        artifacts: [],
+      };
     }
     if (spec.slides.length === 0) {
       return {
