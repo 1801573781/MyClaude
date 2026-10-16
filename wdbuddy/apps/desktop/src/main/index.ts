@@ -182,6 +182,14 @@ async function bootstrap(): Promise<void> {
     secureStorage.delete(providerKeyId(modelId));
   };
 
+  // 2.1.1 视觉模型密钥（template.from_image 用；与 Provider 密钥同机制走 safeStorage）
+  const VISION_KEY_ID = 'vision:api-key';
+  const setVisionKey = (apiKey: string): void => {
+    if (apiKey) secureStorage.set(VISION_KEY_ID, apiKey);
+    else secureStorage.delete(VISION_KEY_ID);
+  };
+  const getVisionKey = (): string => secureStorage.get(VISION_KEY_ID) ?? '';
+
   /** Main → Runtime 的 Provider 配置源（initialize 握手与热更新共用） */
   const getProviderConfig = (): RuntimeProviderConfig => {
     const s = settings.get();
@@ -194,10 +202,19 @@ async function bootstrap(): Promise<void> {
       const key = getProviderKey(p.id);
       if (key) providerKeys[p.id as ModelId] = key;
     }
+    // 视觉模型配置：settings 存 baseUrl/apiModel，密钥从钥匙串读；
+    // 三要素齐全才下发（runtime 侧 visionConfig 为空时工具返回设置指引）
+    const vision = s.models.vision;
+    const visionApiKey = getVisionKey();
+    const visionConfig =
+      vision?.baseUrl && vision.apiModel && visionApiKey
+        ? { baseUrl: vision.baseUrl, apiModel: vision.apiModel, apiKey: visionApiKey }
+        : undefined;
     return {
       providerKeys,
       apiModelOverrides: s.models.apiModelOverrides ?? {},
       customProviders: s.models.customProviders,
+      ...(visionConfig ? { visionConfig } : {}),
     };
   };
 
@@ -293,6 +310,8 @@ async function bootstrap(): Promise<void> {
     getProviderKey,
     setProviderKey,
     clearProviderKey,
+    getVisionKey,
+    setVisionKey,
     skillStore: new SkillStore(),
     getWindow: () => mainWindow,
   });

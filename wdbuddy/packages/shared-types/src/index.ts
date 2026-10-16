@@ -127,6 +127,7 @@ export type ToolName =
   | 'shell.exec'
   | 'browser.open'
   | 'office.generate'
+  | 'template.from_image'
   | 'search.web'
   | 'user.ask';
 
@@ -150,11 +151,84 @@ export interface PermissionRequest {
 
 export type PermissionResponseAction = 'allow-once' | 'allow-always-task' | 'deny';
 
+// ─────────────────────────── 图片 → 设计规格（template.from_image 视觉链路） ───────────────────────────
+
+/** 视觉模型识别的颜色 token（十六进制不带 # 或带 # 均可，渲染层归一化） */
+export interface SpecColor {
+  hex: string;
+  /** 颜色用途描述（如 "主背景/强调/文字"） */
+  usage?: string;
+}
+
+/** 单页版式描述：视觉模型逐页输出，渲染器按 slot 几何落位 */
+export interface SpecSlide {
+  /** 版式角色：封面/目录/章节/内容页/结尾等（中文或英文，渲染层归一化） */
+  kind: string;
+  /** 模板名（如 "深空蓝调·科技数据汇报"） */
+  templateName?: string;
+  /** 页面标题占位文字（引擎按落点识别 title 槽） */
+  title?: string;
+  /** 槽位列表：文本/图形装饰，坐标为 0-100 归一化（相对页面宽高百分比） */
+  slots: Array<{
+    /** 槽位类型：text=文本框 decor=图形装饰 */
+    type: 'text' | 'decor';
+    /** 占位文字（text 必填；decor 时的文字如 "01"） */
+    text?: string;
+    /** 槽位角色（渲染层与克隆引擎对齐：title/item-title/item-body/number/footer/decor/body） */
+    role?: string;
+    /** 归一化几何：x/y/w/h 均为 0-100 */
+    x?: number;
+    y?: number;
+    w?: number;
+    h?: number;
+    /** 字号（pt；decor 数字大字等） */
+    size?: number;
+    /** 文字颜色 hex */
+    color?: string;
+    /** 加粗 */
+    bold?: boolean;
+    /** 对齐：left/center/right */
+    align?: string;
+    /** decor 图形形状：rect/rounded/circle/line/ring/triangle 等 */
+    shape?: string;
+    /** 图形填充/描边色 */
+    fill?: string;
+    /** 描边色（shape 为 ring/line 时） */
+    stroke?: string;
+    /** 描边宽度（pt） */
+    strokeWidth?: number;
+    /** 不透明度 0-1（半透明装饰） */
+    opacity?: number;
+    /** 圆角半径（normalized 0-1 相对短边） */
+    radius?: number;
+    /** 文字字距（1/100 pt） */
+    spc?: number;
+  }>;
+}
+
+/** 图片 → PPT 模板的中间设计规格（视觉模型输出） */
+export interface DesignSpec {
+  /** 模板名（用户可见） */
+  name: string;
+  /** 一句话风格描述 */
+  vibe?: string;
+  /** 全局调色板（视觉模型从图片提取） */
+  colors: SpecColor[];
+  /** 建议字体族（如 "微软雅黑"） */
+  font?: string;
+  /** 逐页版式描述 */
+  slides: SpecSlide[];
+}
+
 // ─────────────────────────── 模型网关（§10.4） ───────────────────────────
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
   content: string;
+  /** 多模态图片输入（template.from_image 等视觉理解场景）。
+   *  OpenAI 兼容协议：content 为纯文本时直接下发；含 images 时在 provider
+   *  基座组装为多部分 content 数组（image_url 为 base64 data URL） */
+  images?: string[];
 }
 
 export interface ChatStreamRequest {
@@ -257,6 +331,8 @@ export type IpcChannel =
   | 'settings:set'
   | 'providerKey:list'
   | 'providerKey:set'
+  | 'visionKey:status'
+  | 'visionKey:set'
   | 'runtime:event'
   | 'chat:export';
 
@@ -280,6 +356,8 @@ export interface IpcRequestMap {
   'settings:set': { settings: AppSettings };
   'providerKey:list': Record<string, never>;
   'providerKey:set': { modelId: ModelId; apiKey: string };
+  'visionKey:status': Record<string, never>;
+  'visionKey:set': { apiKey: string };
   'runtime:event': { event: RuntimeEvent };
   'chat:export': { taskId: string; format: 'md' | 'html' };
   'templates:preview': Record<string, never>;
@@ -297,6 +375,8 @@ export type IpcResponseMap = {
   'settings:set': { ok: true };
   'providerKey:list': { keys: ProviderKeyEntry[] };
   'providerKey:set': { ok: true };
+  'visionKey:status': { hasKey: boolean; masked: string };
+  'visionKey:set': { ok: true };
   'runtime:event': { ok: true };
   'chat:export': { ok: true; path: string };
   'templates:preview': TemplatesPreviewResult;
@@ -442,6 +522,12 @@ export interface RuntimeProviderConfig {
   apiModelOverrides?: Partial<Record<ModelId, string>>;
   /** 用户自定义 Provider 列表（设置页录入） */
   customProviders: CustomProvider[];
+  /** 视觉模型配置（template.from_image 用；缺省时该工具返回设置指引） */
+  visionConfig?: {
+    baseUrl: string;
+    apiModel: string;
+    apiKey: string;
+  };
 }
 
 export interface AppSettings {
@@ -456,6 +542,11 @@ export interface AppSettings {
     customProviders: CustomProvider[];
     /** 内置模型名覆盖：modelId → 请求体 model 字段（空/缺失 = Provider 默认） */
     apiModelOverrides?: Partial<Record<ModelId, string>>;
+    /** 视觉模型（template.from_image 用；密钥存钥匙串 vision:api-key，此处仅引用） */
+    vision?: {
+      baseUrl: string;
+      apiModel: string;
+    };
   };
   permissions: {
     defaultPermission: PermissionLevel;
@@ -495,7 +586,7 @@ export interface RemoteCommand {
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   general: { language: 'zh-CN', theme: 'auto', launchAtLogin: false, telemetry: false },
-  models: { defaultModelId: 'auto', customProviders: [] },
+  models: { defaultModelId: 'auto', customProviders: [], vision: undefined },
   permissions: {
     defaultPermission: 'default',
     confirmBeforeShell: true,

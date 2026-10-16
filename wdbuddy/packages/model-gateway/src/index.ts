@@ -9,3 +9,5 @@ export { kimiProvider } from './providers/kimi.js';
 export { minimaxProvider } from './providers/minimax.js';
 export { hunyuanProvider } from './providers/hunyuan.js';
 export { createCustomProvider } from './providers/custom.js';
+export { visionChat, extractJson } from './vision-provider.js';
+export type { VisionConfig } from './vision-provider.js';

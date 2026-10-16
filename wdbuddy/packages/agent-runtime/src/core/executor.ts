@@ -430,6 +430,7 @@ export class Executor {
       fsGuard: this.deps.fsGuard,
       workspaceRoots: task.workspaceUri ? [task.workspaceUri] : [],
       webSearch: this.deps.webSearch,
+      visionChat: this.deps.visionChat,
       onArtifact: (a: Artifact) => {
         ctx.artifacts.push(a);
         this.deps.emitter.emit({ method: 'task/artifact.created', params: { taskId: task.id, artifact: a } });
@@ -482,7 +483,7 @@ function buildStepSystemPrompt(
   const toolList = [
     'fs.read', 'fs.write', 'fs.list', 'fs.delete',
     'shell.exec', 'search.web',
-    'office.generate',
+    'office.generate', 'template.from_image',
   ];
   return `你是 WDBuddy Agent，正在执行任务（模式：${task.mode}，权限：${task.permission}）。
 工作空间：${task.workspaceUri ?? '（未指定，文件操作将被拒绝）'}
@@ -525,6 +526,11 @@ function buildStepSystemPrompt(
   【克隆文案红线】模板槽位窄（标题框常只有 2-4 英寸宽），超长文字会破坏模板排版——
   每页标题 ≤ 12 字；条目标题 ≤ 8 字；说明 ≤ 25 字；数值只写"12.6亿元"这类短值（不带长句解释）；
   目录条目每条 ≤ 10 字。宁可拆页也不塞长文。
+  【图片转模板】用户提供了一张设计参考图（jpg/png），想把它变成可复用的 PPT 模板时：
+  {"tool": "template.from_image", "args": {"image": "图片绝对路径", "name": "可选模板名"}}
+  视觉模型分析图片 → 自动生成 .pptx 模板并注册到模版库 → 返回模板 id，
+  随后正常用 office.generate + template="返回的id" 克隆生成。
+  前置条件：设置中已配置视觉模型；未配置时工具会返回指引，转告用户即可。
   【主题 theme】（auto=自动匹配）：tech-dark深空科技|business-blue商务蓝|minimal-light极简白|
   warm-energy活力暖橙|academic学术庄重|red-gold汇报红金|fresh-mint清新薄荷|
   purple-elegant优雅紫|sunset-gradient日落渐变|ink-wash水墨中国

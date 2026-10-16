@@ -16,6 +16,12 @@ import type {
 /** LLM 调用抽象（注入 ModelGateway 或 mock-model-server） */
 export type LlmCaller = (req: ChatStreamRequest) => AsyncIterable<Delta>;
 
+/** 视觉模型调用抽象（template.from_image 注入） */
+export type ToolContextVisionChat = (
+  messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string; images?: string[] }>,
+  opts?: { maxTokens?: number; temperature?: number; signal?: AbortSignal }
+) => Promise<string>;
+
 /** 单次完整调用（Planner/Verifier 用，非流式） */
 export type LlmCompleter = (req: ChatStreamRequest) => Promise<{ content: string }>;
 
@@ -78,6 +84,8 @@ export interface ExecutorDeps {
   askWaiter?: (taskId: string, question: string) => Promise<string>;
   /** 联网检索后端（search.web 工具注入；缺省时该工具返回不可用） */
   webSearch?: (query: string) => Promise<string>;
+  /** 视觉模型后端（template.from_image 注入；缺省时该工具返回配置指引） */
+  visionChat?: ToolContextVisionChat;
   /** 工具注册表 */
   tools: import('../tools/registry.js').ToolRegistry;
   /** 权限策略（sandbox policyFor 产物） */

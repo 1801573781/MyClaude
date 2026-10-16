@@ -9,6 +9,7 @@
 import * as readline from 'node:readline';
 import * as path from 'node:path';
 import type {
+  ChatMessage,
   ModelId,
   RpcRequest,
   RpcResponse,
@@ -19,7 +20,8 @@ import type {
   TaskControlRequest,
 } from '@wdbuddy/shared-types';
 import { FsGuard, policyFor } from '@wdbuddy/sandbox';
-import { ModelGateway, createCustomProvider } from '@wdbuddy/model-gateway';
+import { ModelGateway, createCustomProvider, visionChat } from '@wdbuddy/model-gateway';
+import type { VisionConfig } from '@wdbuddy/model-gateway';
 import { AgentLoop } from './core/loop.js';
 import type { PlanApproval } from './core/loop.js';
 import { ToolRegistry } from './tools/registry.js';
@@ -27,6 +29,7 @@ import { fsReadTool, fsWriteTool, fsListTool, fsDeleteTool } from './tools/fs.js
 import { shellExecTool } from './tools/shell.js';
 import { webSearchTool } from './tools/search.js';
 import { officeGenerateTool } from './tools/office.js';
+import { templateFromImageTool } from './tools/template-from-image.js';
 import { buildTemplatesPreview } from './tools/templates-preview.js';
 import { ddgSearch } from './tools/search-backend.js';
 import { InMemoryCheckpointStore } from './checkpoint/store.js';
@@ -56,6 +59,8 @@ let gateway: ModelGateway | null = null;
 const providerKeys = new Map<string, string>();
 /** modelId → 模型名覆盖（设置页"模型名"输入框；空值回落 Provider 默认） */
 const apiModelOverrides: Partial<Record<ModelId, string>> = {};
+/** 视觉模型配置（initialize / providers.update 时更新；template.from_image 用） */
+let visionConfig: VisionConfig | null = null;
 const runningLoops = new Map<string, AgentLoop>();
 const permissionResolvers = new Map<string, (d: 'allow-once' | 'allow-always-task' | 'deny') => void>();
 /** Plan 审批等待器（Loop 阻塞于 plan.ready，Main 转发 approve/reject 唤醒） */
@@ -75,6 +80,20 @@ function applyProviderConfig(cfg: Partial<RuntimeProviderConfig>): void {
     if (trimmed) apiModelOverrides[modelId as ModelId] = trimmed;
     else delete apiModelOverrides[modelId as ModelId];
   }
+  const vc = cfg.visionConfig;
+  const resolved: VisionConfig | null =
+    vc && vc.baseUrl && vc.apiModel && vc.apiKey
+      ? { baseUrl: vc.baseUrl, apiModel: vc.apiModel, apiKey: vc.apiKey }
+      : null;
+  visionConfig = resolved;
+  visionChatCaller = resolved
+    ? (messages, opts) =>
+        visionChat(resolved, messages as ChatMessage[], {
+          maxTokens: opts?.maxTokens,
+          temperature: opts?.temperature,
+          signal: opts?.signal,
+        })
+    : undefined;
   const gw = new ModelGateway({
     resolveApiKey: (modelId: ModelId) => providerKeys.get(modelId) ?? '',
     apiModelOverrides: { ...apiModelOverrides },
@@ -90,6 +109,9 @@ function gatewayLlm(g: ModelGateway): import('./core/types.js').LlmCaller {
   return (req) => g.chatStream(req);
 }
 
+/** 视觉模型调用封装（makeLoop 时捕获当前 visionConfig；null → undefined 语义） */
+let visionChatCaller: import('./core/types.js').ToolContextVisionChat | undefined;
+
 function makeLoop(task: Task): AgentLoop {
   if (!gateway) throw new Error('runtime 未初始化');
   const tools = new ToolRegistry();
@@ -100,6 +122,7 @@ function makeLoop(task: Task): AgentLoop {
   tools.register(shellExecTool);
   tools.register(webSearchTool);
   tools.register(officeGenerateTool);
+  tools.register(templateFromImageTool);
 
   // 工作空间：任务未指定时分配默认工作空间（Documents/WDBuddy），
   // 避免空 roots 导致所有文件操作被拒（修复"没配工作空间就必失败"）
@@ -138,6 +161,9 @@ function makeLoop(task: Task): AgentLoop {
     },
     // search.web 检索后端注入（此前未注入导致"跳过外部搜索"空转）
     webSearch: ddgSearch,
+    // template.from_image 视觉模型注入（visionConfig 未配置时为 undefined，
+    // 工具侧给出设置指引，不阻断其他工具）
+    visionChat: visionChatCaller,
     askWaiter: (taskId, question) =>
       new Promise((resolve) => {
         askResolvers.set(taskId, resolve);

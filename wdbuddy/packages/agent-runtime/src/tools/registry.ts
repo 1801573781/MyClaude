@@ -14,6 +14,11 @@ export interface ToolContext {
   webSearch?: (query: string) => Promise<string>;
   /** artifact 登记（每次写文件前先备份登记） */
   onArtifact?: (artifact: Artifact) => void;
+  /** 视觉模型注入（template.from_image）：messages（含 images base64/data URL）→ 模型文本输出 */
+  visionChat?: (
+    messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string; images?: string[] }>,
+    opts?: { maxTokens?: number; temperature?: number; signal?: AbortSignal }
+  ) => Promise<string>;
 }
 
 export interface ToolResult {

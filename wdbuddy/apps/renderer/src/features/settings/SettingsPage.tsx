@@ -27,6 +27,9 @@ export function SettingsPage({ onClose }: { onClose: () => void }): React.ReactE
   const [apiModels, setApiModels] = useState<Partial<Record<ModelId, string>>>({});
   /** modelId → 输入中尚未提交的 API Key 草稿（底部"保存"统一提交；关闭前警告，防静默丢失） */
   const [draftKeys, setDraftKeys] = useState<Partial<Record<ModelId, string>>>({});
+  /** 视觉模型密钥状态（脱敏）与草稿 */
+  const [visionKeyStatus, setVisionKeyStatus] = useState<{ hasKey: boolean; masked: string } | null>(null);
+  const [draftVisionKey, setDraftVisionKey] = useState('');
 
   useEffect(() => {
     void requireApi()
@@ -38,6 +41,10 @@ export function SettingsPage({ onClose }: { onClose: () => void }): React.ReactE
     void requireApi()
       .providerKeyList()
       .then((r) => setKeyEntries(r.keys));
+    void requireApi()
+      .visionKeyStatus()
+      .then((r) => setVisionKeyStatus(r))
+      .catch(() => undefined);
   }, []);
 
   const save = async (): Promise<void> => {
@@ -47,6 +54,14 @@ export function SettingsPage({ onClose }: { onClose: () => void }): React.ReactE
     for (const [id, k] of Object.entries(draftKeys)) {
       const t = (k ?? '').trim();
       if (t) await api.providerKeySet(id as ModelId, t);
+    }
+    if (draftVisionKey.trim()) {
+      await api.visionKeySet(draftVisionKey.trim());
+      setDraftVisionKey('');
+      void api
+        .visionKeyStatus()
+        .then((r) => setVisionKeyStatus(r))
+        .catch(() => undefined);
     }
     setDraftKeys({});
     void api
@@ -68,7 +83,8 @@ export function SettingsPage({ onClose }: { onClose: () => void }): React.ReactE
 
   /** 关闭守卫：存在未提交 Key 草稿时确认，防止静默丢失 */
   const closeWithGuard = (): void => {
-    const hasDraft = Object.values(draftKeys).some((k) => (k ?? '').trim().length > 0);
+    const hasDraft =
+      Object.values(draftKeys).some((k) => (k ?? '').trim().length > 0) || draftVisionKey.trim().length > 0;
     if (hasDraft && !window.confirm('检测到未保存的 API Key 输入，关闭后将丢失。确定关闭吗？')) return;
     onClose();
   };
@@ -204,6 +220,74 @@ export function SettingsPage({ onClose }: { onClose: () => void }): React.ReactE
                     </SettingsRow>
                   );
                 })}
+
+                <SettingsRow label="视觉模型（图片转模板）">
+                  <div style={{ fontSize: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    <span style={{ color: 'var(--wb-text-secondary)' }}>
+                      供 template.from_image 使用（把设计参考图转成 PPT 模板）。需 OpenAI 兼容多模态端点（GLM-4V / Kimi-vision / GPT-4o 等），密钥存系统钥匙串。
+                    </span>
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                      <input
+                        className="wb-input"
+                        style={{ width: 300 }}
+                        value={settings.models.vision?.baseUrl ?? ''}
+                        placeholder="Base URL（如 https://open.bigmodel.cn/api/paas/v4）"
+                        onChange={(e) =>
+                          setSettings({
+                            ...settings,
+                            models: {
+                              ...settings.models,
+                              vision: {
+                                baseUrl: e.target.value,
+                                apiModel: settings.models.vision?.apiModel ?? '',
+                              },
+                            },
+                          })
+                        }
+                      />
+                      <input
+                        className="wb-input"
+                        style={{ width: 200 }}
+                        value={settings.models.vision?.apiModel ?? ''}
+                        placeholder="模型名（如 glm-4v-plus）"
+                        onChange={(e) =>
+                          setSettings({
+                            ...settings,
+                            models: {
+                              ...settings.models,
+                              vision: {
+                                baseUrl: settings.models.vision?.baseUrl ?? '',
+                                apiModel: e.target.value,
+                              },
+                            },
+                          })
+                        }
+                      />
+                    </div>
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                      <ProviderKeyRow
+                        masked={visionKeyStatus?.masked ?? ''}
+                        value={draftVisionKey}
+                        onChange={setDraftVisionKey}
+                        onImmediateSave={async (k) => {
+                          await requireApi().visionKeySet(k);
+                          setDraftVisionKey('');
+                          void requireApi()
+                            .visionKeyStatus()
+                            .then((r) => setVisionKeyStatus(r))
+                            .catch(() => undefined);
+                        }}
+                      />
+                      {visionKeyStatus?.hasKey && settings.models.vision?.baseUrl && settings.models.vision.apiModel ? (
+                        <span style={{ fontSize: 11, color: 'var(--wb-color-success)' }}>✓ 已就绪（template.from_image 可用）</span>
+                      ) : (
+                        <span style={{ fontSize: 11, color: 'var(--wb-color-warning)' }}>
+                          {visionKeyStatus?.hasKey ? 'Base URL / 模型名待填' : '密钥未配置'}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </SettingsRow>
 
                 <SettingsRow label="自定义 Provider">
                   <div style={{ fontSize: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>

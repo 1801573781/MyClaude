@@ -3,7 +3,7 @@
  * DeepSeek/GLM/Kimi/MiniMax/混元/自定义均兼容 OpenAI Chat Completions 协议，
  * 仅 base URL 与 model 名不同，统一复用此实现。
  */
-import type { ChatStreamRequest, ChatCompletion, Delta } from '@wdbuddy/shared-types';
+import type { ChatStreamRequest, ChatCompletion, ChatMessage, Delta } from '@wdbuddy/shared-types';
 import type { ModelProvider } from '../types.js';
 
 export interface OpenAiCompatOptions {
@@ -50,6 +50,29 @@ export async function* parseSseStream(
   }
 }
 
+/** 组装多模态消息：含 images 的 ChatMessage → OpenAI 多部分 content 数组。
+ *  纯文本消息原样透传（现有调用方零影响）；图片统一转 base64 data URL */
+export function buildApiMessages(
+  messages: ChatMessage[]
+): Array<Record<string, unknown>> {
+  return messages.map((m) => {
+    if (!m.images || m.images.length === 0 || m.role === 'assistant') {
+      return { role: m.role, content: m.content };
+    }
+    // 多模态 user 消息：[{type:'text'},{type:'image_url'}...]（OpenAI 协议）
+    const parts: Array<Record<string, unknown>> = [
+      { type: 'text', text: m.content },
+    ];
+    for (const img of m.images) {
+      const url = /^[a-z]+:\/\//i.test(img) || img.startsWith('data:')
+        ? img
+        : `data:image/png;base64,${img}`;
+      parts.push({ type: 'image_url', image_url: { url } });
+    }
+    return { role: m.role, content: parts };
+  });
+}
+
 /** 创建 OpenAI 兼容 Provider */
 export function createOpenAiCompatProvider(opts: OpenAiCompatOptions): ModelProvider {
   return {
@@ -67,7 +90,7 @@ export function createOpenAiCompatProvider(opts: OpenAiCompatOptions): ModelProv
         },
         body: JSON.stringify({
           model: opts.apiModel,
-          messages: req.messages,
+          messages: buildApiMessages(req.messages),
           max_tokens: req.maxTokens,
           temperature: req.temperature,
           stream: true,
@@ -89,7 +112,7 @@ export function createOpenAiCompatProvider(opts: OpenAiCompatOptions): ModelProv
         },
         body: JSON.stringify({
           model: opts.apiModel,
-          messages: req.messages,
+          messages: buildApiMessages(req.messages),
           max_tokens: req.maxTokens,
           temperature: req.temperature,
         }),

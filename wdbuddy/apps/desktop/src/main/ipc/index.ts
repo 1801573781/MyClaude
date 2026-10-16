@@ -32,13 +32,16 @@ export interface IpcDeps {
   getProviderKey: (modelId: string) => string;
   setProviderKey: (modelId: string, apiKey: string) => void;
   clearProviderKey: (modelId: string) => void;
+  /** 视觉模型密钥存取（template.from_image 用；同 safeStorage 机制） */
+  getVisionKey: () => string;
+  setVisionKey: (apiKey: string) => void;
   /** 自定义技能存储 */
   skillStore: SkillStore;
   getWindow: () => BrowserWindow | null;
 }
 
 export function registerIpc(deps: IpcDeps): void {
-  const { store, settings, runtime, getProviderKey, setProviderKey, clearProviderKey } = deps;
+  const { store, settings, runtime, getProviderKey, setProviderKey, clearProviderKey, getVisionKey, setVisionKey } = deps;
 
   // ─────────── 任务 ───────────
 
@@ -208,6 +211,21 @@ export function registerIpc(deps: IpcDeps): void {
     } else {
       clearProviderKey(payload.modelId);
     }
+    runtime.updateProviders();
+    return { ok: true };
+  });
+
+  // ─────────── 视觉模型密钥（template.from_image；明文仅存 safeStorage） ───────────
+
+  ipcMain.handle('visionKey:status', () => {
+    const key = getVisionKey();
+    return { hasKey: key.length > 0, masked: maskKey(key) };
+  });
+
+  ipcMain.handle('visionKey:set', (_e, payload: { apiKey: string }) => {
+    setVisionKey(payload.apiKey.trim());
+    // 密钥变化 → 推送最新 visionConfig 到 Runtime（settings 里 baseUrl/apiModel
+    // 已由 settings:set 保存，此处即时热更新，无需重启应用）
     runtime.updateProviders();
     return { ok: true };
   });

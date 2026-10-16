@@ -102,7 +102,7 @@ describe('evaluate — 边界', () => {
   });
 
   it('office.generate 生成类 allow', () => {
-    expect(evaluate(ctx('office.generate', { kind: 'pptx', out: 'D:\\work\\a.pptx' })).decision).toBe('allow');
+    expect(evaluate(ctx('office.generate', { kind: 'pptx', path: 'D:\\work\\a.pptx' })).decision).toBe('allow');
   });
 });
 

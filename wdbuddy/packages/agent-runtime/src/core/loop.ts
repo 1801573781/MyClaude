@@ -40,6 +40,8 @@ export interface AgentLoopDeps {
   askWaiter?: (taskId: string, question: string) => Promise<string>;
   /** 联网检索后端（search.web 工具注入） */
   webSearch?: (query: string) => Promise<string>;
+  /** 视觉模型后端（template.from_image 注入；缺省时该工具返回配置指引） */
+  visionChat?: import('./types.js').ToolContextVisionChat;
   tools: ToolRegistry;
   policy: SandboxPolicy;
   fsGuard: FsGuard;
@@ -68,6 +70,7 @@ export class AgentLoop {
       signalFor: deps.signalFor,
       askWaiter: deps.askWaiter,
       webSearch: deps.webSearch,
+      visionChat: deps.visionChat,
       tools: deps.tools,
       policy: deps.policy,
       fsGuard: deps.fsGuard,

@@ -137,8 +137,28 @@ export function evaluate(
       return { tool, decision: 'allow', reason: '生成类工具（工作空间内）' };
     }
 
+    case 'template.from_image': {
+      // 图片→模板：读用户指定图片 + 写用户模板目录（%APPDATA%，工作空间外）。
+      // 图片路径在工作空间外时需确认（同 office.generate 输出目录授权逻辑，
+      // 允许后 grantDirectory 临时授权，视觉链路读图不再被拦）
+      const img = typeof args['image'] === 'string' ? (args['image'] as string) : '';
+      const outside = !isInsideWorkspace(img, ctx.workspaceRoots);
+      if (outside) {
+        return {
+          tool,
+          decision: 'require-confirm',
+          reason: `读取工作空间外的图片：${img}（允许后将用于模板生成）`,
+        };
+      }
+      return { tool, decision: 'allow', reason: '模板生成（图片在工作空间内）' };
+    }
+
     case 'search.web':
       return { tool, decision: 'allow', reason: '搜索类工具' };
+
+    case 'browser.open':
+      // URL 合法性已在第 2 步校验（非 http(s) deny）；合法 URL 默认放行
+      return { tool, decision: 'allow', reason: '浏览器打开（仅 http/https）' };
 
     default:
       return { tool, decision: 'deny', reason: `未知工具：${String(tool)}` };

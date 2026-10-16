@@ -10,7 +10,7 @@ import type { TemplatesPreviewResult, CloneTemplateInfo } from '@wdbuddy/shared-
 import { THEMES } from './pptx/themes.js';
 import { buildHtmlDeck } from './pptx/html-engine.js';
 import type { SlideSpec } from './pptx/pptx-engine.js';
-import { CLONE_TEMPLATES, templatesDir } from './pptx/clone-registry.js';
+import { allTemplates, templatesDir } from './pptx/clone-registry.js';
 import { dumpTemplateVisual, buildColorPreviewHtml } from './pptx/template-preview.js';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
@@ -77,11 +77,11 @@ function layoutsDeck(): SlideSpec[] {
 
 /* ───────────── 克隆模板预览（内置第三方 pptx → 真彩 SVG deck） ───────────── */
 
-/** 扫描全部内置克隆模板 → CloneTemplateInfo[]（文件缺失/扫描失败跳过，不阻断） */
+/** 扫描全部克隆模板（内置 + 用户）→ CloneTemplateInfo[]（缺失/失败跳过，不阻断） */
 function buildCloneTemplateInfos(): CloneTemplateInfo[] {
   const out: CloneTemplateInfo[] = [];
-  for (const def of CLONE_TEMPLATES) {
-    const file = path.join(templatesDir(), def.file);
+  for (const def of allTemplates()) {
+    const file = def.absPath ?? path.join(templatesDir(), def.file);
     if (!fs.existsSync(file)) continue;
     const dump = dumpTemplateVisual(file);
     if (!dump.ok || dump.slides.length === 0) continue;
@@ -97,6 +97,11 @@ function buildCloneTemplateInfos(): CloneTemplateInfo[] {
     });
   }
   return out;
+}
+
+/** 失效预览缓存（template.from_image 注册新模板后调用，模版库刷新可见） */
+export function invalidateTemplatesPreviewCache(): void {
+  cache = null;
 }
 
 export function buildTemplatesPreview(): TemplatesPreviewResult {

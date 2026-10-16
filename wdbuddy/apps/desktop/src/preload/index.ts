@@ -71,6 +71,12 @@ const api = {
   providerKeySet: (modelId: ModelId, apiKey: string): Promise<{ ok: true }> =>
     ipcRenderer.invoke('providerKey:set', { modelId, apiKey }),
 
+  // ─────────── 视觉模型密钥（template.from_image） ───────────
+  visionKeyStatus: (): Promise<{ hasKey: boolean; masked: string }> =>
+    ipcRenderer.invoke('visionKey:status', {}),
+  visionKeySet: (apiKey: string): Promise<{ ok: true }> =>
+    ipcRenderer.invoke('visionKey:set', { apiKey }),
+
   // ─────────── 权限应答 ───────────
   permissionRespond: (
     requestId: string,
